@@ -1,0 +1,20 @@
+[package]
+name = "tester"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+my-ecs = { version = "=0.0.2", path = ".." }
+paste = { version = "=1.0.14" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "=0.2.92" }
+js-sys = { version = "=0.3.69" }
+web-sys = { version = "=0.3.69", features = [
+    "CustomEvent",
+    "Window",
+] }
+console_error_panic_hook = { version = "=0.1.7" }

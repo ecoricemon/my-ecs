@@ -1,0 +1,82 @@
+use super::{sched::SubContext, sys::system::SystemId};
+use crate::ds::prelude::*;
+use std::{any::Any, fmt, ops::AddAssign};
+
+pub trait Work {
+    /// If succeeded to wake the worker up, returns true.
+    fn unpark(&mut self, ctx: ManagedConstPtr<SubContext>) -> bool;
+
+    /// If succeeded to make the worker sleep, returns true.
+    fn park(&mut self) -> bool {
+        true
+    }
+
+    /// Returns worker name.
+    fn name(&self) -> &str;
+}
+
+#[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
+#[repr(transparent)]
+pub(crate) struct WorkerIndex(usize);
+
+impl WorkerIndex {
+    pub(crate) const fn new(index: usize) -> Self {
+        Self(index)
+    }
+
+    pub(crate) const fn into_inner(self) -> usize {
+        self.0
+    }
+}
+
+impl AddAssign<usize> for WorkerIndex {
+    fn add_assign(&mut self, rhs: usize) {
+        self.0 += rhs;
+    }
+}
+
+impl fmt::Display for WorkerIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+pub(crate) enum Message {
+    Open(WorkerIndex),
+    Closed(WorkerIndex),
+    /// When a worker finishes its task, it will send this message to the main thread.
+    //
+    // Channel is based on mpsc. So it's needed to include identification of sender.
+    Fin(WorkerIndex, SystemId),
+
+    /// If a worker panics, the worker must notify it.
+    Panic(PanicMessage),
+}
+
+impl fmt::Debug for Message {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Open(widx) => write!(f, "Message::Open({widx:?})"),
+            Self::Closed(widx) => write!(f, "Message::Closed({widx:?})"),
+            Self::Fin(widx, sid) => write!(f, "Message::Fin({widx:?}, {sid:?})"),
+            Self::Panic(msg) => write!(f, "Message::Panic({msg:?})"),
+        }
+    }
+}
+
+pub(crate) struct PanicMessage {
+    pub(crate) widx: WorkerIndex,
+    pub(crate) sid: SystemId,
+    pub(crate) payload: Box<dyn Any + Send>,
+    pub(crate) unrecoverable: bool,
+}
+
+impl fmt::Debug for PanicMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PanicMessage")
+            .field("widx", &self.widx)
+            .field("sid", &self.sid)
+            .field("unrecoverable", &self.unrecoverable)
+            .finish_non_exhaustive()
+    }
+}

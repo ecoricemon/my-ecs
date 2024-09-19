@@ -1,0 +1,82 @@
+[package]
+name = "my-ecs"
+description = "Entity Component System implementation"
+repository = "https://github.com/ecoricemon/my-ecs"
+license = "Apache-2.0 OR MIT"
+version = "0.0.2"
+edition = "2021"
+rust-version = "1.80" # std::sync::LazyLock is stable since 1.80.0.
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# ====================
+# === Dependencies ===
+# ====================
+
+[dependencies]
+my-ecs-macros = { version = "=0.0.2", path = "src/macros" }
+paste = { version = "=1.0.14" }
+thiserror = { version = "=1.0.57" }
+crossbeam-deque = { version = "=0.8.5" }
+rayon = { version = "=1.10.0" }
+# Debug mode only
+dashmap = { version = "=6.0.1" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = { version = "=0.2.92" } # Breaking change since 93
+js-sys = { version = "=0.3.69" }
+web-sys = { version = "=0.3.69", features = [
+  "Blob",
+  "BlobPropertyBag",
+  "console",
+  "DedicatedWorkerGlobalScope",
+  "DomException",
+  "MessageEvent",
+  "Url",
+  "Worker",
+  "WorkerOptions",
+  "WorkerType",
+] }
+# Debug mode only, used by dashmap, needs to be add a feature for wasm32.
+parking_lot_core = { version = "=0.9.10", features = ["nightly"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = { version = "=0.3.42" }
+console_error_panic_hook = { version = "=0.1.7" }
+
+# =================
+# === Workspace ===
+# =================
+
+[workspace]
+members = ["tester"] # To share output directory 'target'
+
+# Has no effect, but hides error shown in vscode.
+[workspace.dependencies]
+web-sys = { version = "=0.3.69", features = [
+    "CustomEvent",
+    "Window",
+] }
+
+# =============
+# === Tests ===
+# =============
+
+[[test]]
+name = "integration-test"
+path = "tester/src/lib.rs"
+
+# ================
+# === Examples ===
+# ================
+
+[[example]]
+name = "debug"
+path = "examples/debug.rs"
+crate-type = ["bin"]
+
+[[example]]
+name = "temp"
+path = "examples/temp.rs"
+crate-type = ["bin"]
