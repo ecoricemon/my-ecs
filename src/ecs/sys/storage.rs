@@ -71,7 +71,7 @@ where
         }
     }
 
-    pub(crate) fn get_system_group_mut(&mut self, gi: usize) -> &mut SystemGroup<S> {
+    pub(crate) fn get_group_mut(&mut self, gi: usize) -> &mut SystemGroup<S> {
         self.sgroups.switch_to(gi)
     }
 
@@ -79,7 +79,7 @@ where
         Rc::clone(&self.rinfo)
     }
 
-    pub(crate) fn register_system(
+    pub(crate) fn register(
         &mut self,
         gi: usize,
         skey: SystemKey,
@@ -113,14 +113,22 @@ where
         Ok(())
     }
 
+    pub(crate) fn unregister(&mut self, gi: usize, sid: &SystemId) -> Option<SystemData> {
+        self.sgroups.switch_to(gi).unregister(sid)
+    }
+
     /// Activates the system. If the system is already active, nothing takes place.
-    pub(crate) fn activate_system(
+    pub(crate) fn activate(
         &mut self,
         target: &SystemId,
         at: InsertPos,
         live: NonZeroTick,
     ) -> EcsResult<()> {
         self.sgroups.activate(target, at, live)
+    }
+
+    pub(crate) fn inactivate(&mut self, gi: usize, sid: &SystemId) -> EcsResult<()> {
+        self.sgroups.switch_to(gi).inactivate(sid)
     }
 
     pub(crate) fn collect_poisoned(&mut self) -> Vec<(SystemData, Box<dyn Any + Send>)> {

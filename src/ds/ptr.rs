@@ -395,17 +395,23 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     }
 
     pub fn into_ref<'a>(self) -> &'a T {
-        let inner_ptr = self.inner();
+        let inner = self.inner();
+
+        #[cfg(debug_assertions)]
         drop(self);
+
         // Safety: Managed pointer.
-        unsafe { inner_ptr.as_ref() }
+        unsafe { inner.as_ref() }
     }
 
     pub fn cast<U>(self) -> ManagedConstPtr<U> {
-        let inner = self.inner().cast();
-        let _ = self;
+        let inner = self.inner();
+
+        #[cfg(debug_assertions)]
+        drop(self);
+
         // Safety: Nothing has changed except `T` -> `U`.
-        unsafe { ManagedConstPtr::new(inner) }
+        unsafe { ManagedConstPtr::new(inner.cast()) }
     }
 
     /// # Safety
@@ -583,23 +589,31 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     }
 
     pub fn into_mut<'a>(self) -> &'a mut T {
-        let mut inner_ptr = self.inner();
+        let mut inner = self.inner();
+
+        #[cfg(debug_assertions)]
         drop(self);
+
         // Safety: Managed pointer.
-        unsafe { inner_ptr.as_mut() }
+        unsafe { inner.as_mut() }
     }
 
     pub fn cast<U>(self) -> ManagedMutPtr<U> {
-        let inner = self.inner().cast();
+        let inner = self.inner();
+
+        #[cfg(debug_assertions)]
         drop(self);
+
         // Safety: Nothing has changed except `T` -> `U`.
-        unsafe { ManagedMutPtr::new(inner) }
+        unsafe { ManagedMutPtr::new(inner.cast()) }
     }
 
     pub fn cast_const(self) -> ManagedConstPtr<T> {
-        // Calls `into_inner` to drop self.
         let inner = self.inner();
+
+        #[cfg(debug_assertions)]
         drop(self);
+
         // Safety: Nothing has changed except `Mut` -> `Const`.
         unsafe { ManagedConstPtr::new(inner) }
     }

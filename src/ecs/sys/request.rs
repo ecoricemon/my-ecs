@@ -57,7 +57,7 @@ pub trait Request: 'static {
 pub(crate) trait PrivateRequest: Request {
     fn get_info<S>(stor: &mut S) -> Rc<RequestInfo>
     where
-        S: StoreRequestInfo,
+        S: StoreRequestInfo + ?Sized,
     {
         let key = Self::key();
         if let Some(info) = StoreRequestInfo::get(stor, &key) {

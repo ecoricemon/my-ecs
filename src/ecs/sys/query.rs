@@ -205,7 +205,7 @@ pub trait Query: 'static {
     }
 
     /// Required.
-    fn get_info<S: StoreQueryInfo>(stor: &mut S) -> Rc<QueryInfo>;
+    fn get_info<S: StoreQueryInfo + ?Sized>(stor: &mut S) -> Rc<QueryInfo>;
 
     /// Required.
     fn convert(buf: &mut [RawFiltered]) -> Self::Output<'_>;
@@ -223,7 +223,7 @@ pub trait QueryMut: 'static + Sized {
     }
 
     /// Required.
-    fn get_info<S: StoreQueryInfo>(stor: &mut S) -> Rc<QueryInfo>;
+    fn get_info<S: StoreQueryInfo + ?Sized>(stor: &mut S) -> Rc<QueryInfo>;
 
     /// Required.
     fn convert(buf: &mut [RawFiltered]) -> Self::Output<'_>;
@@ -240,7 +240,7 @@ pub trait ResQuery: 'static {
     }
 
     /// Provided.
-    fn get_info<S: StoreResQueryInfo>(stor: &mut S) -> Rc<ResQueryInfo> {
+    fn get_info<S: StoreResQueryInfo + ?Sized>(stor: &mut S) -> Rc<ResQueryInfo> {
         let key = <Self as ResQuery>::key();
         if let Some(info) = StoreResQueryInfo::get(stor, &key) {
             info
@@ -270,7 +270,7 @@ pub trait ResQueryMut: 'static + Sized {
     }
 
     /// Provided.
-    fn get_info<S: StoreResQueryInfo>(stor: &mut S) -> Rc<ResQueryInfo> {
+    fn get_info<S: StoreResQueryInfo + ?Sized>(stor: &mut S) -> Rc<ResQueryInfo> {
         let key = <Self as ResQueryMut>::key();
         if let Some(info) = StoreResQueryInfo::get(stor, &key) {
             info
@@ -299,7 +299,7 @@ pub trait EntQueryMut: 'static {
     }
 
     /// Provided.
-    fn get_info<S: StoreEntQueryInfo>(stor: &mut S) -> Rc<EntQueryInfo> {
+    fn get_info<S: StoreEntQueryInfo + ?Sized>(stor: &mut S) -> Rc<EntQueryInfo> {
         let key = <Self as EntQueryMut>::key();
         if let Some(info) = StoreEntQueryInfo::get(stor, &key) {
             info
@@ -337,7 +337,7 @@ macro_rules! impl_query {
 
                 fn get_info<S>(stor: &mut S) -> Rc<QueryInfo>
                 where
-                    S: StoreQueryInfo
+                    S: StoreQueryInfo + ?Sized,
                 {
                     let key = <Self as Query>::key();
                     if let Some(info) = StoreQueryInfo::get(stor, &key) {
@@ -381,7 +381,7 @@ macro_rules! impl_query {
 
                 fn get_info<S>(stor: &mut S) -> Rc<QueryInfo>
                 where
-                    S: StoreQueryInfo
+                    S: StoreQueryInfo + ?Sized,
                 {
                     let key = <Self as QueryMut>::key();
                     if let Some(info) = StoreQueryInfo::get(stor, &key) {

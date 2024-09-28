@@ -7,7 +7,7 @@ export default defineConfig({
     reuseExistingServer: false,
     stdout: 'pipe',
     stderr: 'pipe',
-    timeout: 10 * 1000,
+    timeout: 30 * 1000,
   },
   use: {
     baseURL: 'http://localhost:8080',

@@ -40,145 +40,28 @@ struct Ra(String);
 #[derive(Resource)]
 struct Rb(String);
 
-// === Defines test primitives ===
+const NUM_WORKERS: usize = 10;
 
-fn try_schedule(workers: &mut [Worker]) {
+fn try_open_close(worker_pool: WorkerPool) -> WorkerPool {
     // Creates instance.
-    let mut ecs = Ecs::new();
+    let mut ecs = Ecs::default(worker_pool);
 
-    // Registers and inserts entities.
-    ecs.register_entity_of::<Ea>();
-    ecs.register_entity_of::<Eb>();
-    ecs.append_once_system(0, |mut ew: EntWrite<Ea>| {
-        ew.add_entity(Ea { a: Ca(1) });
-        ew.add_entity(Ea { a: Ca(2) });
-    })
-    .unwrap();
-    ecs.append_once_system(0, |mut ew: EntWrite<Eb>| {
-        ew.add_entity(Eb {
-            a: Ca(3),
-            b: Cb(10),
-        });
-        ew.add_entity(Eb {
-            a: Ca(4),
-            b: Cb(20),
-        });
-    })
-    .unwrap();
+    const REPEAT: usize = 10;
 
-    // Registers resources.
-    ecs.register_resource(
-        Ra::key(),
-        MaybeOwned::A(Box::new(Ra("A".to_owned()))),
-        false,
-    )
-    .unwrap();
-    ecs.register_resource(
-        Rb::key(),
-        MaybeOwned::A(Box::new(Ra("A".to_owned()))),
-        false,
-    )
-    .unwrap();
-
-    // Test.
-    let live = NonZeroTick::MAX;
-    let volatile: bool = true;
-    ecs.append_system(0, live, volatile, inc_ca).unwrap();
-    ecs.append_system(0, live, volatile, inc_cb).unwrap();
-    ecs.append_system(0, live, volatile, dec_ca).unwrap();
-    ecs.append_system(0, live, volatile, dec_cb).unwrap();
-    ecs.append_system(0, live, volatile, iter_ca).unwrap();
-    ecs.append_system(0, live, volatile, iter_cb).unwrap();
-    ecs.append_system(0, live, volatile, attach_ra).unwrap();
-    ecs.append_system(0, live, volatile, detach_ra).unwrap();
-
-    for _ in 0..5 {
-        ecs.operate(workers);
+    // Opens and closes workers without doing something.
+    for _ in 0..REPEAT {
+        let _ = ecs.run();
     }
 
-    assert!(ecs.collect_poisoned_systems().is_empty());
+    ecs.take_worker_pool()
+}
 
-    return;
-
-    // === Internal struct and functions ===
-
-    /// Increases `Ca` by 1.
-    fn inc_ca(w: Write<Fa>) {
-        let mut w = w.take();
-        w.iter_mut().flatten().for_each(|ca| ca.0 += 1);
-
-        let mut vals: Vec<i32> = w.iter().flatten().map(|ca| ca.0).collect();
-        vals.sort_unstable();
-        assert_eq!(vals, [2, 3, 4, 5]);
-    }
-
-    /// Decreases `Ca` by 1.
-    fn dec_ca(w: Write<Fa>) {
-        let mut w = w.take();
-        w.iter_mut().flatten().for_each(|ca| ca.0 -= 1);
-
-        let mut vals: Vec<i32> = w.iter().flatten().map(|ca| ca.0).collect();
-        vals.sort_unstable();
-        assert_eq!(vals, [1, 2, 3, 4]);
-    }
-
-    // Iterates over `Ca`.
-    fn iter_ca(r: Read<Fa>) {
-        let r = r.take();
-        let mut vals: Vec<i32> = r.iter().flatten().map(|ca| ca.0).collect();
-        vals.sort_unstable();
-        assert_eq!(vals, [1, 2, 3, 4]);
-    }
-
-    /// Increases `Cb` by 1.
-    fn inc_cb(w: Write<Fb>) {
-        let mut w = w.take();
-        w.iter_mut().flatten().for_each(|cb| cb.0 += 1);
-
-        let mut vals: Vec<i32> = w.iter().flatten().map(|cb| cb.0).collect();
-        vals.sort_unstable();
-        assert_eq!(vals, [11, 21]);
-    }
-
-    /// Decreases `Cb` by 1.
-    fn dec_cb(w: Write<Fb>) {
-        let mut w = w.take();
-        w.iter_mut().flatten().for_each(|cb| cb.0 -= 1);
-
-        let mut vals: Vec<i32> = w.iter().flatten().map(|cb| cb.0).collect();
-        vals.sort_unstable();
-        assert_eq!(vals, [10, 20]);
-    }
-
-    // Iterates over `Cb`.
-    fn iter_cb(r: Read<Fb>) {
-        let r = r.take();
-        let mut vals: Vec<i32> = r.iter().flatten().map(|cb| cb.0).collect();
-        vals.sort_unstable();
-        assert_eq!(vals, [10, 20]);
-    }
-
-    // Attaches a letter to `Ra`.
-    fn attach_ra(w: ResWrite<Ra>) {
-        let w = w.take();
-        w.0.push('A');
-        assert_eq!(w.0, "AA");
-    }
-
-    // Detaches a letter from `Ra`.
-    fn detach_ra(w: ResWrite<Ra>) {
-        let w = w.take();
-        w.0.pop();
-        assert_eq!(w.0, "A");
-    }
+fn worker_pool() -> WorkerPool {
+    WorkerPool::with_len(NUM_WORKERS)
 }
 
 fn main() {
-    let mut workers = (0..10)
-        .map(|i| WorkerBuilder::new(&format!("worker{i}")).spawn().unwrap())
-        .collect::<Vec<_>>();
-
-    try_schedule(&mut workers);
+    try_open_close(worker_pool());
 
     use std::time::SystemTime;
     let now = SystemTime::now()

@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod cmd;
 pub mod ent;
 pub mod manager;
 pub mod resource;
@@ -13,11 +14,12 @@ pub mod prelude {
     pub use super::sched::prelude::*;
     pub use super::sys::prelude::*;
 
-    pub use super::manager::{Ecs, WorkingEcs};
+    pub use super::cmd;
+    pub use super::manager::{Ecs, EcsApp, EcsEntry, WorkingEcs};
     pub use super::resource::{MaybeOwned, Resource, ResourceKey, ResourceKind};
     #[cfg(target_arch = "wasm32")]
     pub use super::web;
-    pub use super::worker::Work;
+    pub use super::worker::{HoldWorkers, Work};
     pub use super::{EcsError, EcsResult};
 
     pub use crate::request;

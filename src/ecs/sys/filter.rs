@@ -58,7 +58,7 @@ pub trait Filter: 'static {
 
     fn info<S>(info_stor: &mut S) -> Rc<FilterInfo>
     where
-        S: StoreFilterInfo,
+        S: StoreFilterInfo + ?Sized,
     {
         let key = Self::key();
         if let Some(info) = info_stor.get(&key) {
@@ -350,7 +350,7 @@ pub struct FilteredIter<'cont, Comp: 'cont> {
 
 impl<'cont, Comp> FilteredIter<'cont, Comp> {
     // Borrows `Filtered`.
-    fn new(raw: &Filtered<Comp>) -> Self {
+    fn new(raw: &Filtered<'cont, Comp>) -> Self {
         // Safety: `Filtered` guarantees we're good to access those vecs.
         unsafe {
             let getter_range = raw.query_res().as_ptr_range();

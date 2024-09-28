@@ -22,7 +22,11 @@ if [ "$1" = "test" ]; then
     fi
 elif [ "$1" = "clean" ]; then
     cargo clean
-    npm run clean-all --prefix tester
+
+    targets=(tester examples/web)
+    for target in ${targets[@]}; do
+        npm run clean-all --prefix $target
+    done
 else
     my_exit
 fi

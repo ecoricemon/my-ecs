@@ -6,11 +6,76 @@ pub use web::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod non_web {
-    use crate::{ds::prelude::*, ecs::prelude::*};
+    use crate::{ds::prelude::*, ecs::prelude::*, util};
     use std::{
+        fmt,
+        num::NonZeroUsize,
         sync::mpsc::{self, Sender},
-        thread::{Builder, JoinHandle},
+        thread::{self, Builder, JoinHandle},
     };
+
+    #[derive(Debug)]
+    pub struct WorkerPool {
+        workers: Vec<Worker>,
+    }
+
+    impl WorkerPool {
+        pub const fn new() -> Self {
+            Self {
+                workers: Vec::new(),
+            }
+        }
+
+        pub fn with_default() -> Self {
+            let num_cpus = thread::available_parallelism()
+                .unwrap_or(unsafe { NonZeroUsize::new_unchecked(1) })
+                .get();
+            Self::with_len(num_cpus)
+        }
+
+        pub fn with_len(len: usize) -> Self {
+            let mut this = Self::new();
+
+            let mut name = "worker0".to_owned();
+            for _ in 0..len {
+                let worker = WorkerBuilder::new(&name).spawn().unwrap();
+                this.append(worker);
+                util::str::increase_rnumber(&mut name);
+            }
+
+            this
+        }
+
+        pub fn len(&self) -> usize {
+            self.workers.len()
+        }
+
+        pub fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+
+        pub fn append(&mut self, worker: Worker) {
+            self.workers.push(worker);
+        }
+
+        pub fn clear(&mut self) {
+            self.workers.clear();
+        }
+    }
+
+    impl Default for WorkerPool {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl HoldWorkers for WorkerPool {
+        type Worker = Worker;
+
+        fn workers(&mut self) -> &mut [Self::Worker] {
+            &mut self.workers
+        }
+    }
 
     #[derive(Debug)]
     pub struct WorkerBuilder<'a> {
@@ -60,6 +125,14 @@ mod non_web {
         }
     }
 
+    impl fmt::Debug for Worker {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("Worker")
+                .field("name", &self.name)
+                .finish_non_exhaustive()
+        }
+    }
+
     impl Drop for Worker {
         fn drop(&mut self) {
             // `rx` could be broken if worker panics.
@@ -72,7 +145,7 @@ mod non_web {
 
     impl Work for Worker {
         fn unpark(&mut self, cx: ManagedConstPtr<SubContext>) -> bool {
-            let res = self.tx.send(Some(cx)); // TODO: saw failed. but what condition?
+            let res = self.tx.send(Some(cx));
             res.is_ok()
         }
 
@@ -97,6 +170,49 @@ mod web {
         },
     };
     use wasm_bindgen::prelude::*;
+
+    #[derive(Debug)]
+    pub struct WorkerPool {
+        workers: Vec<Worker>,
+    }
+
+    impl WorkerPool {
+        pub const fn new() -> Self {
+            Self {
+                workers: Vec::new(),
+            }
+        }
+
+        pub fn len(&self) -> usize {
+            self.workers.len()
+        }
+
+        pub fn is_empty(&self) -> bool {
+            self.len() == 0
+        }
+
+        pub fn append(&mut self, worker: Worker) {
+            self.workers.push(worker);
+        }
+
+        pub fn clear(&mut self) {
+            self.workers.clear();
+        }
+    }
+
+    impl Default for WorkerPool {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl HoldWorkers for WorkerPool {
+        type Worker = Worker;
+
+        fn workers(&mut self) -> &mut [Self::Worker] {
+            &mut self.workers
+        }
+    }
 
     #[derive(Debug)]
     #[repr(transparent)]
@@ -146,20 +262,20 @@ mod web {
             })
         }
 
-        pub fn spawn_children(&self, num: usize) {
+        pub fn spawn_children(&self, mut num: usize) {
             if num == 0 {
-                return;
+                num = web_util::available_parallelism();
             }
 
             self.delegate(
                 |arg| {
                     let num: f64 = arg.unchecked_into_f64();
                     let num = num as usize;
-                    MAIN_WORKER_CTX.with_borrow_mut(|ctx| {
+                    JS_MAIN_CX.with_borrow_mut(|cx| {
                         for _ in 0..num {
-                            str_util::increase_rnumber(&mut ctx.child_name);
-                            let worker = WorkerBuilder::new(&ctx.child_name).spawn().unwrap();
-                            ctx.children.push(worker);
+                            str_util::increase_rnumber(&mut cx.child_name);
+                            let worker = WorkerBuilder::new(&cx.child_name).spawn().unwrap();
+                            cx.worker_pool.append(worker);
                         }
                     });
                 },
@@ -171,15 +287,34 @@ mod web {
             let arg = FnCodec::encode_into_array(f);
             self.delegate(
                 |arg| {
-                    MAIN_WORKER_CTX.with_borrow_mut(|ctx| {
+                    JS_MAIN_CX.with_borrow_mut(|cx| {
                         let arg: js_sys::Uint32Array = arg.unchecked_into();
                         // Safety: `arg` is `f`.
                         unsafe {
                             let f = FnCodec::decode_from_array(&arg);
                             let f = mem::transmute::<fn(), fn(&mut [Worker])>(f);
-                            ctx.pending.push_back(f);
+                            cx.pend_mut_fs.push_back(f);
                         };
-                        ctx.ready_run();
+                        cx.ready_run();
+                    });
+                },
+                arg.into(),
+            );
+        }
+
+        pub fn with_worker_pool(&self, f: fn(WorkerPool)) {
+            let arg = FnCodec::encode_into_array(f);
+            self.delegate(
+                |arg| {
+                    JS_MAIN_CX.with_borrow_mut(|cx| {
+                        let arg: js_sys::Uint32Array = arg.unchecked_into();
+                        // Safety: `arg` is `f`.
+                        unsafe {
+                            let f = FnCodec::decode_from_array(&arg);
+                            let f = mem::transmute::<fn(), fn(WorkerPool)>(f);
+                            cx.pend_f = Some(f);
+                        };
+                        cx.ready_run();
                     });
                 },
                 arg.into(),
@@ -194,8 +329,8 @@ mod web {
 
     impl Drop for MainWorker {
         fn drop(&mut self) {
-            MAIN_WORKER_CTX.with_borrow_mut(|ctx| {
-                ctx.children.clear();
+            JS_MAIN_CX.with_borrow_mut(|cx| {
+                cx.worker_pool.clear();
             });
         }
     }
@@ -229,59 +364,77 @@ mod web {
                 }
             }
         } else {
-            web::worker_post_message(&msg).unwrap();
+            web_util::worker_post_message(&msg).unwrap();
         }
     }
 
     thread_local! {
         #[allow(clippy::thread_local_initializer_can_be_made_const)]
-        static MAIN_WORKER_CTX: RefCell<MainWorkerContext> = RefCell::new(
+        static JS_MAIN_CX: RefCell<MainWorkerContext> = RefCell::new(
             MainWorkerContext::new()
         );
 
         static READY_RUN: RefCell<Closure<dyn FnMut()>> = RefCell::new(
             Closure::new(|| {
-                MAIN_WORKER_CTX.with_borrow_mut(|ctx| ctx.ready_run());
+                JS_MAIN_CX.with_borrow_mut(|cx| cx.ready_run());
             })
         );
     }
 
-    #[derive(Debug)]
     pub struct MainWorkerContext {
-        /// Child workers.
-        children: Vec<Worker>,
+        /// Worker pool.
+        worker_pool: WorkerPool,
 
         /// Child worker name that will be given to the next spawned child worker.
         child_name: String,
 
-        /// Pending functions.
-        pending: VecDeque<fn(&mut [Worker])>,
+        /// Pending functions receiving mutable reference to the worker pool.
+        pend_mut_fs: VecDeque<fn(&mut [Worker])>,
+
+        /// Pending function receiving worker pool.
+        pend_f: Option<fn(WorkerPool)>,
     }
 
     impl MainWorkerContext {
         fn new() -> Self {
             Self {
-                children: Vec::new(),
+                worker_pool: WorkerPool::new(),
                 child_name: "sub-worker0".to_owned(),
-                pending: VecDeque::new(),
+                pend_mut_fs: VecDeque::new(),
+                pend_f: None,
             }
         }
 
         fn ready_run(&mut self) {
-            if self.children.iter().all(|child| child.is_ready()) {
-                while let Some(f) = self.pending.pop_front() {
-                    f(&mut self.children);
+            let children = self.worker_pool.workers();
+            if children.iter().all(|child| child.is_ready()) {
+                // Runs `pend_mut_fs` first.
+                while let Some(f) = self.pend_mut_fs.pop_front() {
+                    f(children);
+                }
+
+                // Then, runs `pend_f` with giving the worker pool.
+                if let Some(f) = self.pend_f.take() {
+                    f(mem::take(&mut self.worker_pool));
                 }
             } else {
                 READY_RUN.with_borrow(|ready_run| {
                     const WAIT_MS: i32 = 10;
                     let cb = ready_run.as_ref().unchecked_ref();
-                    let global = web::worker_global();
+                    let global = web_util::worker_global();
                     global
                         .set_timeout_with_callback_and_timeout_and_arguments_0(cb, WAIT_MS)
                         .unwrap();
                 });
             }
+        }
+    }
+
+    impl fmt::Debug for MainWorkerContext {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("MainWorkerContext")
+                .field("worker_pool", &self.worker_pool)
+                .finish_non_exhaustive()
         }
     }
 

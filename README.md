@@ -2,6 +2,10 @@
 
 Entity Component System(ECS) implementation.
 
-## WASM support
+## Features
 
-Built-in worker implementation for 'wasm32-unknown-unknown' target.
+- Supports CPU parallelism based on rayon.  
+[rayon example](examples/rayon.rs)
+
+- Supports wasm32-unknown-unknown target.  
+[web example](examples/web)

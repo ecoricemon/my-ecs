@@ -30,19 +30,20 @@ use std::{
 ///
 /// Possible system transition is as follows,  
 ///
-/// | From     | To       | Methods                         |
-/// | ---      | ---      | ---                             |
-/// | (None)   | Inactive | [`register`]                    |
-/// | Inactive | Active   | [`activate`]                    |
-/// | Inactive | Poisoned | [`poison`]                      |
-/// | Inactive | (None)   | [`unregister`]                  |
-/// | Active   | Inactive | [`tick`], expired, non-volatile |
-/// | Active   | Poisoned | [`poison`]                      |
-/// | Active   | (None)   | [`tick`], expired, volatile     |
-/// | Poisoned | (None)   | [`drain_poisoned`]              |
+/// | From     | To       | Methods                                |
+/// | ---      | ---      | ---                                    |
+/// | (None)   | Inactive | [`register`]                           |
+/// | Inactive | Active   | [`activate`]                           |
+/// | Inactive | Poisoned | [`poison`]                             |
+/// | Inactive | (None)   | [`unregister`]                         |
+/// | Active   | Inactive | [`inactivate`], [`tick`], non-volatile |
+/// | Active   | Poisoned | [`poison`]                             |
+/// | Active   | (None)   | [`tick`], volatile                     |
+/// | Poisoned | (None)   | [`drain_poisoned`]                     |
 ///
 /// [`register`]: Self::register
 /// [`activate`]: Self::activate
+/// [`inactivate`]: Self::inactivate
 /// [`poison`]: Self::poison
 /// [`unregister`]: Self::unregister
 /// [`tick`]: Self::tick
@@ -113,6 +114,18 @@ where
         self.active.contains(sid)
     }
 
+    // For future use
+    #[allow(dead_code)]
+    pub(crate) fn is_inactive(&self, sid: &SystemId) -> bool {
+        self.inactive.contains_key(sid)
+    }
+
+    // For future use
+    #[allow(dead_code)]
+    pub(crate) fn is_poisoned(&self, sid: &SystemId) -> bool {
+        self.poisoned.iter().any(|(sdata, _)| sdata.id() == *sid)
+    }
+
     pub(crate) fn next_system_id(&self) -> SystemId {
         self.cur_id
     }
@@ -145,13 +158,7 @@ where
     }
 
     /// Unregisters system if and only if the system is inactive.
-    //
-    // For future use.
-    #[allow(dead_code)]
     pub(crate) fn unregister(&mut self, sid: &SystemId) -> Option<SystemData> {
-        // Blocks to unregister active system.
-        assert!(!self.is_active(sid));
-
         self.inactive.remove(sid)
     }
 
@@ -185,6 +192,32 @@ where
         }
     }
 
+    pub(crate) fn inactivate(&mut self, sid: &SystemId) -> EcsResult<()> {
+        let Self {
+            active,
+            volatile,
+            inactive,
+            ..
+        } = self;
+
+        Self::_inactivate(active, volatile, inactive, sid)
+    }
+
+    fn _inactivate(
+        active: &mut SystemCycle<S>,
+        volatile: &mut HashSet<SystemId, S>,
+        inactive: &mut HashMap<SystemId, SystemData, S>,
+        sid: &SystemId,
+    ) -> EcsResult<()> {
+        if let Some(sdata) = active.remove(sid) {
+            if !volatile.remove(sid) {
+                inactive.insert(*sid, sdata);
+            }
+            return Ok(());
+        }
+        Err(EcsError::UnknownSystem)
+    }
+
     /// Poisons a system then move the system data to poisoned area.
     /// If the system was completely removed by another reason, returns error
     /// with the given payload.
@@ -212,14 +245,17 @@ where
     }
 
     pub(crate) fn tick(&mut self) {
-        if let Some(expired_sids) = self.lifetime.tick() {
+        let Self {
+            lifetime,
+            active,
+            volatile,
+            inactive,
+            ..
+        } = self;
+
+        if let Some(expired_sids) = lifetime.tick() {
             while let Some(sid) = expired_sids.pop() {
-                // If an active system was poisoned, that may have removed.
-                if let Some(sdata) = self.active.remove(&sid) {
-                    if !self.volatile.remove(&sdata.id) {
-                        self.inactive.insert(sid, sdata);
-                    }
-                }
+                let _ = Self::_inactivate(active, volatile, inactive, &sid);
             }
         }
     }
@@ -404,7 +440,7 @@ pub(crate) trait PrivateSystem: System {
     fn into_data<S>(self, stor: Rc<RefCell<S>>, sid: SystemId) -> SystemData
     where
         Self: 'static + Sized,
-        S: StoreRequestInfo + 'static,
+        S: StoreRequestInfo + 'static + ?Sized,
     {
         let rinfo = <Self::PrivateRequest as PrivateRequest>::get_info(&mut *stor.borrow_mut());
 
@@ -526,7 +562,7 @@ impl fmt::Debug for SystemData {
 }
 
 impl SystemData {
-    pub(crate) fn id(&self) -> SystemId {
+    pub fn id(&self) -> SystemId {
         self.id
     }
 
@@ -823,7 +859,7 @@ mod impl_for_fn_system {
 
             impl<F $(,$r)? $(,$w)? $(,$rr)? $(,$rw)? $(,$ew)?> 
                 From<F> for 
-                StructOrFnSystem<(), $req_with_placeholder, F>
+                SystemBond<FnSystem<$req_with_placeholder, F>>
             where
                 F: FnMut(
                     $(Read<$r>,)?
@@ -839,7 +875,7 @@ mod impl_for_fn_system {
                 $($ew: EntQueryMut,)?
             {
                 fn from(value: F) -> Self {
-                    Self::Fn(value.into())
+                    Self(value.into())
                 }
             }
 
@@ -909,29 +945,37 @@ mod impl_for_fn_system {
     _impl!((R,  W,  RR, RW, EW), (R,  W,  RR, RW, EW), r=R, w=W, rr=RR, rw=RW, ew=EW);
 }
 
-/// Dummy implementation of the [`System`].
-/// This is used for [`StructOrFnSystem`] because it needs default generics for [`FnSystem`].
-impl System for FnSystem<(), fn()> {
-    type Request = ();
-    fn run(&mut self, _resp: Response<Self::Request>) {
-        unreachable!();
+/// A system wrapper to help functions to accept various types of systems.
+/// This type doesn't do anything rather than becoming inner system.
+//
+// When it come to use cases,
+// imagine that we'd like to accept 'struct' or 'closure' systems
+// in a function like this,
+// - fn register<S: System>(s: s) {}
+//
+// However, to implement `System` for every possible 'closure',
+// it must stop by `FnSystem` for blanket impl.
+// That's why we need a type to bond 'struct' and 'closure' together.
+// Conversions of 'struct' and 'closure' are as follows.
+// - FnMut -> FnSystem: System (for blanket impl) -> SystemBond
+// - FnMut ----------------------------------------> SystemBond
+// - Struct: System -------------------------------> SystemBond
+//
+// So, we can modify our function like this,
+// - fn register<S: Into<SystemBond>>(s: S) {}
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct SystemBond<S>(S);
+
+impl<S> SystemBond<S> {
+    pub fn into_inner(self) -> S {
+        self.0
     }
 }
 
-pub enum StructOrFnSystem<S, Req, F> {
-    Struct(S),
-    Fn(FnSystem<Req, F>),
-}
-
-impl<S: System> From<S> for StructOrFnSystem<S, (), fn()> {
+impl<S: System> From<S> for SystemBond<S> {
     fn from(value: S) -> Self {
-        Self::Struct(value)
-    }
-}
-
-impl<Req, F: Send> From<FnSystem<Req, F>> for StructOrFnSystem<(), Req, F> {
-    fn from(value: FnSystem<Req, F>) -> Self {
-        Self::Fn(value)
+        Self(value)
     }
 }
 

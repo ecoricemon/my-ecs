@@ -1,8 +1,13 @@
 #[macro_export]
 macro_rules! type_name {
     ($e:expr) => {{
-        fn name<T: ?Sized>(_x: &T) -> &str {
-            std::any::type_name::<T>()
+        fn name<T: ?Sized>(_t: &T) -> &str {
+            let name = std::any::type_name::<T>();
+            if matches!(name.chars().next(), Some(c) if c == '&') {
+                &name[1..]
+            } else {
+                name
+            }
         }
         name(&$e)
     }};

@@ -1,11 +1,14 @@
 pub mod par;
 
 pub mod prelude {
+    #[cfg(target_arch = "wasm32")]
+    pub use super::web::web_panic_hook;
     pub use super::SubContext;
 }
 
 use super::{
     cache::{CacheItem, RefreshCacheStorage},
+    cmd::Command,
     sys::{
         request::SystemBuffer,
         system::{Invoke, SystemCycleIter, SystemData, SystemGroup, SystemId},
@@ -20,7 +23,6 @@ use std::{
     any::Any,
     cell::{Cell, UnsafeCell},
     collections::{HashSet, VecDeque},
-    fmt::Debug,
     hash::BuildHasher,
     marker::{PhantomData, PhantomPinned},
     mem,
@@ -28,7 +30,7 @@ use std::{
     ptr::NonNull,
     sync::{
         atomic::{self, AtomicI32, Ordering},
-        mpsc::{self, Receiver, Sender, TryRecvError},
+        mpsc::{self, Receiver, Sender},
         Arc, Condvar, Mutex, MutexGuard,
     },
     thread::{self, Thread},
@@ -42,9 +44,6 @@ pub(super) struct Scheduler<S> {
     /// System run history.
     run_hist: HashSet<SystemId, S>,
 
-    /// Scheduler will pause when it needs to wait for workers for this timeout.
-    wait_timeout: Duration,
-
     /// A list holding pending tasks due to data dependency.
     pending: Pending<S>,
 
@@ -55,20 +54,15 @@ impl<S> Scheduler<S>
 where
     S: BuildHasher + Default,
 {
-    const DEFAULT_WAIT_TIMEOUT: Duration = Duration::from_secs(u64::MAX);
+    const RX_CHANNEL_TIMEOUT: Duration = Duration::from_secs(u64::MAX);
 
     pub(super) fn new() -> Self {
         Self {
             waits: WaitQueues::new(),
             run_hist: HashSet::default(),
-            wait_timeout: Self::DEFAULT_WAIT_TIMEOUT,
             pending: Pending::new(),
             cx: MainContext::new(),
         }
-    }
-
-    pub(super) fn set_wait_timeout(&mut self, dur: Duration) {
-        self.wait_timeout = dur;
     }
 
     pub(super) fn get_run_history(&self) -> &HashSet<SystemId, S> {
@@ -88,6 +82,17 @@ where
 
         for (i, worker) in workers.iter_mut().enumerate() {
             self.open_worker(i, worker, SubState::Open);
+        }
+
+        // Waits for all sub workers to be open.
+        while self.cx.open < workers.len() {
+            if let Ok(msg) = self.cx.rx_msg.recv_timeout(Self::RX_CHANNEL_TIMEOUT) {
+                debug_assert_eq!(
+                    mem::discriminant(&msg),
+                    mem::discriminant(&Message::Open(WorkerIndex::new(0)))
+                );
+                self.cx.open += 1;
+            }
         }
     }
 
@@ -113,14 +118,31 @@ where
     where
         W: Work,
     {
-        let mut status = self.cx.get_schedule_status();
-        status.is_exit = false;
-        drop(status);
+        // If there are open workers, closes them.
+        if self.cx.open > 0 {
+            self.close_workers_inner(|this, msg| {
+                debug_assert_eq!(
+                    mem::discriminant(&msg),
+                    mem::discriminant(&Message::Closed(WorkerIndex::new(0)))
+                );
+                this.cx.open -= 1;
+            });
+        }
+
+        // Unfortunately, worker doesn't own `SubContext`.
+        // It actually belongs to main thread, and worker uses its pointer.
+        // Therefore, when the main thread received `Closed`,
+        // It can destroy `SubContext` before `send()` is not fully finished.
+        // So we need additional safety gadget like this.
+        while self.cx.injector.closed.load(Ordering::Relaxed) < workers.len() as i32 {
+            thread::yield_now();
+        }
+        self.cx.injector.closed.store(0, Ordering::Relaxed);
 
         // Clears system run history.
         self.run_hist.clear();
 
-        // Closes workers.
+        // Parks workers.
         for worker in workers.iter_mut() {
             let must_true = worker.park();
             assert!(must_true);
@@ -128,6 +150,27 @@ where
 
         #[cfg(debug_assertions)]
         self.validate_clean();
+    }
+
+    fn close_workers_inner<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&mut Self, Message),
+    {
+        let mut status = self.cx.get_schedule_status();
+        status.is_exit = true;
+        self.cx.injector.signal_to_sub.notify_all();
+        drop(status);
+
+        // Waits for all sub workers to be closed.
+        while self.cx.open > 0 {
+            if let Ok(msg) = self.cx.rx_msg.recv_timeout(Self::RX_CHANNEL_TIMEOUT) {
+                f(self, msg);
+            }
+        }
+
+        let mut status = self.cx.get_schedule_status();
+        status.is_exit = false;
+        drop(status);
     }
 
     /// Schedules all systems(tasks).
@@ -145,26 +188,26 @@ where
         let mut cycle = sgroup.get_active_mut().iter_begin();
         let mut panicked = Vec::new();
 
-        // Waits for all sub workers to be open.
-        while self.cx.open < workers.len() {
-            if let Ok(msg) = self.cx.rx.recv_timeout(self.wait_timeout) {
-                self.handle_message(msg, &mut cycle, cache, &mut panicked, workers);
-            }
-        }
-
         loop {
             match state {
                 MainState::Look => {
-                    self.look(&mut state, &cycle, workers.len());
+                    state = self.look(&cycle, workers.len());
                 }
                 MainState::Pick => {
-                    self.pick(&mut state, &mut cycle, dedi, cache);
+                    let success = self.pick(&mut cycle, dedi, cache);
+                    if success {
+                        state = MainState::Look;
+                    } else {
+                        state = MainState::Wait;
+                    }
                 }
                 MainState::Work => {
-                    self.work(&mut state);
+                    self.work();
+                    state = MainState::Look;
                 }
                 MainState::Wait => {
-                    self.wait(&mut state, &mut cycle, cache, &mut panicked, workers);
+                    self.wait(&mut cycle, cache, &mut panicked, workers);
+                    state = MainState::Look;
                 }
                 MainState::Exit => {
                     self.exit(&mut cycle, cache, &mut panicked, workers);
@@ -183,7 +226,16 @@ where
         sgroup.tick();
     }
 
-    fn look(&mut self, state: &mut MainState, cycle: &SystemCycleIter<'_, S>, worker_len: usize) {
+    pub(super) fn consume_commands<F>(&self, mut f: F)
+    where
+        F: FnMut(Box<dyn Command>),
+    {
+        while let Ok(cmd) = self.cx.rx_cmd.try_recv() {
+            f(cmd);
+        }
+    }
+
+    fn look(&mut self, cycle: &SystemCycleIter<'_, S>, worker_len: usize) -> MainState {
         let is_pending_normal_empty = self.pending.normal.is_occupied_empty();
         let is_pending_dedi_empty = self.pending.dedi.is_occupied_empty();
         let ready_normal_len = self.cx.get_ready_queue().len();
@@ -191,25 +243,24 @@ where
         let cycle_cur = cycle.position();
 
         if ready_normal_len > worker_len && !is_ready_dedi_empty {
-            *state = MainState::Work;
+            MainState::Work
         } else if !cycle_cur.is_end() {
-            *state = MainState::Pick;
+            MainState::Pick
         } else if !is_ready_dedi_empty {
-            *state = MainState::Work;
+            MainState::Work
         } else if ready_normal_len > 0 || !is_pending_normal_empty || !is_pending_dedi_empty {
-            *state = MainState::Wait;
+            MainState::Wait
         } else {
-            *state = MainState::Exit;
+            MainState::Exit
         }
     }
 
     fn pick(
         &mut self,
-        state: &mut MainState,
         cycle: &mut SystemCycleIter<'_, S>,
         dedi: &HashSet<SystemId, S>,
         cache: &mut RefreshCacheStorage<'_, S>,
-    ) {
+    ) -> bool {
         // Takes out one system from the cycle list.
         let sdata = cycle.get().unwrap();
         let sid = sdata.id();
@@ -220,21 +271,21 @@ where
             self.run_hist.insert(sid);
             Self::push_ready_system(&mut self.cx, sdata, cache, is_dedi);
             cycle.next();
-            *state = MainState::Look;
+            true
         }
         // Data dependency detected, then tries to push it in pending list.
         else if self.pending.try_push(cycle.position(), is_dedi) {
             self.run_hist.insert(sid);
             cycle.next();
-            *state = MainState::Look;
+            true
         }
         // Pending list is full now, then just wait.
         else {
-            *state = MainState::Wait;
+            false
         }
     }
 
-    fn work(&mut self, state: &mut MainState) {
+    fn work(&mut self) {
         // Takes out one system from ready queue.
         let task = self.cx.dedi.pop_front().unwrap();
 
@@ -245,14 +296,10 @@ where
             }
             Task::Par(_) => unreachable!("main thread cannot do parallel tasks"),
         }
-
-        // Goes on to the next state.
-        *state = MainState::Look;
     }
 
     fn wait<W>(
         &mut self,
-        state: &mut MainState,
         cycle: &mut SystemCycleIter<'_, S>,
         cache: &mut RefreshCacheStorage<'_, S>,
         panicked: &mut Vec<(SystemId, Box<dyn Any + Send>)>,
@@ -261,15 +308,13 @@ where
         W: Work,
     {
         // Waits for message from sub workers.
-        if let Ok(msg) = self.cx.rx.recv_timeout(self.wait_timeout) {
+        if let Ok(msg) = self.cx.rx_msg.recv_timeout(Self::RX_CHANNEL_TIMEOUT) {
             self.handle_message(msg, cycle, cache, panicked, workers);
         }
-        while let Ok(msg) = self.cx.rx.try_recv() {
+        // Optimistically consumes messages as many as possible.
+        while let Ok(msg) = self.cx.rx_msg.try_recv() {
             self.handle_message(msg, cycle, cache, panicked, workers);
         }
-
-        // Goes on to the next state.
-        *state = MainState::Look;
     }
 
     fn exit<W>(
@@ -281,27 +326,10 @@ where
     ) where
         W: Work,
     {
-        let mut status = self.cx.get_schedule_status();
-        status.is_exit = true;
-        self.cx.injector.signal_to_sub.notify_all();
-        drop(status);
-
-        // Waits for all sub workers to be closed.
-        while self.cx.open > 0 {
-            if let Ok(msg) = self.cx.rx.recv_timeout(self.wait_timeout) {
-                self.handle_message(msg, cycle, cache, panicked, workers);
-            }
-        }
-
-        // Unfortunately, worker doesn't own `SubContext`.
-        // It actually belongs to main thread, and worker uses its pointer.
-        // Therefore, when the main thread received `Closed`,
-        // It can destroy `SubContext` before `send()` is not fully finished.
-        // So we need additional safety gadget like this.
-        while self.cx.injector.closed.load(Ordering::Relaxed) < workers.len() as i32 {
-            thread::yield_now();
-        }
-        self.cx.injector.closed.store(0, Ordering::Relaxed);
+        // Processes remain messages while waiting for all sub workers to be closed.
+        self.close_workers_inner(|this, msg| {
+            this.handle_message(msg, cycle, cache, panicked, workers);
+        });
     }
 
     fn handle_message<W>(
@@ -332,13 +360,6 @@ where
 
         self.pending_to_ready(cycle, cache, true);
         self.pending_to_ready(cycle, cache, false);
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            while let Ok(msg) = self.cx.rx.try_recv() {
-                self.handle_message(msg, cycle, cache, panicked, workers);
-            }
-        }
     }
 
     fn pending_to_ready(
@@ -539,18 +560,21 @@ struct MainContext {
     /// Ready dedicated tasks.
     dedi: VecDeque<Task>,
 
-    /// Receiving message channel from sub workers.
-    rx: ParkingReceiver<Message>,
+    /// Channel receving messages from sub workers.
+    rx_msg: ParkingReceiver<Message>,
 
-    /// Sending message channel to main thread.
-    /// This will be cloned and ditributed to sub workers.
-    _tx: ParkingSender<Message>,
+    /// Channel receving commands from sub workers.
+    rx_cmd: ParkingReceiver<Box<dyn Command>>,
+
+    /// This will be cloned and distributed to sub workers.
+    _tx_msg: ParkingSender<Message>,
+    _tx_cmd: ParkingSender<Box<dyn Command>>,
 }
 
 impl MainContext {
     fn new() -> Self {
-        let th = thread::current();
-        let (_tx, rx) = ParkingChannel::channel(th);
+        let (_tx_msg, rx_msg) = ParkingChannel::channel(thread::current());
+        let (_tx_cmd, rx_cmd) = ParkingChannel::channel(thread::current());
 
         Self {
             open: 0,
@@ -558,8 +582,10 @@ impl MainContext {
             stealers: [].into(),
             injector: Arc::new(MainInjector::new()),
             dedi: VecDeque::new(),
-            rx,
-            _tx,
+            rx_msg,
+            rx_cmd,
+            _tx_msg,
+            _tx_cmd,
         }
     }
 
@@ -595,7 +621,8 @@ impl MainContext {
                 local,
                 siblings: Arc::clone(&self.stealers),
                 injector: Arc::clone(&self.injector),
-                tx: self._tx.clone(),
+                tx_msg: self._tx_msg.clone(),
+                tx_cmd: self._tx_cmd.clone(),
                 _pin: PhantomPinned,
             };
             self.sub_cxs.push(Box::pin(sub_cx));
@@ -652,8 +679,8 @@ impl MainContext {
         assert!(!status.is_exit);
 
         // Is receiving channel empty?
-        match self.rx.try_recv() {
-            Err(TryRecvError::Empty) => {}
+        match self.rx_msg.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
             Ok(msg) => panic!("unexpected remaining msg in channel: {msg:?}"),
             Err(err) => panic!("unexpected error from channel: {err:?}"),
         }
@@ -683,8 +710,11 @@ pub struct SubContext {
     /// Main(global) queue.
     injector: Arc<MainInjector>,
 
-    /// Sending channel to main thread.
-    tx: ParkingSender<Message>,
+    /// Channel sending messages to main thread.
+    tx_msg: ParkingSender<Message>,
+
+    /// Channel sending commands to main thread.
+    tx_cmd: ParkingSender<Box<dyn Command>>,
 
     _pin: PhantomPinned,
 }
@@ -748,14 +778,18 @@ impl SubContext {
         }
     }
 
+    pub(super) fn send_command(&self, cmd: Box<dyn Command>) {
+        self.tx_cmd.send(cmd).unwrap();
+    }
+
     fn open(&self) {
         // Notifies open to main thread.
-        self.tx.send(Message::Open(self.widx)).unwrap();
+        self.tx_msg.send(Message::Open(self.widx)).unwrap();
     }
 
     fn close(&self) {
         // Notifies closed to main thread.
-        self.tx.send(Message::Closed(self.widx)).unwrap();
+        self.tx_msg.send(Message::Closed(self.widx)).unwrap();
 
         // We need an extra closing check to drop `SubContext` safely.
         // See `MainContext::exit()` for more info.
@@ -860,7 +894,7 @@ impl SubContext {
             }),
         };
 
-        self.tx.send(resp).unwrap();
+        self.tx_msg.send(resp).unwrap();
     }
 
     fn work_for_partask(&self, task: ParTask) {
@@ -1013,7 +1047,7 @@ impl SysTask {
     }
 }
 
-// ref: rayon-core JobRef.
+// ref: https://github.com/rayon-rs/rayon/blob/7543ed40c9a017dee32b3dc72b3ae819820e8366/rayon-core/src/job.rs#L33
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ParTask {
     data: NonNull<()>,
@@ -1049,7 +1083,7 @@ impl ParTask {
     }
 }
 
-// ref: rayon-core StackJob.
+// ref: https://github.com/rayon-rs/rayon/blob/7543ed40c9a017dee32b3dc72b3ae819820e8366/rayon-core/src/job.rs#L72
 #[derive(Debug)]
 struct ParTaskHolder<F, R> {
     f: UnsafeCell<Option<F>>,
@@ -1152,11 +1186,8 @@ impl<T> ParkingChannel<T> {
         {
             let (tx, rx) = mpsc::channel();
             (
-                ParkingSender {
-                    tx,
-                    th: _th.clone(),
-                },
-                ParkingReceiver { rx },
+                ParkingSender::new(tx, _th.clone()),
+                ParkingReceiver::new(rx),
             )
         }
     }
@@ -1169,13 +1200,17 @@ type ParkingSender<T> = Sender<T>;
 type ParkingReceiver<T> = Receiver<T>;
 
 #[cfg(target_arch = "wasm32")]
-pub use web::*;
+use web::*;
 
 #[cfg(target_arch = "wasm32")]
-mod web {
+pub(super) mod web {
     use super::*;
-    use std::panic::PanicInfo;
-    use wasm_bindgen::prelude::*;
+    use crate::util::prelude::*;
+    use std::{
+        fmt,
+        panic::PanicInfo,
+        sync::mpsc::{RecvTimeoutError, TryRecvError},
+    };
 
     thread_local! {
         /// Per-thread work that the thread is trying to do.
@@ -1197,11 +1232,15 @@ mod web {
 
     #[derive(Debug)]
     pub(super) struct ParkingSender<T> {
-        pub(super) tx: Sender<T>,
-        pub(super) th: Thread,
+        tx: Sender<T>,
+        th: Thread,
     }
 
     impl<T> ParkingSender<T> {
+        pub(super) const fn new(tx: Sender<T>, th: Thread) -> Self {
+            Self { tx, th }
+        }
+
         pub(super) fn send(&self, t: T) -> Result<(), std::sync::mpsc::SendError<T>> {
             let res = self.tx.send(t);
             self.th.unpark();
@@ -1218,41 +1257,65 @@ mod web {
         }
     }
 
-    #[derive(Debug)]
     pub(super) struct ParkingReceiver<T> {
-        pub(super) rx: Receiver<T>,
+        rx: Receiver<T>,
+
+        /// Takes the next value out of the channel and holds it.
+        /// to cooperate with `thread::park_timeout`.
+        next: Cell<Option<T>>,
     }
 
-    impl<T> ParkingReceiver<T>
-    where
-        T: Debug,
-    {
-        /// May return spuriously.
-        pub(super) fn recv_timeout(
-            &self,
-            timeout: Duration,
-        ) -> Result<T, std::sync::mpsc::RecvTimeoutError> {
-            // Why `thread::park_timeout()` instead of `Receiver::recv_timeout()`?
-            //
-            // In web, we cannot get time, but `Receiver::recv_timeout()` tries
-            // to get current time, so it fails to compile.
-            // Fortunately, in nightly-2024-06-20, `thread::park_timeout()` is
-            // implemented via wasm32::memory_atomic_wait32(), so it works.
-            // See "nightly-2024-06-20-.../lib/rustlib/src/rust/library/std/src/sys/pal/wasm/atomics/futex.rs"
-            thread::park_timeout(timeout);
+    impl<T> fmt::Debug for ParkingReceiver<T> {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_struct("ParkingReceiver")
+                .field("rx", &self.rx)
+                .finish_non_exhaustive()
+        }
+    }
 
-            self.rx.try_recv().map_err(|err| match err {
-                TryRecvError::Empty => std::sync::mpsc::RecvTimeoutError::Timeout,
-                TryRecvError::Disconnected => std::sync::mpsc::RecvTimeoutError::Disconnected,
-            })
+    impl<T> ParkingReceiver<T> {
+        pub(super) const fn new(rx: Receiver<T>) -> Self {
+            Self {
+                rx,
+                next: Cell::new(None),
+            }
+        }
+
+        /// May return spuriously.
+        //
+        // Why `thread::park_timeout()` instead of `Receiver::recv_timeout()`?
+        //
+        // In web, we cannot get time, but `Receiver::recv_timeout()` tries
+        // to get current time, so it fails to compile.
+        // Fortunately, in nightly-2024-06-20, `thread::park_timeout()` is
+        // implemented via wasm32::memory_atomic_wait32(), so it works.
+        // See "nightly-2024-06-20-.../lib/rustlib/src/rust/library/std/src/sys/pal/wasm/atomics/futex.rs"
+        pub(super) fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvTimeoutError> {
+            let cur = if let Some(value) = self.next.take() {
+                Ok(value)
+            } else {
+                thread::park_timeout(timeout);
+                self.rx.try_recv().map_err(|err| match err {
+                    TryRecvError::Empty => RecvTimeoutError::Timeout,
+                    TryRecvError::Disconnected => RecvTimeoutError::Disconnected,
+                })
+            };
+
+            self.next.set(self.rx.try_recv().ok());
+
+            cur
         }
 
         pub(super) fn try_recv(&self) -> Result<T, TryRecvError> {
-            self.rx.try_recv()
+            if let Some(value) = self.next.take() {
+                Ok(value)
+            } else {
+                self.rx.try_recv()
+            }
         }
     }
 
-    pub fn panic_hook(_info: &PanicInfo<'_>) {
+    pub fn web_panic_hook(_info: &PanicInfo<'_>) {
         let ptr = SUB_CONTEXT.get();
         if !ptr.is_dangling() {
             let widx = WORK_ID.get().widx;
@@ -1270,17 +1333,9 @@ mod web {
             // The corresponding thread was panicked a bit ago and
             // it's running this function now.
             let cx = unsafe { ptr.as_ref() };
-            let _ = cx.tx.send(Message::Panic(msg));
+            let _ = cx.tx_msg.send(Message::Panic(msg));
         }
 
-        let _ = worker_post_message(&"panic".into());
-    }
-
-    pub fn worker_global() -> web_sys::DedicatedWorkerGlobalScope {
-        js_sys::global().unchecked_into::<web_sys::DedicatedWorkerGlobalScope>()
-    }
-
-    pub fn worker_post_message(msg: &JsValue) -> Result<(), JsValue> {
-        worker_global().post_message(msg)
+        let _ = web_util::worker_post_message(&"panic".into());
     }
 }

@@ -8,14 +8,7 @@
   <script type="module">
     import * as wasm from "./pkg/wasm-index.js";
     await wasm.default();
-    const tester = new wasm.Tester();
-    addEventListener("complete", ev => {
-      tester.destroy();
-      // Printing out a text starting with "playwright" is a command
-      // to playwright.
-      // In this case, it notifies complete of the test.
-      console.log("playwright:complete");
-    }, false);
+    const app = new wasm.App();
   </script>
 </head>
 </html>

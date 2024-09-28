@@ -15,6 +15,12 @@ pub trait Work {
     fn name(&self) -> &str;
 }
 
+pub trait HoldWorkers {
+    type Worker: Work;
+
+    fn workers(&mut self) -> &mut [Self::Worker];
+}
+
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
 #[repr(transparent)]
 pub(crate) struct WorkerIndex(usize);

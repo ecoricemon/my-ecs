@@ -11,7 +11,6 @@ pub mod prelude {
     pub use query::{EntWrite, Read, ResRead, ResWrite, Write};
     pub use request::{Request, Response};
     pub use system::{
-        AsFnSystemKey, FnSystem, InsertPos, NonZeroTick, StructOrFnSystem, System, SystemGroup,
-        Tick,
+        AsFnSystemKey, FnSystem, InsertPos, NonZeroTick, System, SystemBond, SystemGroup, Tick,
     };
 }

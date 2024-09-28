@@ -1,8 +1,11 @@
 pub mod macros;
 pub mod str;
+pub mod web;
 
 pub mod prelude {
     pub use super::str as str_util;
+    #[cfg(target_arch = "wasm32")]
+    pub use super::web as web_util;
     pub use super::{Multi, Or, PowerOfTwo};
     pub use crate::{debug_format, impl_from_for_enum, log, tinfo, unwrap_or};
 }
