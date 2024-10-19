@@ -94,15 +94,15 @@ where
         }
     }
 
-    pub fn activate_len(&self) -> usize {
+    pub fn len_active(&self) -> usize {
         self.active.len()
     }
 
-    pub fn inactive_len(&self) -> usize {
+    pub fn len_inactive(&self) -> usize {
         self.inactive.len()
     }
 
-    pub fn poisoned_len(&self) -> usize {
+    pub fn len_poisoned(&self) -> usize {
         self.poisoned.len()
     }
 

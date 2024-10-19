@@ -1,9 +1,5 @@
 use super::ptr::SendSyncPtr;
-use crate::ecs::sched::par;
-use rayon::iter::{
-    plumbing::{Consumer, Producer, ProducerCallback, UnindexedConsumer},
-    IndexedParallelIterator, IntoParallelIterator, ParallelIterator,
-};
+use rayon::iter::IntoParallelIterator;
 use std::{
     marker::PhantomData,
     ops::{Deref, DerefMut},
@@ -123,9 +119,9 @@ pub trait AsFlatRawIter {
 /// It's recommended to wrap this iterator with concrete type and liftime.
 #[derive(Debug, Clone, Copy)]
 pub struct RawIter {
-    cur: SendSyncPtr<u8>,
-    end: SendSyncPtr<u8>,
-    stride: usize,
+    pub(crate) cur: SendSyncPtr<u8>,
+    pub(crate) end: SendSyncPtr<u8>,
+    pub(crate) stride: usize,
 }
 
 impl RawIter {
@@ -252,62 +248,6 @@ impl DerefMut for ParRawIter {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
-    }
-}
-
-impl ParallelIterator for ParRawIter {
-    type Item = SendSyncPtr<u8>;
-
-    #[inline]
-    fn drive_unindexed<C>(self, consumer: C) -> C::Result
-    where
-        C: UnindexedConsumer<Self::Item>,
-    {
-        par::bridge(self, consumer)
-    }
-}
-
-impl IndexedParallelIterator for ParRawIter {
-    #[inline]
-    fn len(&self) -> usize {
-        Self::len(self)
-    }
-
-    #[inline]
-    fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-        par::bridge(self, consumer)
-    }
-
-    #[inline]
-    fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
-        callback.callback(self)
-    }
-}
-
-impl Producer for ParRawIter {
-    type Item = SendSyncPtr<u8>;
-    type IntoIter = RawIter;
-
-    #[inline]
-    fn into_iter(self) -> Self::IntoIter {
-        self.into_seq()
-    }
-
-    #[inline]
-    fn split_at(self, index: usize) -> (Self, Self) {
-        let l_cur = self.cur;
-        let l_end = unsafe { self.cur.add(index * self.stride) };
-        let r_cur = l_end;
-        let r_end = self.end;
-
-        // Safety: Splitting is safe.
-        let (l, r) = unsafe {
-            (
-                RawIter::new(l_cur.as_nonnull(), l_end.as_nonnull(), self.stride),
-                RawIter::new(r_cur.as_nonnull(), r_end.as_nonnull(), self.stride),
-            )
-        };
-        (l.into_par(), r.into_par())
     }
 }
 
@@ -474,8 +414,8 @@ impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
 #[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct ParIter<'a, T> {
-    inner: ParRawIter,
-    _marker: PhantomData<&'a T>,
+    pub(crate) inner: ParRawIter,
+    pub(crate) _marker: PhantomData<&'a T>,
 }
 
 impl<'a, T> ParIter<'a, T> {
@@ -518,51 +458,6 @@ impl<'a, T> ParIter<'a, T> {
     }
 }
 
-impl<'a, T: Send + Sync> ParallelIterator for ParIter<'a, T> {
-    type Item = &'a T;
-
-    #[inline]
-    fn drive_unindexed<C>(self, consumer: C) -> C::Result
-    where
-        C: UnindexedConsumer<Self::Item>,
-    {
-        par::bridge(self, consumer)
-    }
-}
-
-impl<'a, T: Send + Sync> IndexedParallelIterator for ParIter<'a, T> {
-    #[inline]
-    fn len(&self) -> usize {
-        Self::len(self)
-    }
-
-    #[inline]
-    fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-        par::bridge(self, consumer)
-    }
-
-    #[inline]
-    fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
-        callback.callback(self)
-    }
-}
-
-impl<'a, T: Send + Sync> Producer for ParIter<'a, T> {
-    type Item = &'a T;
-    type IntoIter = Iter<'a, T>;
-
-    #[inline]
-    fn into_iter(self) -> Self::IntoIter {
-        self.into_seq()
-    }
-
-    #[inline]
-    fn split_at(self, index: usize) -> (Self, Self) {
-        let (l, r) = self.inner.split_at(index);
-        unsafe { (Self::from_raw(l), Self::from_raw(r)) }
-    }
-}
-
 /// [`ParRawIter`] with concrete type and lifetime.
 /// This is parallel version of [`IterMut`].
 //
@@ -572,8 +467,8 @@ impl<'a, T: Send + Sync> Producer for ParIter<'a, T> {
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct ParIterMut<'a, T> {
-    inner: ParRawIter,
-    _marker: PhantomData<&'a mut T>,
+    pub(crate) inner: ParRawIter,
+    pub(crate) _marker: PhantomData<&'a mut T>,
 }
 
 impl<'a, T> ParIterMut<'a, T> {
@@ -613,60 +508,6 @@ impl<'a, T> ParIterMut<'a, T> {
     #[inline]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-}
-
-impl<'a, T: Send + Sync> ParallelIterator for ParIterMut<'a, T> {
-    type Item = &'a mut T;
-
-    #[inline]
-    fn drive_unindexed<C>(self, consumer: C) -> C::Result
-    where
-        C: UnindexedConsumer<Self::Item>,
-    {
-        par::bridge(self, consumer)
-    }
-}
-
-impl<'a, T: Send + Sync> IndexedParallelIterator for ParIterMut<'a, T> {
-    #[inline]
-    fn len(&self) -> usize {
-        Self::len(self)
-    }
-
-    #[inline]
-    fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-        par::bridge(self, consumer)
-    }
-
-    #[inline]
-    fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
-        callback.callback(self)
-    }
-}
-
-impl<'a, T: Send + Sync> Producer for ParIterMut<'a, T> {
-    type Item = &'a mut T;
-    type IntoIter = IterMut<'a, T>;
-
-    #[inline]
-    fn into_iter(self) -> Self::IntoIter {
-        self.into_seq()
-    }
-
-    #[inline]
-    fn split_at(self, index: usize) -> (Self, Self) {
-        let (l, r) = self.inner.split_at(index);
-        (
-            Self {
-                inner: l,
-                _marker: PhantomData,
-            },
-            Self {
-                inner: r,
-                _marker: PhantomData,
-            },
-        )
     }
 }
 
@@ -747,48 +588,48 @@ impl ExactSizeIterator for NestedRawIter {
 pub struct FlatRawIter {
     /// Left [RawIter::cur].
     /// When [Iterator::next] is called, this pointer may be returned.
-    ll: SendSyncPtr<u8>,
+    pub(crate) ll: SendSyncPtr<u8>,
 
     /// Left [RawIter::end], which is right boundary of the left iterator.
     /// Note that `end` is not included in the range. It's the next pointer of
     /// the right bound.
-    lr: SendSyncPtr<u8>,
+    pub(crate) lr: SendSyncPtr<u8>,
 
     /// Right [RawIter::cur], which is left boundary of the right iterator.
-    rl: SendSyncPtr<u8>,
+    pub(crate) rl: SendSyncPtr<u8>,
 
     /// Right [RawIter::end].
     /// When [DoubleEndedIterator::next_back] is called,
     /// the pointer before this may be returned.
     /// Note that `end` is not included in the range. It's the next pointer of
     /// the right bound.
-    rr: SendSyncPtr<u8>,
+    pub(crate) rr: SendSyncPtr<u8>,
 
     /// Pointer to the actual container.
-    this: SendSyncPtr<u8>,
+    pub(crate) this: SendSyncPtr<u8>,
 
     /// Left chunk index for the next left [RawIter].
     /// This index always points to the next left iterator, not current one.
-    li: usize,
+    pub(crate) li: usize,
 
     /// Right chunk index for the next right [RawIter].
     /// This index always points to the current right iterator.
-    ri: usize,
+    pub(crate) ri: usize,
 
     /// Function that returns [RawIter] of a chunk.
-    fn_iter: unsafe fn(this: NonNull<u8>, chunk_idx: usize) -> RawIter,
+    pub(crate) fn_iter: unsafe fn(this: NonNull<u8>, chunk_idx: usize) -> RawIter,
 
     /// Function that returns [RawIter], chunk index, and offset from an item index.
-    fn_find: unsafe fn(this: NonNull<u8>, item_idx: usize) -> (RawIter, usize, usize),
+    pub(crate) fn_find: unsafe fn(this: NonNull<u8>, item_idx: usize) -> (RawIter, usize, usize),
 
     /// Stride in bytes.
-    stride: usize,
+    pub(crate) stride: usize,
 
     // used for parallel.
-    off: usize,
+    pub(crate) off: usize,
 
     /// Number of remaining items.
-    len: usize,
+    pub(crate) len: usize,
 }
 
 impl FlatRawIter {
@@ -949,147 +790,6 @@ impl DerefMut for ParFlatRawIter {
     #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
-    }
-}
-
-impl ParallelIterator for ParFlatRawIter {
-    type Item = SendSyncPtr<u8>;
-
-    #[inline]
-    fn drive_unindexed<C>(self, consumer: C) -> C::Result
-    where
-        C: UnindexedConsumer<Self::Item>,
-    {
-        par::bridge(self, consumer)
-    }
-}
-
-impl IndexedParallelIterator for ParFlatRawIter {
-    #[inline]
-    fn len(&self) -> usize {
-        Self::len(self)
-    }
-
-    #[inline]
-    fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-        par::bridge(self, consumer)
-    }
-
-    #[inline]
-    fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
-        callback.callback(self)
-    }
-}
-
-impl Producer for ParFlatRawIter {
-    type Item = SendSyncPtr<u8>;
-    type IntoIter = FlatRawIter;
-
-    #[inline]
-    fn into_iter(self) -> Self::IntoIter {
-        self.into_seq()
-    }
-
-    #[inline]
-    fn split_at(self, index: usize) -> (Self, Self) {
-        let (
-            RawIter {
-                cur: ml, end: mr, ..
-            },
-            mi,
-            off,
-        ) = unsafe { (self.fn_find)(self.this.as_nonnull(), self.off + index) };
-        let mm = unsafe { ml.add(off * self.stride) };
-
-        // Basic idea to split is somthing like so,
-        //
-        // Left chunk      Mid chunk         Right chunk
-        //      li              mi                ri
-        // [**********] .. [**********]  ..  [**********]
-        // ^          ^    ^     ^    ^      ^          ^
-        // ll         lr   ml    mm   mr     rl         rr
-        // |          |    |     ||    \     |          |
-        // [**********] .. [*****][*****] .. [**********]
-        // |---- Left child -----||---- Right child ----|
-        //
-        // But, we must consider something like
-        // - Imagine that mid chunk is left chunk, but not splitted
-        //   as depectied below.
-        //
-        // ml              mm   mr
-        // v               v    v
-        // [********************]
-        //              [****]
-        //              ^    ^
-        //              ll   lr
-
-        let is_left_chunk_cut = mi + 1 == self.li;
-        let lchild = if !is_left_chunk_cut {
-            FlatRawIter {
-                ll: self.ll,
-                lr: self.lr,
-                rl: ml,
-                rr: mm,
-                this: self.this,
-                li: self.li,
-                ri: mi,
-                fn_iter: self.fn_iter,
-                fn_find: self.fn_find,
-                stride: self.stride,
-                off: self.off,
-                len: index,
-            }
-        } else {
-            FlatRawIter {
-                ll: self.ll,
-                lr: mm,
-                rl: self.ll,
-                rr: mm,
-                this: self.this,
-                li: mi + 1,
-                ri: mi,
-                fn_iter: self.fn_iter,
-                fn_find: self.fn_find,
-                stride: self.stride,
-                off: self.off,
-                len: index,
-            }
-        };
-
-        let is_right_chunk_cut = mi == self.ri;
-        let rchild = if !is_right_chunk_cut {
-            FlatRawIter {
-                ll: mm,
-                lr: mr,
-                rl: self.rl,
-                rr: self.rr,
-                this: self.this,
-                li: mi + 1,
-                ri: self.ri,
-                fn_iter: self.fn_iter,
-                fn_find: self.fn_find,
-                stride: self.stride,
-                off: self.off + index,
-                len: self.len - index,
-            }
-        } else {
-            FlatRawIter {
-                ll: mm,
-                lr: self.rr,
-                rl: mm,
-                rr: self.rr,
-                this: self.this,
-                li: mi + 1,
-                ri: mi,
-                fn_iter: self.fn_iter,
-                fn_find: self.fn_find,
-                stride: self.stride,
-                off: self.off + index,
-                len: self.len - index,
-            }
-        };
-
-        (lchild.into_par(), rchild.into_par())
     }
 }
 
@@ -1257,7 +957,7 @@ impl<'a, T> DoubleEndedIterator for FlatIterMut<'a, T> {
 #[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct ParFlatIter<'a, T: 'a> {
-    inner: ParFlatRawIter,
+    pub(crate) inner: ParFlatRawIter,
     _marker: PhantomData<&'a T>,
 }
 
@@ -1301,52 +1001,6 @@ impl<'a, T> ParFlatIter<'a, T> {
     }
 }
 
-impl<'a, T: Send + Sync> ParallelIterator for ParFlatIter<'a, T> {
-    type Item = &'a T;
-
-    #[inline]
-    fn drive_unindexed<C>(self, consumer: C) -> C::Result
-    where
-        C: UnindexedConsumer<Self::Item>,
-    {
-        par::bridge(self, consumer)
-    }
-}
-
-impl<'a, T: Send + Sync> IndexedParallelIterator for ParFlatIter<'a, T> {
-    #[inline]
-    fn len(&self) -> usize {
-        Self::len(self)
-    }
-
-    #[inline]
-    fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-        par::bridge(self, consumer)
-    }
-
-    #[inline]
-    fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
-        callback.callback(self)
-    }
-}
-
-impl<'a, T: Send + Sync> Producer for ParFlatIter<'a, T> {
-    type Item = &'a T;
-    type IntoIter = FlatIter<'a, T>;
-
-    #[inline]
-    fn into_iter(self) -> Self::IntoIter {
-        self.into_seq()
-    }
-
-    #[inline]
-    fn split_at(self, index: usize) -> (Self, Self) {
-        let (l, r) = self.inner.split_at(index);
-        // Safety: Splitting doesn't affect both type and lifetime.
-        unsafe { (Self::from_raw(l), Self::from_raw(r)) }
-    }
-}
-
 /// [`ParFlatRawIter`] with concrete type and lifetime.
 /// This is parallel version of [`FlatIterMut`].
 //
@@ -1356,7 +1010,7 @@ impl<'a, T: Send + Sync> Producer for ParFlatIter<'a, T> {
 #[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct ParFlatIterMut<'a, T: 'a> {
-    inner: ParFlatRawIter,
+    pub(crate) inner: ParFlatRawIter,
     _marker: PhantomData<&'a mut T>,
 }
 
@@ -1397,52 +1051,6 @@ impl<'a, T> ParFlatIterMut<'a, T> {
     #[inline]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
-    }
-}
-
-impl<'a, T: Send + Sync> ParallelIterator for ParFlatIterMut<'a, T> {
-    type Item = &'a mut T;
-
-    #[inline]
-    fn drive_unindexed<C>(self, consumer: C) -> C::Result
-    where
-        C: UnindexedConsumer<Self::Item>,
-    {
-        par::bridge(self, consumer)
-    }
-}
-
-impl<'a, T: Send + Sync> IndexedParallelIterator for ParFlatIterMut<'a, T> {
-    #[inline]
-    fn len(&self) -> usize {
-        Self::len(self)
-    }
-
-    #[inline]
-    fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-        par::bridge(self, consumer)
-    }
-
-    #[inline]
-    fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
-        callback.callback(self)
-    }
-}
-
-impl<'a, T: Send + Sync> Producer for ParFlatIterMut<'a, T> {
-    type Item = &'a mut T;
-    type IntoIter = FlatIterMut<'a, T>;
-
-    #[inline]
-    fn into_iter(self) -> Self::IntoIter {
-        self.into_seq()
-    }
-
-    #[inline]
-    fn split_at(self, index: usize) -> (Self, Self) {
-        let (l, r) = self.inner.split_at(index);
-        // Safety: Splitting doesn't affect both type and lifetime.
-        unsafe { (Self::from_raw(l), Self::from_raw(r)) }
     }
 }
 

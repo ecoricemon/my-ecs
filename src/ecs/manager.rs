@@ -5,7 +5,7 @@ use super::{
         storage::{AsEntityDesc, EntityContainer, EntityDesc, EntityStorage},
     },
     resource::{MaybeOwned, Resource, ResourceKey, ResourceStorage},
-    sched::Scheduler,
+    sched::ctrl::Scheduler,
     sys::{
         request::StoreRequestInfo,
         storage::SystemStorage,
@@ -58,6 +58,21 @@ pub trait EcsEntry {
         Sys: System + 'static;
 
     fn append_once_system<T, Req, F>(
+        &mut self, gi: usize, sys: T
+    ) -> EcsResult<SystemId>
+    where
+        T: Into<FnOnceSystem<Req, F>>,
+        FnOnceSystem<Req, F>: System + 'static,
+        F: Send;
+
+    fn insert_system<T, Sys>(
+        &mut self, gi: usize, live: NonZeroTick, volatile: bool, sys: T,
+    ) -> EcsResult<SystemId>
+    where
+        T: Into<SystemBond<Sys>>,
+        Sys: System + 'static;
+
+    fn insert_once_system<T, Req, F>(
         &mut self, gi: usize, sys: T
     ) -> EcsResult<SystemId>
     where
@@ -375,6 +390,38 @@ impl<'ecs> EcsEntry for Ecs<'ecs> {
         self.append_system(gi, LIVE, VOLATILE, f)
     }
 
+    fn insert_system<T, Sys>(
+        &mut self,
+        gi: usize,
+        live: NonZeroTick,
+        volatile: bool,
+        sys: T,
+    ) -> EcsResult<SystemId>
+    where
+        T: Into<SystemBond<Sys>>,
+        Sys: System + 'static,
+    {
+        let res = self.register_system(gi, volatile, sys);
+        if let Ok(sid) = res.as_ref() {
+            let must_ok = self.activate_system(sid, InsertPos::Front, live);
+            debug_assert!(must_ok.is_ok());
+        }
+        res
+    }
+
+    fn insert_once_system<T, Req, F>(&mut self, gi: usize, sys: T) -> EcsResult<SystemId>
+    where
+        T: Into<FnOnceSystem<Req, F>>,
+        FnOnceSystem<Req, F>: System + 'static,
+        F: Send,
+    {
+        // FnOnce system will be removed from memory when it's expired.
+        const VOLATILE: bool = true;
+        const LIVE: NonZeroTick = unsafe { NonZeroTick::new_unchecked(1) };
+        let f: FnOnceSystem<Req, F> = sys.into();
+        self.insert_system(gi, LIVE, VOLATILE, f)
+    }
+
     fn register_entity(&mut self, desc: EntityDesc) -> EntityIndex {
         unsafe {
             let vtable = self.vtable.as_ref();
@@ -432,9 +479,7 @@ pub struct EcsApp<Wp, S = std::hash::RandomState, const N: usize = 1> {
 
     cache: CacheStorage<S>,
 
-    sched: Scheduler<S>,
-
-    worker_pool: Wp,
+    sched: Scheduler<Wp, S>,
 
     vtable: EcsVTable,
 }
@@ -453,22 +498,20 @@ where
     Wp: HoldWorkers + Default + 'static,
     S: BuildHasher + Default + 'static,
 {
-    fn new(mut worker_pool: Wp) -> Self {
-        assert!(!worker_pool.workers().is_empty());
-
+    fn new(worker_pool: Wp) -> Self {
         Self {
             sys: SystemStorage::new(),
             ent: EntityStorage::new(),
             res: ResourceStorage::new(),
             cache: CacheStorage::new(),
-            sched: Scheduler::new(),
-            worker_pool,
+            sched: Scheduler::new(worker_pool),
             vtable: EcsVTable::new::<Wp, S, N>(),
         }
     }
 
-    pub fn take_worker_pool(&mut self) -> Wp {
-        mem::take(&mut self.worker_pool)
+    pub fn set_worker_pool(&mut self, worker_pool: Wp) -> Wp {
+        let old = mem::replace(&mut self.sched, Scheduler::new(worker_pool));
+        old.into_worker_pool()
     }
 
     pub fn get_entity_storage(&self) -> &EntityStorage<S> {
@@ -492,8 +535,8 @@ where
     }
 
     #[must_use]
-    pub fn run(&mut self) -> WorkingEcs<'_, Wp, S, N> {
-        WorkingEcs::new(self)
+    pub fn run(&mut self) -> RunningEcs<'_, Wp, S, N> {
+        RunningEcs::new(self)
     }
 
     fn register_system_inner(
@@ -503,20 +546,20 @@ where
         skey: SystemKey,
         sdata: SystemData,
     ) -> EcsResult<()> {
-        validate_request(self, &sdata)?;
+        validate_request::<Wp, S, N>(self, &sdata)?;
         self.cache.create(&sdata, &self.ent, &self.res);
         return self.sys.register(gi, skey, sdata, volatile, &self.res);
 
         // === Internal helper functions ===
 
-        fn validate_request<W, S, const N: usize>(
-            this: &EcsApp<W, S, N>,
+        fn validate_request<Wp, S, const N: usize>(
+            this: &EcsApp<Wp, S, N>,
             sdata: &SystemData,
         ) -> EcsResult<()>
         where
             S: BuildHasher + Default + 'static,
         {
-            // Validations procedure is as follows.
+            // Validation procedure is as follows.
             // 1. Validates `Read`, `Write`, `ResRead`, `ResWrite`, and `EntWrite`.
             // 2. Validates if queried "Resources" and "Entities" exist.
             //    When it comes to "resource and entity queries",
@@ -589,14 +632,14 @@ where
             InsertPos::After(after) => {
                 let sgroup = self.sys.get_group_mut(after.group_index() as usize);
                 if let Some(next) = sgroup.get_active_mut().peek_next(after) {
-                    if self.sched.get_run_history().contains(&next.id()) {
+                    if self.sched.get_record_mut().contains(&next.id()) {
                         live = live.saturating_add(1);
                     }
                 }
             }
             InsertPos::Back => { /* target must be run in this time */ }
             InsertPos::Front => {
-                if !self.sched.get_run_history().is_empty() {
+                if !self.sched.get_record_mut().is_empty() {
                     live = live.saturating_add(1);
                 }
             }
@@ -622,7 +665,7 @@ where
                 .unwrap_unchecked()
         };
         self.sched
-            .get_wait_queues()
+            .get_wait_queues_mut()
             .initialize_entity_queue(ei.index(), cont.get_column_num());
 
         ei
@@ -636,19 +679,18 @@ where
     ) -> Result<(), MaybeOwned> {
         let index = self.res.register(key, value, is_dedicated)?;
         self.sched
-            .get_wait_queues()
+            .get_wait_queues_mut()
             .initialize_resource_queue(index);
         Ok(())
     }
 
-    fn handle_commands(&mut self) {
+    fn process_buffered_commands(&mut self) {
         // `raw` borrows `Self` mutably, so we cannot access `sched` in it.
         // So captures its address first.
-        let sched_ptr: *const Scheduler<S> = &self.sched as *const _;
+        let sched_ptr: *const Scheduler<_, _> = &self.sched as *const _;
         let raw = Ecs::new(self);
 
-        // Safety: `raw` cannot manipulate command channel.
-        // We can safely consume command channel.
+        // TODO: Removes unsafefy. May should reverse call hierarchy.
         unsafe {
             let sched = sched_ptr.as_ref().unwrap_unchecked();
             sched.consume_commands(|cmd| {
@@ -733,6 +775,29 @@ where
         Ecs::new(self).append_once_system(gi, sys)
     }
 
+    fn insert_system<T, Sys>(
+        &mut self,
+        gi: usize,
+        live: NonZeroTick,
+        volatile: bool,
+        sys: T,
+    ) -> EcsResult<SystemId>
+    where
+        T: Into<SystemBond<Sys>>,
+        Sys: System + 'static,
+    {
+        Ecs::new(self).insert_system(gi, live, volatile, sys)
+    }
+
+    fn insert_once_system<T, Req, F>(&mut self, gi: usize, sys: T) -> EcsResult<SystemId>
+    where
+        T: Into<FnOnceSystem<Req, F>>,
+        FnOnceSystem<Req, F>: System + 'static,
+        F: Send,
+    {
+        Ecs::new(self).insert_once_system(gi, sys)
+    }
+
     fn register_entity(&mut self, desc: EntityDesc) -> EntityIndex {
         Ecs::new(self).register_entity(desc)
     }
@@ -760,7 +825,7 @@ where
 
 impl<Wp: 'static, S: 'static, const N: usize> Resource for EcsApp<Wp, S, N> {}
 
-pub struct WorkingEcs<'ecs, Wp, S, const N: usize>
+pub struct RunningEcs<'ecs, Wp, S, const N: usize>
 where
     Wp: HoldWorkers + Default + 'static,
     S: BuildHasher + Default + 'static,
@@ -769,7 +834,7 @@ where
     gi: usize,
 }
 
-impl<'ecs, Wp, S, const N: usize> WorkingEcs<'ecs, Wp, S, N>
+impl<'ecs, Wp, S, const N: usize> RunningEcs<'ecs, Wp, S, N>
 where
     Wp: HoldWorkers + Default + 'static,
     S: BuildHasher + Default + 'static,
@@ -777,7 +842,7 @@ where
     const UNINIT: usize = usize::MAX;
 
     fn new(ecs: &'ecs mut EcsApp<Wp, S, N>) -> Self {
-        ecs.sched.open_workers(ecs.worker_pool.workers());
+        ecs.sched.open_workers();
 
         Self {
             ecs,
@@ -785,20 +850,31 @@ where
         }
     }
 
+    /// # Panics
+    ///
+    /// Panics if it's called recursively.
     pub fn call<F>(&mut self, gi: usize, f: &mut F) -> &mut Self
     where
         F: FnMut(&mut Self),
     {
+        assert!(self.gi == Self::UNINIT, "recursive call() detected");
         self.gi = gi;
+
         f(self);
-        self.ecs.handle_commands();
+        self.ecs.process_buffered_commands();
+
         self.gi = Self::UNINIT;
         self
     }
 
+    /// # Panics
+    ///
+    /// Panics if it's not called in [`call`].
+    ///
+    /// [`call`]: Self::call
     pub fn schedule(&mut self) {
         let Self { ecs, gi } = self;
-        assert_ne!(*gi, Self::UNINIT);
+        assert!(*gi != Self::UNINIT, "schedule() must be called in call()");
 
         let mut cache = RefreshCacheStorage {
             cache: &mut ecs.cache.items,
@@ -809,14 +885,27 @@ where
         let dedi = &ecs.sys.dedi_sys;
 
         if let Some(sgroup) = ecs.sys.sgroups.get_mut(*gi) {
-            ecs.sched
-                .execute(sgroup, ecs.worker_pool.workers(), &mut cache, dedi);
+            ecs.sched.execute(sgroup, &mut cache, dedi);
         } else {
-            panic!(
-                "{}",
-                debug_format!("system group index({gi}) is out of bounds")
-            );
+            let errmsg = debug_format!("system group index({gi}) is out of bounds");
+            panic!("{errmsg}");
         }
+    }
+
+    pub fn wait_for_idle(&mut self) -> &mut Self {
+        if self.ecs.sched.num_open_workers() == 0 {
+            return self;
+        }
+
+        self.ecs.sched.wait_for_idle();
+        self
+    }
+
+    pub fn is_empty(&self) -> bool {
+        // No active system
+        self.ecs.sys.sgroups.iter().all(|sgroup| sgroup.len_active() == 0)
+        // No buffered command
+        && !self.ecs.sched.has_command()
     }
 
     pub fn sys(&self) -> &SystemGroup<S> {
@@ -824,14 +913,12 @@ where
     }
 }
 
-impl<'ecs, Wp, S, const N: usize> Drop for WorkingEcs<'ecs, Wp, S, N>
+impl<'ecs, Wp, S, const N: usize> Drop for RunningEcs<'ecs, Wp, S, N>
 where
     Wp: HoldWorkers + Default + 'static,
     S: BuildHasher + Default + 'static,
 {
     fn drop(&mut self) {
-        let Self { ecs, .. } = self;
-
-        ecs.sched.close_workers(ecs.worker_pool.workers());
+        self.ecs.sched.close_workers();
     }
 }

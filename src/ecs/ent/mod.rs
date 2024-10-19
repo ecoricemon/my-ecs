@@ -1,6 +1,6 @@
 pub mod component;
 pub mod entity;
-pub mod sparse_set;
+mod sparse_set;
 pub mod storage;
 
 pub mod prelude {
@@ -8,4 +8,5 @@ pub mod prelude {
 
     pub use component::Component;
     pub use entity::{Entity, EntityIndex, EntityKey, EntityKeyKind, EntityName, EntityTypeId};
+    pub use storage::{AsEntityDesc, EntityContainer, EntityDesc};
 }

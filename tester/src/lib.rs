@@ -3,7 +3,7 @@
 use my_ecs::prelude::*;
 
 // === Defines number of workers ===
-const NUM_WORKERS: usize = 5;
+const NUM_WORKERS: usize = 3;
 
 // === Defines `Component` ===
 #[derive(Component)]
@@ -177,7 +177,7 @@ fn try_register_fn_system(worker_pool: WorkerPool) -> WorkerPool {
     // R, W, RR, RW, EW
     test!(r=r w=w rr=rr rw=rw ew=ew);
 
-    ecs.take_worker_pool()
+    ecs.set_worker_pool(WorkerPool::default())
 }
 
 fn try_open_close(worker_pool: WorkerPool) -> WorkerPool {
@@ -191,7 +191,7 @@ fn try_open_close(worker_pool: WorkerPool) -> WorkerPool {
         let _ = ecs.run();
     }
 
-    ecs.take_worker_pool()
+    ecs.set_worker_pool(WorkerPool::default())
 }
 
 fn try_schedule(worker_pool: WorkerPool) -> WorkerPool {
@@ -248,7 +248,7 @@ fn try_schedule(worker_pool: WorkerPool) -> WorkerPool {
 
     assert!(ecs.collect_poisoned_systems().is_empty());
 
-    return ecs.take_worker_pool();
+    return ecs.set_worker_pool(WorkerPool::default());
 
     // === Internal struct and functions ===
 
@@ -331,20 +331,21 @@ fn try_command(worker_pool: WorkerPool) -> WorkerPool {
     // Creates instance.
     let mut ecs = Ecs::default(worker_pool);
 
-    // Counts number of system execution appended by a command.
+    // Counts number of system execution.
     let count = Arc::new(Mutex::new(0));
     let c_count = Arc::clone(&count);
 
-    // Puts a command in a system.
+    // In system, we're appending another system to increase the count.
     ecs.append_once_system(0, move || {
         // Command will append a system at the end of cycle.
-        cmd::put_command(|mut ecs: Ecs| {
+        let cmd = move |mut ecs: Ecs| {
             ecs.append_system(0, NonZeroTick::MAX, true, move || {
                 let mut c = c_count.lock().unwrap();
                 *c += 1;
             })
             .unwrap();
-        });
+        };
+        schedule_command(cmd);
     })
     .unwrap();
 
@@ -358,7 +359,7 @@ fn try_command(worker_pool: WorkerPool) -> WorkerPool {
     // In the first run, the system was not registered yet.
     assert_eq!(*count.lock().unwrap(), REPEAT - 1);
 
-    ecs.take_worker_pool()
+    ecs.set_worker_pool(WorkerPool::default())
 }
 
 fn try_parallel_task(worker_pool: WorkerPool) -> WorkerPool {
@@ -394,7 +395,7 @@ fn try_parallel_task(worker_pool: WorkerPool) -> WorkerPool {
 
     assert!(ecs.collect_poisoned_systems().is_empty());
 
-    ecs.take_worker_pool()
+    ecs.set_worker_pool(WorkerPool::default())
 }
 
 fn try_recover_from_panic(worker_pool: WorkerPool) -> (WorkerPool, i32) {
@@ -456,7 +457,10 @@ fn try_recover_from_panic(worker_pool: WorkerPool) -> (WorkerPool, i32) {
     .unwrap();
 
     const NUM_EXPECTED_PANICS: i32 = 1;
-    (ecs.take_worker_pool(), NUM_EXPECTED_PANICS)
+    (
+        ecs.set_worker_pool(WorkerPool::default()),
+        NUM_EXPECTED_PANICS,
+    )
 }
 
 fn try_recover_from_panic_in_parallel_task(worker_pool: WorkerPool) -> (WorkerPool, i32) {
@@ -533,7 +537,10 @@ fn try_recover_from_panic_in_parallel_task(worker_pool: WorkerPool) -> (WorkerPo
     .unwrap();
 
     const NUM_EXPECTED_PANICS: i32 = 1;
-    (ecs.take_worker_pool(), NUM_EXPECTED_PANICS)
+    (
+        ecs.set_worker_pool(WorkerPool::default()),
+        NUM_EXPECTED_PANICS,
+    )
 }
 
 // === Non-web tests ===

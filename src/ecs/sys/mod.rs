@@ -1,7 +1,7 @@
 pub mod filter;
 pub mod query;
 pub mod request;
-pub mod storage;
+pub(super) mod storage;
 pub mod system;
 
 pub mod prelude {

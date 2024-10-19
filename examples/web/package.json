@@ -1,14 +1,14 @@
 {
   "type": "module",
   "author": "ecoricemon",
-  "name": "tester",
+  "name": "example-web",
   "version": "0.0.0",
   "scripts": {
     "wasm-common": "cross-env RUSTFLAGS=\"-C target-feature=+atomics,+bulk-memory,+mutable-globals\" rustup run nightly-2024-06-20 wasm-pack build --target web --out-name wasm-index --out-dir pkg .",
     "wasm": "npm run wasm-common -- --dev -Z build-std=panic_abort,std",
     "bundle": "vite build --mode development",
-    "clean": "rimraf --glob dist pkg test-results",
-    "clean-all": "rimraf --glob dist pkg test-results target node_modules",
+    "clean": "rimraf --glob dist pkg",
+    "clean-all": "rimraf --glob dist pkg target node_modules",
     "build": "run-s clean wasm bundle",
     "start": "vite preview"
   },

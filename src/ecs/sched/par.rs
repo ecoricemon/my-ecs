@@ -1,13 +1,18 @@
-use super::{ParTask, ParTaskHolder, Task, SUB_CONTEXT};
-use rayon::iter::{
-    plumbing::{Consumer, Folder, Producer, ProducerCallback, Reducer},
-    IndexedParallelIterator,
+use super::{
+    ctrl::SUB_CONTEXT,
+    task::{ParTask, ParTaskHolder, TaskId},
 };
+use crate::ds::prelude::*;
+use rayon::iter::{
+    plumbing::{Consumer, Folder, Producer, ProducerCallback, Reducer, UnindexedConsumer},
+    IndexedParallelIterator, ParallelIterator,
+};
+use std::marker::PhantomData;
 
 // ref: https://github.com/rayon-rs/rayon/blob/7543ed40c9a017dee32b3dc72b3ae819820e8366/rayon-core/src/lib.rs#L851
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub(super) struct FnContext {
+pub(crate) struct FnContext {
     migrated: bool,
 }
 
@@ -18,6 +23,7 @@ impl FnContext {
 
 // ref: https://github.com/rayon-rs/rayon/blob/7543ed40c9a017dee32b3dc72b3ae819820e8366/src/iter/plumbing/mod.rs#L255C1-L255C18
 #[derive(Debug, Clone, Copy)]
+#[repr(transparent)]
 struct Splitter {
     splits: usize,
 }
@@ -27,9 +33,8 @@ impl Splitter {
         let ptr = SUB_CONTEXT.get();
         (!ptr.is_dangling()).then(|| {
             // Safety: `ptr` is a valid pointer.
-            let num_workers = unsafe { ptr.as_ref().siblings.len() };
             Self {
-                splits: num_workers,
+                splits: unsafe { ptr.as_ref().comm().num_siblings() },
             }
         })
     }
@@ -166,13 +171,11 @@ where
 {
     let cx = unsafe { SUB_CONTEXT.get().as_ref() };
 
-    // Puts 'Right task' into local queue.
     let r_holder = ParTaskHolder::new(r_f);
     let r_task = unsafe { ParTask::new(&r_holder) };
-    let r_task_id = r_task.id();
-    cx.local.push(Task::Par(r_task));
+    let r_task_id = TaskId::Parallel(r_task);
 
-    // Nofifies new task to another worker.
+    // Puts 'Right task' into local queue and nofifies it to another worker.
     //
     // TODO: Optimize.
     // compare to rayon, too many steal operations take place.
@@ -180,10 +183,8 @@ where
     // I guess this frequent notification is one of the reasons.
     // Anyway, I mitigated it by reducing split count.
     // See `Splitter::try_split`.
-    let mut status = cx.injector.status.lock().unwrap();
-    status.has_ready_task = true;
-    cx.injector.signal_to_sub.notify_one();
-    drop(status);
+    cx.comm().push_parallel_task(r_task);
+    cx.comm().signal().sub().notify_one();
 
     // Executes 'Left task'.
     #[cfg(not(target_arch = "wasm32"))]
@@ -195,7 +196,7 @@ where
                 // Panicked in `Left task`.
                 // But we need to hold `Right task` until it's finished
                 // if it was stolen by another worker.
-                if let Some(task) = cx.local.pop() {
+                if let Some(task) = cx.comm().pop_local() {
                     debug_assert_eq!(task.id(), r_task_id);
                 } else {
                     while !r_holder.is_executed() {
@@ -214,7 +215,7 @@ where
 
     // If we could find a task from the local queue, it must be 'Right task',
     // because the queue is LIFO fashion.
-    if let Some(task) = cx.local.pop() {
+    if let Some(task) = cx.comm().pop_local() {
         debug_assert_eq!(task.id(), r_task_id);
         r_task.execute(FnContext::NOT_MIGRATED);
     } else {
@@ -223,7 +224,7 @@ where
         // While we wait for 'Right task' to be finished by the another worker,
         // steals some tasks and executes them.
         while !r_holder.is_executed() {
-            let mut steal = cx.search_siblings();
+            let mut steal = cx.comm().search();
             cx.work(&mut steal);
             // TODO: Busy waiting if it failed to steal tasks.
         }
@@ -232,5 +233,398 @@ where
     match unsafe { r_holder.return_or_panic_unchecked() } {
         Ok(r_res) => (l_res, r_res),
         Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+// Implements rayon's traits for iterators.
+mod impl_iter {
+    use super::*;
+
+    impl ParallelIterator for ParRawIter {
+        type Item = SendSyncPtr<u8>;
+
+        #[inline]
+        fn drive_unindexed<C>(self, consumer: C) -> C::Result
+        where
+            C: UnindexedConsumer<Self::Item>,
+        {
+            bridge(self, consumer)
+        }
+    }
+
+    impl IndexedParallelIterator for ParRawIter {
+        #[inline]
+        fn len(&self) -> usize {
+            Self::len(self)
+        }
+
+        #[inline]
+        fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
+            bridge(self, consumer)
+        }
+
+        #[inline]
+        fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
+            callback.callback(self)
+        }
+    }
+
+    impl Producer for ParRawIter {
+        type Item = SendSyncPtr<u8>;
+        type IntoIter = RawIter;
+
+        #[inline]
+        fn into_iter(self) -> Self::IntoIter {
+            self.into_seq()
+        }
+
+        #[inline]
+        fn split_at(self, index: usize) -> (Self, Self) {
+            let l_cur = self.cur;
+            let l_end = unsafe { self.cur.add(index * self.stride) };
+            let r_cur = l_end;
+            let r_end = self.end;
+
+            // Safety: Splitting is safe.
+            let (l, r) = unsafe {
+                (
+                    RawIter::new(l_cur.as_nonnull(), l_end.as_nonnull(), self.stride),
+                    RawIter::new(r_cur.as_nonnull(), r_end.as_nonnull(), self.stride),
+                )
+            };
+            (l.into_par(), r.into_par())
+        }
+    }
+
+    impl<'a, T: Send + Sync> ParallelIterator for ParIter<'a, T> {
+        type Item = &'a T;
+
+        #[inline]
+        fn drive_unindexed<C>(self, consumer: C) -> C::Result
+        where
+            C: UnindexedConsumer<Self::Item>,
+        {
+            bridge(self, consumer)
+        }
+    }
+
+    impl<'a, T: Send + Sync> IndexedParallelIterator for ParIter<'a, T> {
+        #[inline]
+        fn len(&self) -> usize {
+            Self::len(self)
+        }
+
+        #[inline]
+        fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
+            bridge(self, consumer)
+        }
+
+        #[inline]
+        fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
+            callback.callback(self)
+        }
+    }
+
+    impl<'a, T: Send + Sync> Producer for ParIter<'a, T> {
+        type Item = &'a T;
+        type IntoIter = Iter<'a, T>;
+
+        #[inline]
+        fn into_iter(self) -> Self::IntoIter {
+            self.into_seq()
+        }
+
+        #[inline]
+        fn split_at(self, index: usize) -> (Self, Self) {
+            let (l, r) = self.inner.split_at(index);
+            unsafe { (Self::from_raw(l), Self::from_raw(r)) }
+        }
+    }
+
+    impl<'a, T: Send + Sync> ParallelIterator for ParIterMut<'a, T> {
+        type Item = &'a mut T;
+
+        #[inline]
+        fn drive_unindexed<C>(self, consumer: C) -> C::Result
+        where
+            C: UnindexedConsumer<Self::Item>,
+        {
+            bridge(self, consumer)
+        }
+    }
+
+    impl<'a, T: Send + Sync> IndexedParallelIterator for ParIterMut<'a, T> {
+        #[inline]
+        fn len(&self) -> usize {
+            Self::len(self)
+        }
+
+        #[inline]
+        fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
+            bridge(self, consumer)
+        }
+
+        #[inline]
+        fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
+            callback.callback(self)
+        }
+    }
+
+    impl<'a, T: Send + Sync> Producer for ParIterMut<'a, T> {
+        type Item = &'a mut T;
+        type IntoIter = IterMut<'a, T>;
+
+        #[inline]
+        fn into_iter(self) -> Self::IntoIter {
+            self.into_seq()
+        }
+
+        #[inline]
+        fn split_at(self, index: usize) -> (Self, Self) {
+            let (l, r) = self.inner.split_at(index);
+            (
+                Self {
+                    inner: l,
+                    _marker: PhantomData,
+                },
+                Self {
+                    inner: r,
+                    _marker: PhantomData,
+                },
+            )
+        }
+    }
+
+    impl ParallelIterator for ParFlatRawIter {
+        type Item = SendSyncPtr<u8>;
+
+        #[inline]
+        fn drive_unindexed<C>(self, consumer: C) -> C::Result
+        where
+            C: UnindexedConsumer<Self::Item>,
+        {
+            bridge(self, consumer)
+        }
+    }
+
+    impl IndexedParallelIterator for ParFlatRawIter {
+        #[inline]
+        fn len(&self) -> usize {
+            Self::len(self)
+        }
+
+        #[inline]
+        fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
+            bridge(self, consumer)
+        }
+
+        #[inline]
+        fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
+            callback.callback(self)
+        }
+    }
+
+    impl Producer for ParFlatRawIter {
+        type Item = SendSyncPtr<u8>;
+        type IntoIter = FlatRawIter;
+
+        #[inline]
+        fn into_iter(self) -> Self::IntoIter {
+            self.into_seq()
+        }
+
+        #[inline]
+        fn split_at(self, index: usize) -> (Self, Self) {
+            let (
+                RawIter {
+                    cur: ml, end: mr, ..
+                },
+                mi,
+                off,
+            ) = unsafe { (self.fn_find)(self.this.as_nonnull(), self.off + index) };
+            let mm = unsafe { ml.add(off * self.stride) };
+
+            // Basic idea to split is somthing like so,
+            //
+            // Left chunk      Mid chunk         Right chunk
+            //      li              mi                ri
+            // [**********] .. [**********]  ..  [**********]
+            // ^          ^    ^     ^    ^      ^          ^
+            // ll         lr   ml    mm   mr     rl         rr
+            // |          |    |     ||    \     |          |
+            // [**********] .. [*****][*****] .. [**********]
+            // |---- Left child -----||---- Right child ----|
+            //
+            // But, we must consider something like
+            // - Imagine that mid chunk is left chunk, but not splitted
+            //   as depectied below.
+            //
+            // ml              mm   mr
+            // v               v    v
+            // [********************]
+            //              [****]
+            //              ^    ^
+            //              ll   lr
+
+            let is_left_chunk_cut = mi + 1 == self.li;
+            let lchild = if !is_left_chunk_cut {
+                FlatRawIter {
+                    ll: self.ll,
+                    lr: self.lr,
+                    rl: ml,
+                    rr: mm,
+                    this: self.this,
+                    li: self.li,
+                    ri: mi,
+                    fn_iter: self.fn_iter,
+                    fn_find: self.fn_find,
+                    stride: self.stride,
+                    off: self.off,
+                    len: index,
+                }
+            } else {
+                FlatRawIter {
+                    ll: self.ll,
+                    lr: mm,
+                    rl: self.ll,
+                    rr: mm,
+                    this: self.this,
+                    li: mi + 1,
+                    ri: mi,
+                    fn_iter: self.fn_iter,
+                    fn_find: self.fn_find,
+                    stride: self.stride,
+                    off: self.off,
+                    len: index,
+                }
+            };
+
+            let is_right_chunk_cut = mi == self.ri;
+            let rchild = if !is_right_chunk_cut {
+                FlatRawIter {
+                    ll: mm,
+                    lr: mr,
+                    rl: self.rl,
+                    rr: self.rr,
+                    this: self.this,
+                    li: mi + 1,
+                    ri: self.ri,
+                    fn_iter: self.fn_iter,
+                    fn_find: self.fn_find,
+                    stride: self.stride,
+                    off: self.off + index,
+                    len: self.len - index,
+                }
+            } else {
+                FlatRawIter {
+                    ll: mm,
+                    lr: self.rr,
+                    rl: mm,
+                    rr: self.rr,
+                    this: self.this,
+                    li: mi + 1,
+                    ri: mi,
+                    fn_iter: self.fn_iter,
+                    fn_find: self.fn_find,
+                    stride: self.stride,
+                    off: self.off + index,
+                    len: self.len - index,
+                }
+            };
+
+            (lchild.into_par(), rchild.into_par())
+        }
+    }
+
+    impl<'a, T: Send + Sync> ParallelIterator for ParFlatIter<'a, T> {
+        type Item = &'a T;
+
+        #[inline]
+        fn drive_unindexed<C>(self, consumer: C) -> C::Result
+        where
+            C: UnindexedConsumer<Self::Item>,
+        {
+            bridge(self, consumer)
+        }
+    }
+
+    impl<'a, T: Send + Sync> IndexedParallelIterator for ParFlatIter<'a, T> {
+        #[inline]
+        fn len(&self) -> usize {
+            Self::len(self)
+        }
+
+        #[inline]
+        fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
+            bridge(self, consumer)
+        }
+
+        #[inline]
+        fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
+            callback.callback(self)
+        }
+    }
+
+    impl<'a, T: Send + Sync> Producer for ParFlatIter<'a, T> {
+        type Item = &'a T;
+        type IntoIter = FlatIter<'a, T>;
+
+        #[inline]
+        fn into_iter(self) -> Self::IntoIter {
+            self.into_seq()
+        }
+
+        #[inline]
+        fn split_at(self, index: usize) -> (Self, Self) {
+            let (l, r) = self.inner.split_at(index);
+            // Safety: Splitting doesn't affect both type and lifetime.
+            unsafe { (Self::from_raw(l), Self::from_raw(r)) }
+        }
+    }
+
+    impl<'a, T: Send + Sync> ParallelIterator for ParFlatIterMut<'a, T> {
+        type Item = &'a mut T;
+
+        #[inline]
+        fn drive_unindexed<C>(self, consumer: C) -> C::Result
+        where
+            C: UnindexedConsumer<Self::Item>,
+        {
+            bridge(self, consumer)
+        }
+    }
+
+    impl<'a, T: Send + Sync> IndexedParallelIterator for ParFlatIterMut<'a, T> {
+        #[inline]
+        fn len(&self) -> usize {
+            Self::len(self)
+        }
+
+        #[inline]
+        fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
+            bridge(self, consumer)
+        }
+
+        #[inline]
+        fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
+            callback.callback(self)
+        }
+    }
+
+    impl<'a, T: Send + Sync> Producer for ParFlatIterMut<'a, T> {
+        type Item = &'a mut T;
+        type IntoIter = FlatIterMut<'a, T>;
+
+        #[inline]
+        fn into_iter(self) -> Self::IntoIter {
+            self.into_seq()
+        }
+
+        #[inline]
+        fn split_at(self, index: usize) -> (Self, Self) {
+            let (l, r) = self.inner.split_at(index);
+            // Safety: Splitting doesn't affect both type and lifetime.
+            unsafe { (Self::from_raw(l), Self::from_raw(r)) }
+        }
     }
 }
