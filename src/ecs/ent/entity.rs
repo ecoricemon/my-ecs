@@ -1,16 +1,10 @@
 use super::component::ComponentKey;
 use crate::{ds::prelude::*, util::prelude::*};
-use std::{
-    any::TypeId,
-    fmt,
-    ptr::NonNull,
-    slice,
-    sync::{atomic::AtomicI32, Arc},
-};
+use std::{any::TypeId, fmt, ptr::NonNull, slice, sync::Arc};
 
-pub trait Entity: 'static {
+pub trait Entity: Send + 'static {
     /// Provided.
-    fn key() -> EntityKey {
+    fn entity_key() -> EntityKey {
         EntityKey::Type(EntityTypeId::of::<Self>())
     }
 
@@ -58,14 +52,19 @@ pub trait BorrowComponent {
     //
     // Implementation must guarantee that all items are able to referenced by index
     // from 0 to RawGetter::len().
-    fn borrow_column(&self, ci: usize) -> BorrowResult<RawGetter, AtomicI32>;
+    fn borrow_column(&self, ci: usize) -> BorrowResult<RawGetter>;
 
     /// Borrows a column(component container) from the entity container.
     /// You can access an item through its index from 0 to the number of items.
     //
     // Implementation must guarantee that all items are able to referenced by index
     // from 0 to RawGetter::len().
-    fn borrow_column_mut(&mut self, ci: usize) -> BorrowResult<RawGetter, AtomicI32>;
+    fn borrow_column_mut(&mut self, ci: usize) -> BorrowResult<RawGetter>;
+
+    /// # Safety
+    ///
+    /// Undefine behavior if exclusive borrow happend before.
+    unsafe fn get_column_ptr(&self, ci: usize) -> Option<NonNull<u8>>;
 }
 
 // Need to be object safe.
@@ -118,7 +117,7 @@ impl EntityId {
 /// - Index: Entity container index and generation when the container is generated.
 /// - Name: Unique name for the entity. Each entity must have its name.
 /// - Type: If the entity is declared statically, it has its own type.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EntityKey {
     /// Unique name for the entity.
     /// All entities have their name.
@@ -132,6 +131,10 @@ pub enum EntityKey {
     /// Statically defined entities have their type ids.
     Type(EntityTypeId),
 }
+
+impl_from_for_enum!(EntityKey, Name, EntityName);
+impl_from_for_enum!(EntityKey, Index, EntityIndex);
+impl_from_for_enum!(EntityKey, Type, EntityTypeId);
 
 impl EntityKey {
     pub fn name(&self) -> &EntityName {
@@ -158,10 +161,6 @@ impl EntityKey {
         }
     }
 }
-
-impl_from_for_enum!(EntityKey, Name, EntityName);
-impl_from_for_enum!(EntityKey, Index, EntityIndex);
-impl_from_for_enum!(EntityKey, Type, EntityTypeId);
 
 /// [`Arc<str>`] of entity.
 /// An entity must have its unique name.

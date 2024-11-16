@@ -109,21 +109,20 @@ impl<T: ?Sized> Clone for SendSyncPtr<T> {
 
 impl<T: ?Sized> Copy for SendSyncPtr<T> {}
 
-#[cfg_attr(not(debug_assertions), repr(transparent))]
 pub struct NonNullExt<T: ?Sized> {
     inner: NonNull<T>,
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "borrow_check")]
     ty_or_name: crate::util::Or<TypeIdExt, &'static str>,
 }
 
 impl<T: ?Sized> fmt::Debug for NonNullExt<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(feature = "borrow_check"))]
         {
             self.inner.fmt(f)
         }
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "borrow_check")]
         {
             write!(f, "NonNullExt({:?})", self.ty_or_name)
         }
@@ -149,7 +148,7 @@ impl<T: ?Sized> NonNullExt<T> {
     pub const fn from_nonnull(ptr: NonNull<T>) -> Self {
         Self {
             inner: ptr,
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "borrow_check")]
             ty_or_name: crate::util::Or::B(""),
         }
     }
@@ -160,7 +159,7 @@ impl<T: ?Sized> NonNullExt<T> {
     pub const unsafe fn new_unchecked(ptr: *mut T) -> Self {
         Self {
             inner: NonNull::new_unchecked(ptr),
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "borrow_check")]
             ty_or_name: crate::util::Or::B(""),
         }
     }
@@ -171,7 +170,7 @@ impl<T: ?Sized> NonNullExt<T> {
     {
         Self {
             inner: NonNull::dangling(),
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "borrow_check")]
             ty_or_name: crate::util::Or::B(""),
         }
     }
@@ -185,12 +184,12 @@ impl<T: ?Sized> NonNullExt<T> {
 
     /// It's noop in release mode.
     pub fn with_type(self, _ty: TypeIdExt) -> Self {
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(feature = "borrow_check"))]
         {
             self
         }
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "borrow_check")]
         {
             let mut this = self;
             this.ty_or_name = crate::util::Or::A(_ty);
@@ -200,12 +199,12 @@ impl<T: ?Sized> NonNullExt<T> {
 
     /// It's noop in release mode.
     pub fn with_name(self, _name: &'static str) -> Self {
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(feature = "borrow_check"))]
         {
             self
         }
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "borrow_check")]
         {
             let mut this = self;
             this.ty_or_name = crate::util::Or::B(_name);
@@ -214,12 +213,12 @@ impl<T: ?Sized> NonNullExt<T> {
     }
 
     pub fn get_type(&self) -> Option<&TypeIdExt> {
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(feature = "borrow_check"))]
         {
             None
         }
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "borrow_check")]
         {
             match &self.ty_or_name {
                 crate::util::Or::A(ty) => Some(ty),
@@ -229,12 +228,12 @@ impl<T: ?Sized> NonNullExt<T> {
     }
 
     pub fn get_name(&self) -> Option<&str> {
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(feature = "borrow_check"))]
         {
             None
         }
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "borrow_check")]
         {
             match &self.ty_or_name {
                 crate::util::Or::A(_ty) => None,
@@ -246,12 +245,12 @@ impl<T: ?Sized> NonNullExt<T> {
     pub fn cast<U>(self) -> NonNullExt<U> {
         let Self {
             inner,
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "borrow_check")]
             ty_or_name,
         } = self;
         NonNullExt {
             inner: inner.cast(),
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "borrow_check")]
             ty_or_name,
         }
     }
@@ -265,7 +264,7 @@ impl<T: ?Sized> NonNullExt<T> {
     {
         Self {
             inner: self.inner.add(count),
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "borrow_check")]
             ty_or_name: self.ty_or_name,
         }
     }
@@ -279,7 +278,7 @@ impl<T: ?Sized> NonNullExt<T> {
     {
         Self {
             inner: self.inner.sub(count),
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "borrow_check")]
             ty_or_name: self.ty_or_name,
         }
     }
@@ -335,10 +334,9 @@ impl<T: ?Sized> Clone for NonNullExt<T> {
 
 impl<T: ?Sized> Copy for NonNullExt<T> {}
 
-#[cfg_attr(not(debug_assertions), repr(transparent))]
 pub struct ManagedConstPtr<T: ?Sized> {
     inner: NonNullExt<T>,
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "borrow_check")]
     debug: bool,
 }
 
@@ -355,14 +353,14 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     ///
     /// The pointer must be valid and not aliased mutably while the instance is in use.
     pub unsafe fn new(ptr: NonNullExt<T>) -> Self {
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "borrow_check")]
         {
             debug::insert_const_ptr(ptr); // non-const function.
         }
 
         Self {
             inner: ptr,
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "borrow_check")]
             debug: true,
         }
     }
@@ -373,7 +371,7 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     pub const unsafe fn new_nocheck(ptr: NonNullExt<T>) -> Self {
         Self {
             inner: ptr,
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "borrow_check")]
             debug: false,
         }
     }
@@ -397,7 +395,7 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     pub fn into_ref<'a>(self) -> &'a T {
         let inner = self.inner();
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "borrow_check")]
         drop(self);
 
         // Safety: Managed pointer.
@@ -407,7 +405,7 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     pub fn cast<U>(self) -> ManagedConstPtr<U> {
         let inner = self.inner();
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "borrow_check")]
         drop(self);
 
         // Safety: Nothing has changed except `T` -> `U`.
@@ -421,14 +419,14 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     where
         T: Sized,
     {
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(feature = "borrow_check"))]
         {
             Self {
                 inner: self.inner.add(count),
             }
         }
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "borrow_check")]
         {
             Self {
                 inner: self.inner.add(count),
@@ -444,14 +442,14 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     where
         T: Sized,
     {
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(feature = "borrow_check"))]
         {
             Self {
                 inner: self.inner.sub(count),
             }
         }
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "borrow_check")]
         {
             Self {
                 inner: self.inner.sub(count),
@@ -461,7 +459,7 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "borrow_check")]
 impl<T: ?Sized> Drop for ManagedConstPtr<T> {
     fn drop(&mut self) {
         if self.debug {
@@ -508,31 +506,29 @@ impl<T: ?Sized> hash::Hash for ManagedConstPtr<T> {
 }
 
 impl<T: ?Sized> Clone for ManagedConstPtr<T> {
+    #[cfg(not(feature = "borrow_check"))]
     #[inline]
     fn clone(&self) -> Self {
-        #[cfg(not(debug_assertions))]
-        {
-            *self
-        }
+        *self
+    }
 
-        #[cfg(debug_assertions)]
-        {
-            Self {
-                inner: self.inner,
-                debug: self.debug,
-            }
+    #[cfg(feature = "borrow_check")]
+    #[inline]
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner,
+            debug: self.debug,
         }
     }
 }
 
 // It's pointer. We can copy it regardless of T.
-#[cfg(not(debug_assertions))]
+#[cfg(not(feature = "borrow_check"))]
 impl<T: ?Sized> Copy for ManagedConstPtr<T> {}
 
-#[cfg_attr(not(debug_assertions), repr(transparent))]
 pub struct ManagedMutPtr<T: ?Sized> {
     inner: NonNullExt<T>,
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "borrow_check")]
     debug: bool,
 }
 
@@ -549,14 +545,14 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     ///
     /// The pointer must be valid and not aliased while the instance is in use.
     pub unsafe fn new(ptr: NonNullExt<T>) -> Self {
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "borrow_check")]
         {
             debug::insert_mut_ptr(ptr); // non-const function.
         }
 
         Self {
             inner: ptr,
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "borrow_check")]
             debug: true,
         }
     }
@@ -567,7 +563,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     pub const unsafe fn new_nocheck(ptr: NonNullExt<T>) -> Self {
         Self {
             inner: ptr,
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "borrow_check")]
             debug: false,
         }
     }
@@ -578,6 +574,13 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     {
         // Safety: Intentional dangling pointer.
         unsafe { Self::new_nocheck(NonNullExt::dangling()) }
+    }
+
+    pub fn is_dangling(&self) -> bool
+    where
+        T: Sized,
+    {
+        self == &Self::dangling()
     }
 
     pub fn inner(&self) -> NonNullExt<T> {
@@ -591,7 +594,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     pub fn into_mut<'a>(self) -> &'a mut T {
         let mut inner = self.inner();
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "borrow_check")]
         drop(self);
 
         // Safety: Managed pointer.
@@ -601,7 +604,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     pub fn cast<U>(self) -> ManagedMutPtr<U> {
         let inner = self.inner();
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "borrow_check")]
         drop(self);
 
         // Safety: Nothing has changed except `T` -> `U`.
@@ -611,7 +614,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     pub fn cast_const(self) -> ManagedConstPtr<T> {
         let inner = self.inner();
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "borrow_check")]
         drop(self);
 
         // Safety: Nothing has changed except `Mut` -> `Const`.
@@ -625,14 +628,14 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     where
         T: Sized,
     {
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(feature = "borrow_check"))]
         {
             Self {
                 inner: self.inner.add(count),
             }
         }
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "borrow_check")]
         {
             Self {
                 inner: self.inner.add(count),
@@ -648,14 +651,14 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     where
         T: Sized,
     {
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(feature = "borrow_check"))]
         {
             Self {
                 inner: self.inner.sub(count),
             }
         }
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "borrow_check")]
         {
             Self {
                 inner: self.inner.sub(count),
@@ -665,7 +668,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     }
 }
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "borrow_check")]
 impl<T: ?Sized> Drop for ManagedMutPtr<T> {
     fn drop(&mut self) {
         if self.debug {
@@ -725,7 +728,7 @@ impl<T: ?Sized> hash::Hash for ManagedMutPtr<T> {
 // impl<T: ?Sized> Clone for ManagedMutPtr<T> {..}
 // impl<T: ?Sized> Copy for ManagedMutPtr<T> {..}
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "borrow_check")]
 mod debug {
     use super::*;
     use dashmap::DashMap;

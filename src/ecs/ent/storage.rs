@@ -6,6 +6,7 @@ use super::{
     sparse_set::SparseSet,
 };
 use crate::ds::prelude::*;
+use crate::ecs::EcsError;
 use std::{
     any::TypeId,
     collections::HashMap,
@@ -15,32 +16,44 @@ use std::{
     mem::MaybeUninit,
     ops::{Deref, DerefMut},
     ptr::{self, NonNull},
-    sync::atomic::AtomicI32,
 };
 
-pub trait AsEntityDesc {
-    fn as_entity_descriptor() -> EntityDesc;
+pub trait AsEntityReg {
+    fn as_entity_descriptor() -> EntityReg;
 }
 
-/// Storage where you can find static entity and component information
-/// such as names, types, and their relationships.
-/// Plus the dictionary has component data for each entity in [`EntityContainer`].
-/// Each `EntityContainer` has all component data related to the entity.
+/// Storage where you can find static entity and component information such as
+/// names, types, and their relationships. Plus this storage has component data
+/// for each entity in [`EntityContainer`].
 ///
-/// You can get or remove entries from their indices or keys.
-/// Using indices may be faster than using keys in most cases.
+/// Each container is basically identified by its component keys. In other
+/// words, unique combination of components is the key of a container. So you
+/// cannot register two entities that has the same components. But it is not
+/// concise to search a container by its component keys, so entity must provide
+/// unique name as well.
+///
+/// You can get or remove entries from their indices or keys. Using indices may
+/// be faster than using keys in most cases.
+//
+// TODO: Write this on ent module doc as well.
+// Why entities of the same component combination are not allowed?
+// - If it's allowed, something like below is possible.
+//   EntA: (CompA, CompB), EntB: (CompA), EntC: (CompA)
+// - Imagine clients are removing `CompB` from some items in EntA's container.
+//   In that case, they must be moved into `EntB` or `EntC`, but we cannot
+//   specify which container they should go.
 #[derive(Debug)]
-pub struct EntityStorage<S> {
+pub(crate) struct EntityStorage<S> {
     /// Data.
     data: GroupMap<Vec<ComponentKey>, EntityContainer, ComponentKey, TypeInfo, S>,
 
     /// Name -> index of the [`EntityContainer`] in the [`Self::data`].
     /// Each `EntityContainer` has its corresponding index.
-    name_to_index: HashMap<EntityName, usize, S>,
+    name_to_index: HashMap<EntityName, EntityIndex, S>,
 
     /// Type -> index of the [`EntityContainer`] in the [`Self::data`].
     /// This is optional, only statically declared entity has its type.
-    type_to_index: HashMap<EntityTypeId, usize, S>,
+    type_to_index: HashMap<EntityTypeId, EntityIndex, S>,
 
     /// Generation of each entity container.
     /// The generation is when the container is registered to the dictionary.
@@ -69,63 +82,61 @@ impl<S> EntityStorage<S>
 where
     S: BuildHasher + Default,
 {
-    pub fn contains(&self, ekey: &EntityKey) -> bool {
-        self.get_container_index(ekey).is_some()
-    }
-
     /// Turns `ekey` into another type of it according to `to`.
-    pub fn convert_entity_key(&self, ekey: &EntityKey, to: EntityKeyKind) -> Option<EntityKey> {
-        let index = self.get_container_index(ekey)?;
+    pub(crate) fn convert_entity_key(
+        &self,
+        ekey: &EntityKey,
+        to: EntityKeyKind,
+    ) -> Option<EntityKey> {
+        let ei = self.entity_index(ekey)?;
         let res = match to {
             EntityKeyKind::Name => {
                 // Safety: Infallible.
-                let name = unsafe { self.data.get_group(index).unwrap_unchecked().0.name() };
+                let name = unsafe { self.data.get_group(ei).unwrap_unchecked().0.name() };
                 EntityKey::Name(name.clone())
             }
             EntityKeyKind::Index => {
                 let ei = EntityIndex::new(GenIndex::new(
-                    index as u32,
+                    ei as u32,
                     // Safety: Infallible.
-                    unsafe { *self.ent_gens.get_unchecked(index) },
+                    unsafe { *self.ent_gens.get_unchecked(ei) },
                 ));
                 EntityKey::Index(ei)
             }
             EntityKeyKind::Type => {
                 // Safety: Infallible.
-                let ty = unsafe { self.data.get_group(index).unwrap_unchecked().0.ty()? };
+                let ty = unsafe { self.data.get_group(ei).unwrap_unchecked().0.ty()? };
                 EntityKey::Type(*ty)
             }
         };
         Some(res)
     }
 
-    pub fn get_component_keys(&self, ekey: &EntityKey) -> Option<&Vec<ComponentKey>> {
-        let index = self.get_container_index(ekey)?;
+    pub(crate) fn get_component_keys(&self, ekey: &EntityKey) -> Option<&Vec<ComponentKey>> {
+        let ei = self.entity_index(ekey)?;
         // Safety: Infallible.
-        let ckeys = unsafe { self.data.get_group_key(index).unwrap_unchecked() };
+        let ckeys = unsafe { self.data.get_group_key(ei).unwrap_unchecked() };
         Some(ckeys)
     }
 
-    pub fn get_entity_container(&self, ekey: &EntityKey) -> Option<&EntityContainer> {
-        let index = self.get_container_index(ekey)?;
+    pub(crate) fn get_entity_container(&self, ekey: &EntityKey) -> Option<&EntityContainer> {
+        let ei = self.entity_index(ekey)?;
         // Safety: Infallible.
-        let cont = unsafe { self.data.get_group(index).unwrap_unchecked().0 };
+        let cont = unsafe { self.data.get_group(ei).unwrap_unchecked().0 };
         Some(cont)
     }
 
-    pub fn get_entity_container_mut(&mut self, ekey: &EntityKey) -> Option<&mut EntityContainer> {
-        let index = self.get_container_index(ekey)?;
+    pub(crate) fn get_entity_container_mut(
+        &mut self,
+        ekey: &EntityKey,
+    ) -> Option<&mut EntityContainer> {
+        let ei = self.entity_index(ekey)?;
         // Safety: Infallible.
-        let cont = unsafe { self.data.get_group_mut(index).unwrap_unchecked().0 };
+        let cont = unsafe { self.data.get_group_mut(ei).unwrap_unchecked().0 };
         Some(cont)
     }
 
-    pub fn get_component_info(&self, index: usize) -> Option<&TypeInfo> {
-        let tinfo = &self.data.get_item(index)?.0;
-        Some(tinfo)
-    }
-
-    pub fn iter_entity_container(
+    pub(crate) fn iter_entity_container(
         &self,
     ) -> impl Iterator<Item = (&Vec<ComponentKey>, EntityIndex, &EntityContainer)> {
         self.data.iter_group().map(|(ckeys, index, cont)| {
@@ -137,46 +148,15 @@ where
         })
     }
 
-    pub fn borrow(&self, ekey: &EntityKey) -> BorrowResult<NonNull<dyn ContainEntity>, AtomicI32> {
-        if let Some(cont) = self.get_entity_container(ekey) {
-            cont.borrow()
-        } else {
-            Err(BorrowError::OutOfBound)
-        }
-    }
-
     /// Borrows entity container without checking generation.
     ///
     /// # Safety
     ///
     /// Undefined behavior if the index is out of bound.
-    pub unsafe fn borrow_unchecked(
-        &self,
-        ei: usize,
-    ) -> BorrowResult<NonNull<dyn ContainEntity>, AtomicI32> {
-        self.data.get_group(ei).unwrap_unchecked().0.borrow()
-    }
-
-    pub fn borrow_mut(
-        &mut self,
-        ekey: &EntityKey,
-    ) -> BorrowResult<NonNull<dyn ContainEntity>, AtomicI32> {
-        if let Some(cont) = self.get_entity_container_mut(ekey) {
-            cont.borrow_mut()
-        } else {
-            Err(BorrowError::OutOfBound)
-        }
-    }
-
-    /// Borrows entity container without checking generation.
-    ///
-    /// # Safety
-    ///
-    /// Undefined behavior if the index is out of bound.
-    pub unsafe fn borrow_unchecked_mut(
+    pub(crate) unsafe fn borrow_unchecked_mut(
         &mut self,
         ei: usize,
-    ) -> BorrowResult<NonNull<dyn ContainEntity>, AtomicI32> {
+    ) -> BorrowResult<NonNull<dyn ContainEntity>> {
         self.data
             .get_group_mut(ei)
             .unwrap_unchecked()
@@ -184,55 +164,61 @@ where
             .borrow_mut()
     }
 
-    /// Registers new entity and its components information and returns entity container index.
-    /// If you want to change entity information, you must remove if first. See [`Self::unregister_entity`].
-    /// Also, this method doesn't overwrite component information.
-    ///
-    /// # Panics
-    ///
-    /// - Panics if `desc` doesn't have component information at all.
-    /// - Panics if entity name conflicts.
-    /// - Panics if the dictionary has had entity information already.
-    pub(crate) fn register_entity(&mut self, desc: EntityDesc) -> EntityIndex {
+    /// Registers new entity and its components information and returns entity
+    /// container index. If you want to change entity information, you must
+    /// remove if first. See [`Self::unregister_entity`]. Also, this method
+    /// doesn't overwrite component information.
+    pub(crate) fn register(&mut self, desc: EntityReg) -> Result<EntityIndex, EcsError> {
+        if desc.comps.is_empty() {
+            let errmsg = crate::debug_format!("`{}` doesn't have any components", desc.cont.name);
+            return Err(EcsError::InvalidEntity(errmsg));
+        }
+
         let name = desc.cont.name.clone();
         let ent_ty = desc.cont.ty().cloned();
         let index = match self.data.add_group(desc) {
             Ok(index) => index,
-            Err(_) => {
-                panic!("couldn't register entity '{name}', it may conflict or have no components")
+            Err(desc) => {
+                let (_cont, _) = self.data.get_group2(&desc.group_key).unwrap();
+                let errmsg = crate::debug_format!(
+                    "`{name}` and `{}` have the same components, which is not allowed",
+                    _cont.name()
+                );
+                return Err(EcsError::InvalidEntity(errmsg));
             }
         };
+        let ei = EntityIndex::new(GenIndex::new(index as u32, self.gen));
+        self.gen += 1;
 
         // Adds mapping.
-        self.name_to_index.insert(name, index);
+        self.name_to_index.insert(name, ei);
         if let Some(ty) = ent_ty {
-            self.type_to_index.insert(ty, index);
+            self.type_to_index.insert(ty, ei);
         }
 
         // Writes current generation on the slot.
         while self.ent_gens.len() <= index {
             self.ent_gens.push(0);
         }
-        self.ent_gens[index] = self.gen;
-        let res = EntityIndex::new(GenIndex::new(index as u32, self.gen));
-        self.gen += 1;
+        self.ent_gens[index] = ei.generation();
 
-        res
+        Ok(ei)
     }
 
     /// Unregister entity and tries to unregister corresponding components as well.
     /// But components that are linked to another entity won't be unregistered.
-    //
-    // for future use.
-    #[allow(dead_code)]
-    pub(crate) fn unregister_entity(&mut self, ekey: &EntityKey) -> Option<EntityContainer> {
-        let index = self.get_container_index(ekey)?;
-        let old = self.data.remove_group(index);
+    pub(crate) fn unregister(
+        &mut self,
+        ekey: &EntityKey,
+    ) -> Option<(Vec<ComponentKey>, EntityContainer)> {
+        let index = self.entity_index(ekey)?;
+        let ckeys_cont = self.data.remove_group(index);
+        debug_assert!(ckeys_cont.is_some());
 
         // Removes mapping.
-        if let Some(old) = old.as_ref() {
-            self.name_to_index.remove(old.name());
-            if let Some(ty) = old.ty() {
+        if let Some((_ckeys, cont)) = ckeys_cont.as_ref() {
+            self.name_to_index.remove(cont.name());
+            if let Some(ty) = cont.ty() {
                 self.type_to_index.remove(ty);
             }
         }
@@ -240,19 +226,36 @@ where
         // In contrast to `register_entity()`, we don't need to reset generation in the slot
         // because we know that it doesn't exist.
 
-        old
+        ckeys_cont
     }
 
-    fn get_container_index(&self, ekey: &EntityKey) -> Option<usize> {
+    pub(crate) fn entity_index(&self, ekey: &EntityKey) -> Option<usize> {
         match ekey {
-            EntityKey::Index(ei) => {
-                let index = ei.index();
-                (self.data.contains_group(index) && ei.generation() == self.ent_gens[index])
-                    .then_some(index)
+            EntityKey::Index(ei) => self.is_valid_index(ei).then_some(ei.index()),
+            EntityKey::Name(name) => {
+                let ei = self.name_to_index.get(name)?;
+                self.is_valid_index(ei).then_some(ei.index())
             }
-            EntityKey::Name(name) => self.name_to_index.get(name).cloned(),
-            EntityKey::Type(ty) => self.type_to_index.get(ty).cloned(),
+            EntityKey::Type(ty) => {
+                let ei = self.type_to_index.get(ty)?;
+                self.is_valid_index(ei).then_some(ei.index())
+            }
         }
+    }
+
+    /// # Safety
+    ///
+    /// Undefine behavior if exclusive borrow happend before.
+    //
+    // Allows dead_code for test.
+    #[allow(dead_code)]
+    pub(crate) unsafe fn get_ptr(&self, ei: usize) -> Option<NonNull<dyn ContainEntity>> {
+        let ptr = self.data.get_group(ei)?.0.cont.as_ref() as *const dyn ContainEntity;
+        NonNull::new(ptr.cast_mut())
+    }
+
+    fn is_valid_index(&self, ei: &EntityIndex) -> bool {
+        self.data.contains_group(ei.index()) && ei.generation() == self.ent_gens[ei.index()]
     }
 }
 
@@ -267,12 +270,12 @@ where
 
 /// A registration descriptor of an entity for [`EntityStorage`].
 #[derive(Debug)]
-pub struct EntityDesc {
+pub struct EntityReg {
     cont: EntityContainer,
     comps: Vec<(ComponentKey, TypeInfo)>,
 }
 
-impl EntityDesc {
+impl EntityReg {
     /// You can pass your own empty component container `cont`, otherwise [`SparseSet`] is used.
     pub fn new(name: EntityName, ty: Option<EntityTypeId>, cont: Box<dyn ContainEntity>) -> Self {
         Self {
@@ -297,7 +300,7 @@ impl EntityDesc {
     }
 }
 
-impl DescribeGroup<Vec<ComponentKey>, EntityContainer, ComponentKey, TypeInfo> for EntityDesc {
+impl DescribeGroup<Vec<ComponentKey>, EntityContainer, ComponentKey, TypeInfo> for EntityReg {
     fn into_group_and_items(
         self,
     ) -> GroupDesc<Vec<ComponentKey>, EntityContainer, ComponentKey, TypeInfo> {
@@ -328,7 +331,7 @@ pub struct EntityContainer {
     cont: Box<dyn ContainEntity>,
 
     /// Pointer to the `dyn ContainEntity`.
-    cont_ptr: SimpleHolder<NonNull<dyn ContainEntity>, AtomicI32>,
+    cont_ptr: SimpleHolder<NonNull<dyn ContainEntity>>,
 
     /// Included component names just for users.
     comp_names: Vec<&'static str>,
@@ -376,15 +379,15 @@ impl EntityContainer {
         &self.comp_names
     }
 
-    pub fn borrow(&self) -> BorrowResult<NonNull<dyn ContainEntity>, AtomicI32> {
+    pub fn borrow(&self) -> BorrowResult<NonNull<dyn ContainEntity>> {
         self.cont_ptr.borrow()
     }
 
-    pub fn borrow_mut(&mut self) -> BorrowResult<NonNull<dyn ContainEntity>, AtomicI32> {
+    pub fn borrow_mut(&mut self) -> BorrowResult<NonNull<dyn ContainEntity>> {
         self.cont_ptr.borrow_mut()
     }
 
-    pub fn borrow_column_of<C: Component>(&self) -> BorrowResult<Getter<'_, C>, AtomicI32> {
+    pub fn borrow_column_of<C: Component>(&self) -> BorrowResult<Getter<'_, C>> {
         let ci = self
             .get_column_index(&TypeId::of::<C>())
             .ok_or(BorrowError::NotFound)?;
@@ -402,9 +405,7 @@ impl EntityContainer {
         Ok(borrowed)
     }
 
-    pub fn borrow_column_of_mut<C: Component>(
-        &mut self,
-    ) -> BorrowResult<GetterMut<'_, C>, AtomicI32> {
+    pub fn borrow_column_of_mut<C: Component>(&mut self) -> BorrowResult<GetterMut<'_, C>> {
         let ci = self
             .get_column_index(&TypeId::of::<C>())
             .ok_or(BorrowError::NotFound)?;
@@ -440,7 +441,7 @@ impl DerefMut for EntityContainer {
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct TypedEntityContainer<'buf, E> {
-    borrowed: Borrowed<NonNull<dyn ContainEntity>, AtomicI32>,
+    borrowed: Borrowed<NonNull<dyn ContainEntity>>,
     _marker: PhantomData<&'buf mut E>,
 }
 
@@ -451,7 +452,7 @@ impl<'buf, E: Entity> TypedEntityContainer<'buf, E> {
     /// - pointer is not valid.
     /// - type is incorrect.
     ///   The pointer must be valid while this instance lives.
-    pub(crate) unsafe fn new(borrowed: Borrowed<NonNull<dyn ContainEntity>, AtomicI32>) -> Self {
+    pub(crate) unsafe fn new(borrowed: Borrowed<NonNull<dyn ContainEntity>>) -> Self {
         Self {
             borrowed,
             _marker: PhantomData,
@@ -468,11 +469,8 @@ impl<'buf, E: Entity> TypedEntityContainer<'buf, E> {
     /// - type is incorrect.
     /// - `borrowed` is dropped after call to this method.
     ///   The pointer must be valid while this instance lives.
-    pub(crate) unsafe fn new_copy(
-        borrowed: &Borrowed<NonNull<dyn ContainEntity>, AtomicI32>,
-    ) -> Self {
-        let mut uninit: MaybeUninit<Borrowed<NonNull<dyn ContainEntity>, AtomicI32>> =
-            MaybeUninit::uninit();
+    pub(crate) unsafe fn new_copy(borrowed: &Borrowed<NonNull<dyn ContainEntity>>) -> Self {
+        let mut uninit: MaybeUninit<Borrowed<NonNull<dyn ContainEntity>>> = MaybeUninit::uninit();
         // Safety: Infallible.
         unsafe { ptr::copy_nonoverlapping(borrowed as *const _, uninit.as_mut_ptr(), 1) };
         Self::new(uninit.assume_init())
@@ -487,7 +485,7 @@ impl<'buf, E: Entity> TypedEntityContainer<'buf, E> {
         self.len() == 0
     }
 
-    pub fn get_component_mut<C: Component>(&mut self) -> Option<Borrowed<GetterMut<C>, AtomicI32>> {
+    pub fn get_component_mut<C: Component>(&mut self) -> Option<Borrowed<GetterMut<C>>> {
         let ci = self.as_ref().get_column_index(&TypeId::of::<C>())?;
         if let Ok(borrowed) = self.as_ref().borrow_column(ci) {
             // Safety: We got the column index from the type, so the type is correct.

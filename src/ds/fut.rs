@@ -33,13 +33,13 @@ unsafe impl Send for UnsafeFuture {}
 impl UnsafeFuture {
     /// Allocates and creates [`FutureData`] and returns its pointer
     /// wrppaed in this struct.
-    pub fn new<F, R, W>(future: F, waker: W) -> Self
+    pub fn new<F, R, W, Arg>(future: F, waker: W, consume: fn(R, Arg)) -> Self
     where
         F: Future<Output = R> + Send + 'static,
         R: Send + 'static,
         W: WakeSend,
     {
-        let pinned = FutureData::new(future, waker);
+        let pinned = FutureData::new(future, waker, consume);
 
         // `FutureData` is created wrapped in `Pin<Box<T>>` because it's another type of future.
         // But this struct will manage it through its pointer, so let's unwrap it.
@@ -70,10 +70,19 @@ impl UnsafeFuture {
     ///
     /// Undefined behavior if conditions below are not met.
     /// - Linked [`FutureData`] must be alive, not have been dropped.
+    pub unsafe fn is_ready(&self) -> bool {
+        let vtable = self.data.cast::<FutureVTable>().as_mut();
+        (vtable.is_ready)(self.data)
+    }
+
+    /// # Safety
+    ///
+    /// Undefined behavior if conditions below are not met.
+    /// - Linked [`FutureData`] must be alive, not have been dropped.
     /// - Polling must occur on only one thread at a time,
     ///   and caller should synchronize over threads.
     /// - Type `R` must be the same as the one future creates.
-    pub unsafe fn poll_unchecked<R>(self) -> Poll<ReadyFuture<R>>
+    pub unsafe fn poll_unchecked<R>(self) -> Poll<TakenFuture<R>>
     where
         R: Send + 'static,
     {
@@ -83,10 +92,25 @@ impl UnsafeFuture {
                 vtable.take_output_unchecked,
             );
             let output = (take_output_unchecked)(self.data);
-            Poll::Ready(ReadyFuture {
+            Poll::Ready(TakenFuture {
                 output,
                 handle: self,
             })
+        } else {
+            Poll::Pending
+        }
+    }
+
+    /// # Safety
+    ///
+    /// Undefined behavior if conditions below are not met.
+    /// - Linked [`FutureData`] must be alive, not have been dropped.
+    /// - Polling must occur on only one thread at a time,
+    ///   and caller should synchronize over threads.
+    pub unsafe fn poll(self) -> Poll<()> {
+        let vtable = self.data.cast::<FutureVTable>().as_mut();
+        if (vtable.poll_unchecked)(self.data) {
+            Poll::Ready(())
         } else {
             Poll::Pending
         }
@@ -101,7 +125,7 @@ impl UnsafeFuture {
     where
         W: WakeSend + Eq,
     {
-        let waker = FutureData::<(), (), W>::waker_ptr(self.data).as_ref();
+        let waker = FutureData::<(), (), W, ()>::waker_ptr(self.data).as_ref();
         waker == other
     }
 
@@ -114,18 +138,30 @@ impl UnsafeFuture {
     where
         W: WakeSend,
     {
-        let old = FutureData::<(), (), W>::waker_ptr(self.data).as_mut();
+        let old = FutureData::<(), (), W, ()>::waker_ptr(self.data).as_mut();
         mem::replace(old, waker)
+    }
+
+    /// # Safety
+    ///
+    /// Argument type `Arg` must be the same as the type determined on [`new`].
+    ///
+    /// [`new`]: Self::new
+    pub unsafe fn consume<Arg>(self, arg: Arg) {
+        let vtable = self.data.cast::<FutureVTable>().as_mut();
+        let delegate_consume =
+            mem::transmute::<unsafe fn(), unsafe fn(NonNull<u8>, Arg)>(vtable.delegate_consume);
+        delegate_consume(self.data, arg)
     }
 }
 
 #[derive(Debug)]
-pub struct ReadyFuture<R> {
+pub struct TakenFuture<R> {
     output: R,
     handle: UnsafeFuture,
 }
 
-impl<R> ReadyFuture<R> {
+impl<R> TakenFuture<R> {
     /// Deallocates inner future and returns output of the future.
     /// Do not call [`UnsafeFuture::destroy`] for the inner future.
     ///
@@ -139,8 +175,45 @@ impl<R> ReadyFuture<R> {
 }
 
 #[derive(Debug)]
+#[repr(transparent)]
+pub struct ReadyFuture(UnsafeFuture);
+
+impl ReadyFuture {
+    /// # Safety
+    ///
+    /// `future` must be a valid ready future. Also, [`destroy`] must not be
+    /// called on the `future`.
+    ///
+    /// [`destroy`]: UnsafeFuture::destroy
+    pub unsafe fn new(future: UnsafeFuture) -> Self {
+        debug_assert!(future.is_ready());
+        Self(future)
+    }
+
+    /// Consumes output of the ready future and destroys the future.
+    ///
+    /// # Safety
+    ///
+    /// Argument type `Arg` must be the same as the type determined on
+    /// [`UnsafeFuture::new`].
+    pub unsafe fn consume<Arg>(self, arg: Arg) {
+        // Safety: By owner of this struct, it's guaranteed to hold valid ready
+        // future.
+        unsafe { self.0.consume(arg) };
+    }
+}
+
+impl Drop for ReadyFuture {
+    fn drop(&mut self) {
+        // Safety: By owner of this struct, it's guaranteed to hold valid ready
+        // future.
+        unsafe { self.0.destroy() };
+    }
+}
+
+#[derive(Debug)]
 #[repr(C)]
-pub struct FutureData<F, R, W> {
+pub struct FutureData<F, R, W, Arg> {
     /// Functions that receive a pointer to this struct as first parameter.
     //
     // This field must be located at the first position of this struct, So, raw
@@ -161,27 +234,37 @@ pub struct FutureData<F, R, W> {
     /// Output of the future.
     output: Option<R>,
 
+    /// Function consuming the output with anonymous argument.
+    consume: fn(R, Arg),
+
     _pin: PhantomPinned,
 }
 
-impl<F, R, W> FutureData<F, R, W>
+impl<F, R, W, Arg> FutureData<F, R, W, Arg>
 where
     F: Future<Output = R> + Send + 'static,
     R: Send + 'static,
     W: WakeSend,
 {
-    pub fn new(future: F, waker: W) -> Pin<Box<Self>> {
-        // Erases type from `take_output_unchecked`, so we can hold it.
+    pub fn new(future: F, waker: W, consume: fn(R, Arg)) -> Pin<Box<Self>> {
+        // Erases type `R` from `take_output_unchecked`, so we can hold it.
         let take_output_unchecked = unsafe {
-            mem::transmute::<unsafe fn(NonNull<u8>) -> _, unsafe fn()>(Self::take_output_unchecked)
+            mem::transmute::<unsafe fn(NonNull<u8>) -> R, unsafe fn()>(Self::take_output_unchecked)
+        };
+
+        // Erases type `Arg` from `delegate_consume`, so we can hold it.
+        let delegate_consume = unsafe {
+            mem::transmute::<unsafe fn(NonNull<u8>, Arg), unsafe fn()>(Self::delegate_consume)
         };
 
         // See vtable functions below.
         let vtable = FutureVTable {
+            is_ready: Self::is_ready,
             poll_unchecked: Self::poll_unchecked,
             drop: Self::drop,
             take_output_unchecked,
             wake_send: Self::wake_send,
+            delegate_consume,
         };
 
         Box::pin(Self {
@@ -189,6 +272,7 @@ where
             waker,
             future,
             output: None,
+            consume,
             _pin: PhantomPinned,
         })
     }
@@ -198,9 +282,19 @@ where
     /// # Safety
     ///
     /// - The given pointer must be a valid pointer to *pinned* [`FutureData`].
+    unsafe fn is_ready(data: NonNull<u8>) -> bool {
+        let this = data.cast::<FutureData<F, R, W, Arg>>().as_mut();
+        this.output.is_some()
+    }
+
+    /// * data - A pointer to [`FutureData`].
+    ///
+    /// # Safety
+    ///
+    /// - The given pointer must be a valid pointer to *pinned* [`FutureData`].
     unsafe fn poll_unchecked(data: NonNull<u8>) -> bool {
         // Creates pinned future from the given data pointer.
-        let this = data.cast::<FutureData<F, R, W>>().as_mut();
+        let this = data.cast::<FutureData<F, R, W, Arg>>().as_mut();
         let pinned_future = Pin::new_unchecked(&mut this.future);
 
         // Creates `Context` from the given data pointer.
@@ -227,7 +321,7 @@ where
     ///
     /// The given pointer must be a valid pointer to [`FutureData`].
     unsafe fn drop(data: NonNull<u8>) {
-        let mut this = data.cast::<FutureData<F, R, W>>();
+        let mut this = data.cast::<FutureData<F, R, W, Arg>>();
         drop(Box::from_raw(this.as_mut()));
     }
 
@@ -238,7 +332,7 @@ where
     /// - The given pointer must be a valid pointer to [`FutureData`].
     /// - The `FutureData` must have been ready.
     unsafe fn take_output_unchecked(data: NonNull<u8>) -> R {
-        let this = data.cast::<FutureData<F, R, W>>().as_mut();
+        let this = data.cast::<FutureData<F, R, W, Arg>>().as_mut();
         this.output.take().unwrap_unchecked()
     }
 
@@ -248,17 +342,23 @@ where
     ///
     /// The given pointer must be a valid pointer to [`FutureData`].
     unsafe fn wake_send(data: NonNull<u8>) {
-        let this = data.cast::<FutureData<F, R, W>>().as_mut();
+        let this = data.cast::<FutureData<F, R, W, Arg>>().as_mut();
         this.waker.wake_send(UnsafeFuture { data })
+    }
+
+    unsafe fn delegate_consume(data: NonNull<u8>, arg: Arg) {
+        let this = data.cast::<FutureData<F, R, W, Arg>>().as_mut();
+        let output: R = this.output.take().unwrap_unchecked();
+        (this.consume)(output, arg)
     }
 }
 
-impl<W> FutureData<(), (), W> {
+impl<W> FutureData<(), (), W, ()> {
     // Address of waker is determined by its alignment only.
     // It doesn't depend on `F` and `R` because it is located right after
     // `FutureVTable` which has fixed size.
     unsafe fn waker_ptr(data: NonNull<u8>) -> NonNull<W> {
-        let this = data.cast::<FutureData<(), (), W>>().as_mut();
+        let this = data.cast::<FutureData<(), (), W, ()>>().as_mut();
         let ptr = &mut this.waker as *mut _;
         NonNull::new_unchecked(ptr)
     }
@@ -266,6 +366,9 @@ impl<W> FutureData<(), (), W> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct FutureVTable {
+    /// A function pointer to [`FutureData::is_ready`].
+    pub is_ready: unsafe fn(NonNull<u8>) -> bool,
+
     /// A function pointer to [`FutureData::poll_unchecked`].
     pub poll_unchecked: unsafe fn(NonNull<u8>) -> bool,
 
@@ -274,13 +377,20 @@ pub struct FutureVTable {
 
     /// A function pointer to [`FutureData::take_output_unchecked`].
     //
-    // Since future return type is unknown here,
-    // this type erased function pointer must be casted with correct type like
+    // Since future return type is unknown here, this type erased function
+    // pointer must be casted with correct type like
     // 'unsafe fn(NonNull<u8>) -> R'.
     pub take_output_unchecked: unsafe fn(),
 
     /// A function pointer to [`FutureData::wake_send`].
     pub wake_send: unsafe fn(NonNull<u8>),
+
+    /// A function pointer to [`FutureData::delegate_consume`].
+    //
+    // Since future return type is unknown here, this type erased function
+    // pointer must be casted with correct type like
+    // 'unsafe fn(NonNull<u8>, Arg)'.
+    pub delegate_consume: unsafe fn(),
 }
 
 fn raw_waker_vtable() -> &'static RawWakerVTable {

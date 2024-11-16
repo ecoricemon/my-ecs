@@ -1,6 +1,8 @@
-//! Module of application agnostic data structures.
+//! # application agnostic data structures.
+//!
+//! TODO
 
-pub mod atomic;
+pub mod arr;
 pub mod borrow;
 pub mod fut;
 pub mod list;
@@ -14,7 +16,7 @@ pub mod vec;
 
 pub mod prelude {
     pub use super::{
-        atomic::*, borrow::*, fut::*, list::*, map::*, ptr::*, queue::*, raw::*, signal::*,
-        types::*, vec::*,
+        arr::*, borrow::*, fut::*, list::*, map::*, ptr::*, queue::*, raw::*, signal::*, types::*,
+        vec::*,
     };
 }

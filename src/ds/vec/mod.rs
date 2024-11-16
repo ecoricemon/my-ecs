@@ -1,9 +1,9 @@
-mod any_vec;
-mod chunk_any_vec;
-mod dedup_vec;
-mod opt_vec;
-mod set_vec;
-mod vec_pool;
+pub mod any_vec;
+pub mod chunk_any_vec;
+pub mod dedup_vec;
+pub mod opt_vec;
+pub mod set_vec;
+pub mod vec_pool;
 
 pub use any_vec::{AnyVec, TypedAnyVec};
 pub use chunk_any_vec::ChunkAnyVec;

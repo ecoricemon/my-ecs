@@ -4,27 +4,19 @@ use std::time::Duration;
 
 fn main() {
     // Creates instance.
-    const NUM_WORKERS: usize = 3;
-    let worker_pool = WorkerPool::with_len(NUM_WORKERS);
-    let mut ecs = Ecs::default(worker_pool);
+    let mut ecs = Ecs::default(WorkerPool::with_len(3), [3]);
 
     // Schedules a future using once system.
-    ecs.append_once_system(0, || {
-        let future = register_map();
-        schedule_future(future);
-    })
+    ecs.add_system(SystemDesc::new().with_once(|| {
+        schedule_future(register_map());
+    }))
     .unwrap();
 
     // Waits until all tasks are executed completely.
-    while !ecs
-        .run()
-        .call(0, &mut |run| run.schedule())
-        .wait_for_idle()
-        .is_empty()
-    {}
+    while !ecs.run().schedule_all().wait_for_idle().is_completed() {}
 }
 
-async fn register_map() -> Box<dyn Command> {
+async fn register_map() -> EcsResult<impl Command> {
     // Assumes that we're reading map data from a file using async io function.
     Timer::after(Duration::from_millis(10)).await;
 
@@ -37,19 +29,17 @@ async fn register_map() -> Box<dyn Command> {
         00010"
         .to_owned();
 
-    // Declares a command using the data.
-    let cmd = move |mut ecs: Ecs| {
+    // Declares a command using the data, then returns it.
+    Ok(move |mut ecs: Ecs| {
         // Registers map resource.
-        let map = Box::new(Map::new(&map_data));
-        ecs.register_resource(Map::key(), MaybeOwned::A(map), false)
+        let map = Map::new(&map_data);
+        ecs.register_resource(ResourceDesc::new().with_owned(map))
             .unwrap();
 
         // Appends a system that uses the map.
-        ecs.append_once_system(0, show_map).unwrap();
-    };
-
-    // Returns command.
-    cmd.into_boxed()
+        ecs.add_system(SystemDesc::new().with_once(show_map))
+            .unwrap();
+    })
 }
 
 fn show_map(rr: ResRead<Map>) {

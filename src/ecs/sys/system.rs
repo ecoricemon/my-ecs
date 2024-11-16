@@ -5,30 +5,32 @@ use super::{
     },
     request::{
         PrivateRequest, Request, RequestInfo, RequestKey, Response, StoreRequestInfo, SystemBuffer,
+        RINFO_STOR,
     },
 };
 use crate::ds::prelude::*;
-use crate::ecs::{EcsError, EcsResult};
+use crate::ecs::EcsError;
 use std::{
     any::{self, Any},
-    cell::RefCell,
     collections::{HashMap, HashSet},
     fmt,
     hash::BuildHasher,
     marker::PhantomData,
-    num::NonZeroU32,
-    rc::{Rc, Weak},
+    num::NonZeroU64,
+    ops::{Deref, DerefMut},
+    ptr::NonNull,
+    sync::{Arc, Weak},
 };
 
 /// A system group that will be invoked together in a cycle by scheduler.
 ///
-/// Systems can be one of three states below,  
+/// Systems can be in one of three states below,  
 /// - Active: Systems that are ready to run.
 /// - Inactive: Registered, but inactive systems.
 /// - Poisoned: Panicked systems.
 /// - (None): Not a state, for description only.
 ///
-/// Possible system transition is as follows,  
+/// Possible system transitions are as follows,  
 ///
 /// | From     | To       | Methods                                |
 /// | ---      | ---      | ---                                    |
@@ -49,10 +51,7 @@ use std::{
 /// [`tick`]: Self::tick
 /// [`drain_poisoned`]: Self::drain_poisoned
 #[derive(Debug)]
-pub struct SystemGroup<S> {
-    /// [`SystemKey`] -> [`SystemId`].
-    map: HashMap<SystemKey, Vec<SystemId>, S>,
-
+pub(crate) struct SystemGroup<S> {
     /// System id that will be given to new registered system.
     cur_id: SystemId,
 
@@ -73,18 +72,22 @@ pub struct SystemGroup<S> {
     lifetime: SystemLifetime<S>,
 }
 
+impl<S> SystemGroup<S> {
+    pub(crate) fn cancel_active(&mut self) {
+        for sdata in self.active.values_mut() {
+            sdata.as_invoker_mut().cancel();
+        }
+    }
+}
+
 impl<S> SystemGroup<S>
 where
     S: BuildHasher + Default,
 {
-    pub(crate) fn new<Stor>(stor: Rc<RefCell<Stor>>, gi: u16) -> Self
-    where
-        Stor: StoreRequestInfo + 'static,
-    {
-        let dummy = ().into_data(stor, SystemId::new(gi, 0));
+    pub(crate) fn new(gi: u16) -> Self {
+        let dummy = ().into_data();
 
         Self {
-            map: HashMap::default(),
             cur_id: SystemId::new(gi, 1),
             active: SystemCycle::new(dummy),
             inactive: HashMap::default(),
@@ -94,16 +97,14 @@ where
         }
     }
 
-    pub fn len_active(&self) -> usize {
+    pub(crate) fn len_active(&self) -> usize {
         self.active.len()
     }
 
-    pub fn len_inactive(&self) -> usize {
+    // For future use
+    #[allow(dead_code)]
+    pub(crate) fn len_inactive(&self) -> usize {
         self.inactive.len()
-    }
-
-    pub fn len_poisoned(&self) -> usize {
-        self.poisoned.len()
     }
 
     pub(crate) fn get_active_mut(&mut self) -> &mut SystemCycle<S> {
@@ -130,22 +131,16 @@ where
         self.cur_id
     }
 
-    pub(crate) fn register(&mut self, skey: SystemKey, sdata: SystemData, volatile: bool) {
-        // It can be possible to set system id here,
-        // but then, system data may contain invalid system id for a second.
-        // That's not what we want, so clients must set the correct id
-        // through calling to next_system_id().
+    /// It can be possible to set system id here, but then, system data may
+    /// contain invalid system id for a second. That's not what we want, so
+    /// you must set the correct id by calling [`Self::next_system_id`]
+    /// beforehand.
+    pub(crate) fn register(&mut self, sdata: SystemData, volatile: bool) {
         let sid = sdata.id();
         assert_eq!(self.cur_id, sid);
 
         // Increases system id for next ones.
-        self.cur_id.add_item_index(1);
-
-        // Creates mapping between key and id.
-        self.map
-            .entry(skey)
-            .and_modify(|sids| sids.push(sid))
-            .or_insert(vec![sid]);
+        self.cur_id.add_system_index(1);
 
         // Registers the system to inactive list.
         self.inactive.insert(sid, sdata);
@@ -159,6 +154,7 @@ where
 
     /// Unregisters system if and only if the system is inactive.
     pub(crate) fn unregister(&mut self, sid: &SystemId) -> Option<SystemData> {
+        self.volatile.remove(sid);
         self.inactive.remove(sid)
     }
 
@@ -167,11 +163,11 @@ where
         &mut self,
         target: &SystemId,
         at: InsertPos,
-        live: NonZeroU32,
-    ) -> EcsResult<()> {
+        live: NonZeroTick,
+    ) -> Result<(), EcsError> {
         // Validates.
         if let InsertPos::After(after) = at {
-            if !self.is_active(after) {
+            if !self.is_active(&after) {
                 // Unknown `after` system.
                 return Err(EcsError::UnknownSystem);
             }
@@ -192,7 +188,7 @@ where
         }
     }
 
-    pub(crate) fn inactivate(&mut self, sid: &SystemId) -> EcsResult<()> {
+    pub(crate) fn inactivate(&mut self, sid: &SystemId) -> Result<(), EcsError> {
         let Self {
             active,
             volatile,
@@ -208,7 +204,7 @@ where
         volatile: &mut HashSet<SystemId, S>,
         inactive: &mut HashMap<SystemId, SystemData, S>,
         sid: &SystemId,
-    ) -> EcsResult<()> {
+    ) -> Result<(), EcsError> {
         if let Some(sdata) = active.remove(sid) {
             if !volatile.remove(sid) {
                 inactive.insert(*sid, sdata);
@@ -264,7 +260,7 @@ where
 /// Currently activated systems.
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct SystemCycle<S>(SetList<SystemId, SystemData, S>);
+pub(crate) struct SystemCycle<S>(SetList<SystemId, SystemData, S>);
 
 impl<S> SystemCycle<S>
 where
@@ -285,7 +281,7 @@ where
 
     pub(crate) fn insert(&mut self, sid: SystemId, sdata: SystemData, at: InsertPos) -> bool {
         match at {
-            InsertPos::After(after) => self.0.insert(sid, sdata, after),
+            InsertPos::After(after) => self.0.insert(sid, sdata, &after),
             InsertPos::Back => self.0.push_back(sid, sdata),
             InsertPos::Front => self.0.push_front(sid, sdata),
         }
@@ -295,24 +291,53 @@ where
         self.0.remove(sid)
     }
 
-    /// Resets both system position and run history.
-    pub(crate) fn iter_begin(&mut self) -> SystemCycleIter<S> {
+    pub(crate) fn iter_begin(&mut self) -> SystemCycleIter<'_, S> {
         SystemCycleIter::new(&mut self.0)
     }
 
-    /// Retrieves the next system data.
     pub(crate) fn peek_next(&self, sid: &SystemId) -> Option<&SystemData> {
         self.0.get_next(sid)
     }
 }
 
-#[derive(Debug)]
-pub struct SystemCycleIter<'a, S: BuildHasher> {
-    /// Currently activated systems.
-    systems: &'a mut SetList<SystemId, SystemData, S>,
+impl<S> Deref for SystemCycle<S> {
+    type Target = SetList<SystemId, SystemData, S>;
 
-    /// System position to be run.
-    cur_pos: ListPos,
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<S> DerefMut for SystemCycle<S> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+#[derive(Debug)]
+#[repr(transparent)]
+pub(crate) struct SystemCycleIter<'a, S> {
+    raw: RawSystemCycleIter<S>,
+
+    _marker: PhantomData<&'a mut ()>,
+}
+
+impl<'a, S> SystemCycleIter<'a, S> {
+    pub(crate) fn into_raw(self) -> RawSystemCycleIter<S> {
+        self.raw
+    }
+
+    pub(crate) unsafe fn from_raw(raw: RawSystemCycleIter<S>) -> Self {
+        Self {
+            raw,
+            _marker: PhantomData,
+        }
+    }
+
+    /// Returns current system position.
+    pub(crate) fn position(&self) -> ListPos {
+        self.raw.position()
+    }
 }
 
 impl<'a, S> SystemCycleIter<'a, S>
@@ -320,48 +345,87 @@ where
     S: BuildHasher,
 {
     pub(crate) fn new(systems: &'a mut SetList<SystemId, SystemData, S>) -> Self {
-        let cur_pos = systems.get_first_position();
-        Self { systems, cur_pos }
-    }
-
-    /// Moves system position on to the next.
-    pub(crate) fn next(&mut self) {
-        if let Some((next, _sdata)) = self.systems.iter_next(self.cur_pos) {
-            self.cur_pos = next;
+        Self {
+            raw: RawSystemCycleIter::new(systems),
+            _marker: PhantomData,
         }
-    }
-
-    /// Returns current system position.
-    pub(crate) fn position(&self) -> ListPos {
-        self.cur_pos
     }
 
     /// Returns system to be run this time.
     pub(crate) fn get(&mut self) -> Option<&mut SystemData> {
-        self.get_at(self.cur_pos)
+        // Safety: We're actually borrowing `raw.systems`.
+        unsafe { self.raw.get() }
     }
 
     /// Returns system at the given position.
     pub(crate) fn get_at(&mut self, pos: ListPos) -> Option<&mut SystemData> {
-        self.systems.iter_next_mut(pos).map(|(_, sdata)| sdata)
+        // Safety: We're actually borrowing `raw.systems`.
+        unsafe { self.raw.get_at(pos) }
     }
 }
 
-#[cfg(debug_assertions)]
-impl<'a, S> Drop for SystemCycleIter<'a, S>
+#[derive(Debug)]
+pub(crate) struct RawSystemCycleIter<S> {
+    /// Currently activated systems.
+    systems: NonNull<SetList<SystemId, SystemData, S>>,
+
+    /// System position to be run.
+    cur_pos: ListPos,
+}
+
+impl<S> RawSystemCycleIter<S> {
+    /// Returns current system position.
+    pub(crate) fn position(&self) -> ListPos {
+        self.cur_pos
+    }
+}
+
+impl<S> RawSystemCycleIter<S>
 where
     S: BuildHasher,
 {
-    fn drop(&mut self) {
-        // System cycle iterator must be consumed completely.
-        assert!(self.position().is_end());
+    pub(crate) fn new(systems: &mut SetList<SystemId, SystemData, S>) -> Self {
+        let cur_pos = systems.get_first_position();
+        // Safety: Infallible.
+        let systems = unsafe { NonNull::new_unchecked(systems as *mut _) };
+
+        Self { systems, cur_pos }
+    }
+
+    /// Moves system position on to the next.
+    pub(crate) unsafe fn next(&mut self) {
+        if let Some((next, _sdata)) = self.systems.as_ref().iter_next(self.cur_pos) {
+            self.cur_pos = next;
+        }
+    }
+
+    /// Returns system to be run this time.
+    pub(crate) unsafe fn get(&mut self) -> Option<&mut SystemData> {
+        self.get_at(self.cur_pos)
+    }
+
+    /// Returns system at the given position.
+    pub(crate) unsafe fn get_at(&mut self, pos: ListPos) -> Option<&mut SystemData> {
+        self.systems
+            .as_mut()
+            .iter_next_mut(pos)
+            .map(|(_, sdata)| sdata)
     }
 }
 
-pub enum InsertPos<'a> {
-    After(&'a SystemId),
+impl<S> Clone for RawSystemCycleIter<S> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<S> Copy for RawSystemCycleIter<S> {}
+
+#[derive(Debug)]
+pub enum InsertPos {
     Back,
     Front,
+    After(SystemId),
 }
 
 #[derive(Debug)]
@@ -372,7 +436,7 @@ struct SystemLifetime<S> {
     /// [`Tick`] -> [`Self::pool`] index.
     lives: HashMap<Tick, usize, S>,
 
-    /// Vector contains [`SystemKey`]s to be dead at a specific tick.
+    /// Vector contains system ids to be dead at a specific time.
     pool: SimpleVecPool<SystemId>,
 }
 
@@ -388,7 +452,7 @@ where
         }
     }
 
-    fn register(&mut self, sid: SystemId, live: NonZeroU32) {
+    fn register(&mut self, sid: SystemId, live: NonZeroTick) {
         let end = self.tick.saturating_add(live.get());
         let index = if let Some(index) = self.lives.get(&end) {
             *index
@@ -409,60 +473,79 @@ where
     }
 }
 
-// Clients can define their systems with some data.
-// And we're going to send those systems to other threads,
-// so it's good to add `Send` bound to `System` for safety.
-pub trait System: Send {
+// Clients can define their systems with some data. And we're going to send
+// those systems to other workers, so it's good to add `Send` bound to the trait
+// for safety.
+pub trait System: Send + 'static {
     type Request: Request;
 
     /// Required.
-    fn run(&mut self, resp: Response<Self::Request>);
+    fn run(&mut self, resp: Response<'_, Self::Request>);
 
-    /// Provided.
-    /// Use the name as a debugging information only.
-    fn name() -> &'static str {
+    /// This method is intended for private-use only.
+    //
+    // Can we hide this method from client code?
+    #[allow(unused_variables)]
+    fn _run_private(&mut self, sid: SystemId, buf: ManagedMutPtr<SystemBuffer>) {}
+
+    /// System can be cancelled out when it's active before it's dropped.
+    fn cancel(&mut self) {}
+
+    /// Provided.  
+    /// This name may change in the future.
+    /// Use this name as debugging information only.
+    fn system_name() -> &'static str {
         any::type_name::<Self>()
-    }
-
-    /// Provided.
-    fn key() -> SystemKey
-    where
-        Self: 'static,
-    {
-        SystemKey::of::<Self>()
     }
 }
 
 pub(crate) trait PrivateSystem: System {
-    type PrivateRequest: PrivateRequest;
+    fn system_key() -> SystemKey {
+        SystemKey::of::<Self>()
+    }
 
-    /// Creates system data and stores system information to the storage from the given type.
-    fn into_data<S>(self, stor: Rc<RefCell<S>>, sid: SystemId) -> SystemData
+    fn into_data(self) -> SystemData
     where
-        Self: 'static + Sized,
-        S: StoreRequestInfo + 'static + ?Sized,
+        Self: Sized + 'static,
     {
-        let rinfo = <Self::PrivateRequest as PrivateRequest>::get_info(&mut *stor.borrow_mut());
+        let boxed = Box::new(self);
+        // Safety: Infallible.
+        let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
+        Self::_create_data(ptr, SystemFlags::OWNED_SET)
+    }
 
-        let unreg = Box::new(move |rkey: &RequestKey| {
-            stor.borrow_mut().remove(rkey);
-        });
+    unsafe fn create_data(ptr: NonNull<dyn Invoke + Send>) -> SystemData
+    where
+        Self: Sized + 'static,
+    {
+        Self::_create_data(ptr, SystemFlags::OWNED_RESET)
+    }
+
+    fn _create_data(invoker: NonNull<dyn Invoke + Send>, flags: SystemFlags) -> SystemData {
+        let mut stor = RINFO_STOR.lock().unwrap();
+        let rinfo = <Self::Request as PrivateRequest>::get_info(&mut *stor);
+        drop(stor);
 
         SystemData {
-            id: sid,
-            invoker: Box::new(self),
-            info: Rc::new(SystemInfo::new(
-                Self::name(),
-                <Self::Request as Request>::key(),
+            id: SystemId::dummy(),
+            flags,
+            invoker,
+            info: Arc::new(SystemInfo::new(
+                Self::system_name(),
+                Self::system_key(),
+                Self::Request::request_key(),
                 rinfo,
-                unreg,
             )),
         }
     }
 }
 
-impl<T: System> PrivateSystem for T {
-    type PrivateRequest = T::Request;
+impl<T: System> PrivateSystem for T {}
+
+/// Empty system.
+impl System for () {
+    type Request = ();
+    fn run(&mut self, _resp: Response<Self::Request>) {}
 }
 
 /// [`TypeId`] of a [`System`].
@@ -472,63 +555,53 @@ pub struct SystemKey_;
 /// Globally unique system identification determined by [`SystemGroup`].
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
 pub struct SystemId {
-    /// Group index.
-    gi: u16,
-
-    /// Item index.
-    ii: u16,
+    group_index: u16,
+    system_index: u16,
 }
 
 impl SystemId {
     const DUMMY: Self = Self {
-        gi: u16::MAX,
-        ii: u16::MAX,
+        group_index: u16::MAX,
+        system_index: u16::MAX,
     };
     const MAX: u16 = u16::MAX - 1;
 
-    pub const fn dummy() -> Self {
+    pub(crate) const fn dummy() -> Self {
         Self::DUMMY
     }
 
-    pub fn is_dummy(&self) -> bool {
+    pub(crate) fn is_dummy(&self) -> bool {
         self == &Self::dummy()
     }
 
-    pub const fn new(gi: u16, ii: u16) -> Self {
-        assert!(gi != Self::dummy().gi && ii != Self::dummy().ii);
-
-        Self { gi, ii }
+    pub(crate) const fn new(group_index: u16, system_index: u16) -> Self {
+        Self {
+            group_index,
+            system_index,
+        }
     }
 
-    pub const fn group_index(&self) -> u16 {
-        self.gi
+    pub(crate) const fn group_index(&self) -> u16 {
+        self.group_index
     }
 
-    pub const fn max_group_index() -> u16 {
+    pub(crate) const fn max_group_index() -> u16 {
         Self::MAX
     }
 
-    pub const fn item_index(&self) -> u16 {
-        self.ii
-    }
-
-    pub const fn max_item_index() -> u16 {
+    pub(crate) const fn max_system_index() -> u16 {
         Self::MAX
     }
 
-    pub fn add_item_index(&mut self, by: u16) {
-        assert!(self.ii < Self::max_item_index());
-        self.ii += by;
-    }
-
-    pub const fn into_u32(self) -> u32 {
-        (self.gi as u32) << 16 | self.ii as u32
+    pub(crate) fn add_system_index(&mut self, by: u16) {
+        assert!(self.system_index < Self::max_system_index());
+        self.system_index += by;
     }
 }
 
 impl fmt::Display for SystemId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "({}, {})", self.gi, self.ii)
+        write!(f, "({}, {})", self.group_index, self.system_index)
     }
 }
 
@@ -536,60 +609,137 @@ pub struct SystemData {
     /// The other identification for the systems.
     id: SystemId,
 
+    flags: SystemFlags,
+
     /// System data and its entry point.
-    invoker: Box<dyn Invoke + Send>,
+    invoker: NonNull<(dyn Invoke + Send)>,
 
     /// Infrequently accssed information such as system's name or request.
     //
-    // * Why Rc
-    //
+    // * Why Arc
     // - In order to share `SystemInfo` with others.
     // But, we don't share onwership, others can have weak references only.
     // It reduces complexity in terms of self-unregistration from info storage.
-    //
     // - In order to reduce size of the struct.
     // We move whole `SystemData` when we activate or inactivate systems.
-    info: Rc<SystemInfo>,
+    info: Arc<SystemInfo>,
+}
+
+// Safety: If the data owns `invoker`, sending is ok. Otherwise, owner of the
+// `invoker` will guarantee that accessing the pointer must be ok.
+unsafe impl Send for SystemData {}
+
+impl Drop for SystemData {
+    fn drop(&mut self) {
+        // If this data owns `invoker`, deallocates it.
+        if self.flags.is_owned() {
+            // Safety: Checked.
+            unsafe { drop(Box::from_raw(self.invoker.as_ptr())) };
+        }
+    }
 }
 
 impl fmt::Debug for SystemData {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SystemData")
             .field("id", &self.id)
+            .field("flags", &self.flags)
             .field("info", &self.info)
             .finish_non_exhaustive()
     }
 }
 
 impl SystemData {
-    pub fn id(&self) -> SystemId {
+    pub const fn id(&self) -> SystemId {
         self.id
     }
 
+    pub(crate) const fn flags(&self) -> SystemFlags {
+        self.flags
+    }
+
+    pub(crate) fn set_id(&mut self, sid: SystemId) {
+        self.id = sid;
+    }
+
+    pub(crate) fn union_flags(&mut self, sflags: SystemFlags) {
+        self.flags |= sflags;
+    }
+
     pub(crate) fn info(&self) -> Weak<SystemInfo> {
-        Rc::downgrade(&self.info)
+        Arc::downgrade(&self.info)
     }
 
-    pub(crate) fn get_info(&self) -> &SystemInfo {
-        &self.info
-    }
-
-    pub(crate) fn get_request_info(&self) -> &Rc<RequestInfo> {
+    pub(crate) fn get_request_info(&self) -> &Arc<RequestInfo> {
         // Safety: It's always Some. See comments of the field.
         unsafe { self.info.rinfo.as_ref().unwrap_unchecked() }
     }
 
-    pub(crate) fn task_ptr(&mut self) -> NonNullExt<dyn Invoke + Send> {
-        let ptr = self.invoker.as_mut() as *mut _;
+    pub(crate) fn as_invoker_mut(&mut self) -> &mut (dyn Invoke + Send) {
+        // Safety: Pointer to invoker is valid to access because
+        // - If `sdata` owns it, we can safely access it.
+        // - If `sdata` doesn't own it, real owner guarantees that.
+        unsafe { self.invoker.as_mut() }
+    }
 
-        // Safety: Infallible.
-        unsafe { NonNullExt::new_unchecked(ptr).with_name(self.get_info().name()) }
+    pub(crate) unsafe fn task_ptr(&mut self) -> ManagedMutPtr<dyn Invoke + Send> {
+        ManagedMutPtr::new(NonNullExt::new_unchecked(self.invoker.as_ptr()))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SystemFlags(u32);
+
+bitflags::bitflags! {
+    impl SystemFlags: u32 {
+        const DEDI_SET = 1;
+        const DEDI_RESET = 1 << 1;
+
+        const PRIVATE_SET = 1 << 2;
+        const PRIVATE_RESET = 1 << 3;
+
+        const OWNED_SET = 1 << 4;
+        const OWNED_RESET = 1 << 5;
+    }
+}
+
+impl SystemFlags {
+    pub(crate) const fn is_dedi(&self) -> bool {
+        debug_assert!(!self.is_dedi_empty());
+
+        self.intersects(Self::DEDI_SET)
+    }
+
+    pub(crate) const fn is_dedi_empty(&self) -> bool {
+        !self.intersects(Self::DEDI_SET.union(Self::DEDI_RESET))
+    }
+
+    pub(crate) const fn is_private(&self) -> bool {
+        debug_assert!(!self.is_private_empty());
+
+        self.intersects(Self::PRIVATE_SET)
+    }
+
+    pub(crate) const fn is_private_empty(&self) -> bool {
+        !self.intersects(Self::PRIVATE_SET.union(Self::PRIVATE_RESET))
+    }
+
+    pub(crate) const fn is_owned(&self) -> bool {
+        debug_assert!(!self.is_owned_empty());
+
+        self.intersects(Self::OWNED_SET)
+    }
+
+    pub(crate) const fn is_owned_empty(&self) -> bool {
+        !self.intersects(Self::OWNED_SET.union(Self::OWNED_RESET))
     }
 }
 
 pub(crate) struct SystemInfo {
     /// System name basically determined by [`std::any::type_name`].
     name: &'static str,
+
+    _skey: SystemKey,
 
     /// [`System`] is related to a [`RequestInfo`].
     /// This field is the key for the `RequestInfo`.
@@ -599,38 +749,22 @@ pub(crate) struct SystemInfo {
     //
     // It's always Some except in drop().
     // In drop(), inner type will be dropped first.
-    rinfo: Option<Rc<RequestInfo>>,
-
-    /// Self-unregister function.
-    //
-    // Request information that this struct holds is held in a central storage
-    // as well. We unregister the information from the storage
-    // when we're going to not use it anymore.
-    #[allow(clippy::type_complexity)]
-    unreg: Option<Box<dyn FnOnce(&RequestKey)>>,
+    rinfo: Option<Arc<RequestInfo>>,
 }
 
 impl SystemInfo {
     const fn new(
         name: &'static str,
+        skey: SystemKey,
         rkey: RequestKey,
-        rinfo: Rc<RequestInfo>,
-        unreg: Box<dyn FnOnce(&RequestKey)>,
+        rinfo: Arc<RequestInfo>,
     ) -> Self {
         Self {
             name,
+            _skey: skey,
             rkey,
             rinfo: Some(rinfo),
-            unreg: Some(unreg),
         }
-    }
-
-    pub(crate) fn name(&self) -> &'static str {
-        self.name
-    }
-
-    pub(crate) fn request_key(&self) -> RequestKey {
-        self.rkey
     }
 
     pub(crate) fn get_request_info(&self) -> &RequestInfo {
@@ -651,24 +785,16 @@ impl Drop for SystemInfo {
     fn drop(&mut self) {
         // Self-unregister.
         drop(self.rinfo.take());
-        let unreg = self.unreg.take().unwrap();
-        unreg(&self.rkey);
+        let mut stor = RINFO_STOR.lock().unwrap();
+        stor.remove(&self.rkey);
     }
 }
 
-/// Empty system.
-impl System for () {
-    type Request = ();
-    fn run(&mut self, _resp: Response<Self::Request>) {}
-}
-
 /// Object safe trait for the [`System`].
-pub trait Invoke {
+pub(crate) trait Invoke {
     fn invoke(&mut self, buf: &mut SystemBuffer);
-    fn skey(&self) -> SystemKey
-    where
-        Self: 'static;
-    fn rkey(&self) -> RequestKey;
+    fn invoke_private(&mut self, sid: SystemId, buf: ManagedMutPtr<SystemBuffer>);
+    fn cancel(&mut self);
 }
 
 impl<S: System> Invoke for S {
@@ -676,15 +802,12 @@ impl<S: System> Invoke for S {
         self.run(Response::new(buf));
     }
 
-    fn skey(&self) -> SystemKey
-    where
-        Self: 'static,
-    {
-        S::key()
+    fn invoke_private(&mut self, sid: SystemId, buf: ManagedMutPtr<SystemBuffer>) {
+        self._run_private(sid, buf);
     }
 
-    fn rkey(&self) -> RequestKey {
-        <S as System>::Request::key()
+    fn cancel(&mut self) {
+        self.cancel();
     }
 }
 
@@ -732,6 +855,7 @@ mod impl_for_fn_system {
             $(,rw=$rw:ident)?
             $(,ew=$ew:ident)?
         ) => {
+            // FnMut(..) -> FnSystem<..>
             impl<F $(,$r)? $(,$w)? $(,$rr)? $(,$rw)? $(,$ew)?> 
                 From<F> for 
                 FnSystem<$req_with_placeholder, F>
@@ -757,6 +881,7 @@ mod impl_for_fn_system {
                 }
             }
 
+            // FnOnce(..) -> FnOnceSystem<..>
             impl<F $(,$r)? $(,$w)? $(,$rr)? $(,$rw)? $(,$ew)?> 
                 From<F> for 
                 FnOnceSystem<$req_with_placeholder, F>
@@ -782,6 +907,7 @@ mod impl_for_fn_system {
                 }
             }
 
+            // System for FnSystem<..>
             impl<F $(,$r)? $(,$w)? $(,$rr)? $(,$rw)? $(,$ew)?> 
                 System for 
                 FnSystem<$req_with_placeholder, F>
@@ -792,7 +918,7 @@ mod impl_for_fn_system {
                     $(ResRead<$rr>,)?
                     $(ResWrite<$rw>,)?
                     $(EntWrite<$ew>,)?
-                ) + Send,
+                ) + Send + 'static,
                 $($r: Query,)?
                 $($w: QueryMut,)?
                 $($rr: ResQuery,)?
@@ -811,11 +937,12 @@ mod impl_for_fn_system {
                     )
                 }
 
-                fn name() -> &'static str {
+                fn system_name() -> &'static str {
                     std::any::type_name::<F>()
                 }
             }
 
+            // System for FnOnceSystem<..>
             impl<F $(,$r)? $(,$w)? $(,$rr)? $(,$rw)? $(,$ew)?> 
                 System for 
                 FnOnceSystem<$req_with_placeholder, F>
@@ -826,7 +953,7 @@ mod impl_for_fn_system {
                     $(ResRead<$rr>,)?
                     $(ResWrite<$rw>,)?
                     $(EntWrite<$ew>,)?
-                ) + Send,
+                ) + Send + 'static,
                 $($r: Query,)?
                 $($w: QueryMut,)?
                 $($rr: ResQuery,)?
@@ -852,11 +979,12 @@ mod impl_for_fn_system {
                     }
                 }
 
-                fn name() -> &'static str {
+                fn system_name() -> &'static str {
                     std::any::type_name::<F>()
                 }
             }
 
+            // FnMut<..> -> SystemBond<..>
             impl<F $(,$r)? $(,$w)? $(,$rr)? $(,$rw)? $(,$ew)?> 
                 From<F> for 
                 SystemBond<FnSystem<$req_with_placeholder, F>>
@@ -876,32 +1004,6 @@ mod impl_for_fn_system {
             {
                 fn from(value: F) -> Self {
                     Self(value.into())
-                }
-            }
-
-            impl<F $(,$r)? $(,$w)? $(,$rr)? $(,$rw)? $(,$ew)?>
-                AsFnSystemKey<$req_with_placeholder> for 
-                F
-            where
-                F: FnOnce(
-                    $(Read<$r>,)?
-                    $(Write<$w>,)?
-                    $(ResRead<$rr>,)?
-                    $(ResWrite<$rw>,)?
-                    $(EntWrite<$ew>,)?
-                ) + Send,
-                $($r: Query,)?
-                $($w: QueryMut,)?
-                $($rr: ResQuery,)?
-                $($rw: ResQueryMut,)?
-                $($ew: EntQueryMut,)?
-            {
-                fn key(self) -> SystemKey
-                where 
-                    Self: 'static 
-                {
-                    let sys: FnOnceSystem<_, F> = self.into();
-                    sys.skey()
                 }
             }
         };
@@ -968,7 +1070,7 @@ mod impl_for_fn_system {
 pub struct SystemBond<S>(S);
 
 impl<S> SystemBond<S> {
-    pub fn into_inner(self) -> S {
+    pub(crate) fn into_inner(self) -> S {
         self.0
     }
 }
@@ -979,18 +1081,120 @@ impl<S: System> From<S> for SystemBond<S> {
     }
 }
 
-/// Functions that implements [`FnSystem`] can generate [`SystemKey`] from it.
-/// However, that requires call to [`From::from`] to become `FnSystem` from a function.
-/// This trait makes you avoid to write boilerplate code like above.
-/// You can get a `SystemKey` from a function directly using this trait.
-pub trait AsFnSystemKey<M> {
-    fn key(self) -> SystemKey
-    where
-        Self: 'static;
-}
-
 /// Monotonically increasing counter.
 /// When the scheduling occurs, this counter increases by 1.
 /// For exampple, if actual fps is 60, then `Tick` will increase by 60 in a sec.
-pub type Tick = u32;
-pub type NonZeroTick = NonZeroU32;
+pub type Tick = u64;
+pub type NonZeroTick = NonZeroU64;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_systemgroup_unregister_volatile() {
+        let (mut len_inactive, mut len_volatile) = (0, 0);
+        let mut sg = SystemGroup::<std::hash::RandomState>::new(0);
+
+        // Registers an inactive & volatile system.
+        let mut sdata: SystemData = ().into_data();
+        let sid = sg.next_system_id();
+        sdata.id = sid;
+        sg.register(sdata, true);
+
+        // Active: 0, Inactive: 1, Volatile: 1
+        len_inactive += 1;
+        len_volatile += 1;
+        assert_eq!(sg.len_inactive(), len_inactive);
+        assert_eq!(sg.volatile.len(), len_volatile);
+
+        // Unregisters the system.
+        sg.unregister(&sid).unwrap();
+
+        // Active: 0, Inactive: 0, Volatile: 0
+        len_inactive -= 1;
+        len_volatile -= 1;
+        assert_eq!(sg.len_inactive(), len_inactive);
+        assert_eq!(sg.volatile.len(), len_volatile);
+    }
+
+    #[test]
+    fn test_systemgroup_mixed_operations() {
+        let (mut len_active, mut len_inactive, mut len_volatile) = (0, 0, 0);
+        let mut sg = SystemGroup::<std::hash::RandomState>::new(0);
+
+        // Registers an inactive & non-volitile system.
+        let mut sdata: SystemData = ().into_data();
+        let sid_a = sg.next_system_id();
+        sdata.id = sid_a;
+        sg.register(sdata, false);
+
+        // Active: 0, Inactive: 1, Volatile: 0
+        len_inactive += 1;
+        assert_eq!(sg.len_active(), len_active);
+        assert_eq!(sg.len_inactive(), len_inactive);
+        assert_eq!(sg.volatile.len(), len_volatile);
+
+        // Activates the system.
+        sg.activate(&sid_a, InsertPos::Back, NonZeroTick::new(1).unwrap())
+            .unwrap();
+
+        // Active: 1, Inactive: 0, Volatile: 0
+        len_active += 1;
+        len_inactive -= 1;
+        assert_eq!(sg.len_active(), len_active);
+        assert_eq!(sg.len_inactive(), len_inactive);
+        assert_eq!(sg.volatile.len(), len_volatile);
+
+        // Registers an inactive & volatile system.
+        let mut sdata: SystemData = ().into_data();
+        let sid_b = sg.next_system_id();
+        sdata.id = sid_b;
+        sg.register(sdata, true);
+
+        // Active: 1, Inactive: 1, Volatile: 1
+        len_inactive += 1;
+        len_volatile += 1;
+        assert_eq!(sg.len_active(), len_active);
+        assert_eq!(sg.len_inactive(), len_inactive);
+        assert_eq!(sg.volatile.len(), len_volatile);
+
+        // Activates the system.
+        sg.activate(&sid_b, InsertPos::Back, NonZeroTick::new(2).unwrap())
+            .unwrap();
+
+        // Active: 2, Inactive: 0, Volatile: 1
+        len_active += 1;
+        len_inactive -= 1;
+        assert_eq!(sg.len_active(), len_active);
+        assert_eq!(sg.len_inactive(), len_inactive);
+        assert_eq!(sg.volatile.len(), len_volatile);
+
+        // Non-volatile system will be inactivated.
+        sg.tick();
+
+        // Active: 1, Inactive: 1, Volatile: 1
+        len_active -= 1;
+        len_inactive += 1;
+        assert_eq!(sg.len_active(), len_active);
+        assert_eq!(sg.len_inactive(), len_inactive);
+        assert_eq!(sg.volatile.len(), len_volatile);
+
+        // Volatile system will be discarded.
+        sg.tick();
+
+        // Active: 0, Inactive: 1, Volatile: 0
+        len_active -= 1;
+        len_volatile -= 1;
+        assert_eq!(sg.len_active(), len_active);
+        assert_eq!(sg.len_inactive(), len_inactive);
+        assert_eq!(sg.volatile.len(), len_volatile);
+
+        // Unregisters the remained system.
+        sg.unregister(&sid_a).unwrap();
+        len_inactive -= 1;
+        assert_eq!(sg.len_active(), len_active);
+        assert_eq!(sg.len_inactive(), len_inactive);
+        assert_eq!(sg.volatile.len(), len_volatile);
+    }
+}

@@ -1,17 +1,11 @@
-use super::atomic::Atomic;
 use std::{
     marker::PhantomData,
     mem,
     ops::{Deref, DerefMut},
-    process, ptr,
-    sync::{
-        atomic::{self, Ordering},
-        Arc,
-    },
-    thread,
+    ptr,
 };
 
-pub type BorrowResult<B, A> = Result<Borrowed<B, A>, BorrowError>;
+pub type BorrowResult<B> = Result<Borrowed<B>, BorrowError>;
 
 #[derive(Debug)]
 pub enum BorrowError {
@@ -30,57 +24,85 @@ pub enum BorrowError {
 
 /// A shallow wrapper of [`Holder`].
 #[derive(Debug)]
-pub struct SimpleHolder<V, A: Atomic<i32>>(Holder<V, V, V, A>);
+pub struct SimpleHolder<V>(Holder<V, V, V>);
 
-impl<V: Clone, A: Atomic<i32>> SimpleHolder<V, A> {
+impl<V: Clone> SimpleHolder<V> {
     pub fn new(value: V) -> Self {
         let fn_imm = |value: &V| -> V { value.clone() };
         let fn_mut = |value: &mut V| -> V { value.clone() };
         let inner = Holder::new(value, fn_imm, fn_mut);
         Self(inner)
     }
+
+    pub fn into_value(self) -> V {
+        self.0.into_value()
+    }
 }
 
-impl<V, A: Atomic<i32>> Deref for SimpleHolder<V, A> {
-    type Target = Holder<V, V, V, A>;
+impl<V> Deref for SimpleHolder<V> {
+    type Target = Holder<V, V, V>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<V, A: Atomic<i32>> DerefMut for SimpleHolder<V, A> {
+impl<V> DerefMut for SimpleHolder<V> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-/// Holding a thing within this and borrow it as [`Borrowed`].
-/// Multiple immutable borrowing is allowed, but mutable borrowing is exclusive.
-/// This detects dropping `Borrowed`, then this causes panic or abort if this is dropped while any `Borrowed` is still alive.
-/// You can check it out using [`Holder::borrow_count`] to see there's any `Borrowed`.
+/// Holding a thing within this struct and allows to borrow inner data as a
+/// [`Borrowed`]. Multiple immutable borrowing is allowed, but mutable borrowing
+/// is exclusive. If this struct is dropped while any `Borrowed` is alive, it
+/// causes panic. You can check it out using [`Holder::borrow_count`] to see
+/// there's any `Borrowed`.
+///
+/// Note, however, that this struct doesn't provide memory synchronization
+/// over threads. If you want it, use [`Arc`] or something like that.
+///
+/// [`Arc`]: std::sync::Arc
 #[derive(Debug)]
-pub struct Holder<V, BI, BM, A: Atomic<i32> = atomic::AtomicI32> {
+pub struct Holder<V, BI, BM> {
     value: V,
-    atomic_cnt: Arc<A>,
+    #[cfg(feature = "borrow_check")]
+    cnt: std::sync::Arc<std::sync::atomic::AtomicI32>,
     fn_imm: fn(&V) -> BI,
     fn_mut: fn(&mut V) -> BM,
     _marker: PhantomData<(BI, BM)>,
 }
 
-impl<V, BI, BM, A: Atomic<i32>> Holder<V, BI, BM, A> {
+impl<V, BI, BM> Holder<V, BI, BM> {
+    #[cfg(feature = "borrow_check")]
     const CNT_INIT: i32 = 0;
+    #[cfg(feature = "borrow_check")]
     const CNT_EXC: i32 = -1;
+    #[cfg(feature = "borrow_check")]
     const CNT_MAX: i32 = 1024;
 
     pub fn new(value: V, fn_imm: fn(&V) -> BI, fn_mut: fn(&mut V) -> BM) -> Self {
         Self {
             value,
-            atomic_cnt: Arc::new(A::new(Self::CNT_INIT)),
+            #[cfg(feature = "borrow_check")]
+            cnt: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(Self::CNT_INIT)),
             fn_imm,
             fn_mut,
             _marker: PhantomData,
         }
+    }
+
+    pub fn into_value(self) -> V {
+        // Due to the drop impl, we cannot take `value` out. So checking on drop
+        // occurs here instead.
+
+        #[cfg(feature = "borrow_check")]
+        assert!(self.cnt.load(std::sync::atomic::Ordering::Relaxed) == 0);
+
+        // Safety: Pointer to self.value is valid.
+        let value = unsafe { ptr::read(&self.value as *const _) };
+        mem::forget(self);
+        value
     }
 
     pub fn get_fn_imm(&self) -> fn(&V) -> BI {
@@ -91,126 +113,214 @@ impl<V, BI, BM, A: Atomic<i32>> Holder<V, BI, BM, A> {
         self.fn_mut
     }
 
-    pub fn borrow(&self) -> BorrowResult<BI, A> {
+    pub fn borrow(&self) -> BorrowResult<BI> {
         self.count_ref()?;
         let value = (self.fn_imm)(&self.value);
-        let exclusive = false;
-        let atomic_cnt = Arc::clone(&self.atomic_cnt);
-        Ok(Borrowed::new(value, exclusive, atomic_cnt))
+
+        #[cfg(feature = "borrow_check")]
+        {
+            let exclusive = false;
+            let cnt = std::sync::Arc::clone(&self.cnt);
+            Ok(Borrowed::new(value, exclusive, cnt))
+        }
+
+        #[cfg(not(feature = "borrow_check"))]
+        Ok(Borrowed::new(value))
     }
 
-    pub fn borrow_mut(&mut self) -> BorrowResult<BM, A> {
+    pub fn borrow_mut(&mut self) -> BorrowResult<BM> {
         self.count_mut()?;
         let value = (self.fn_mut)(&mut self.value);
-        let exclusive = true;
-        let atomic_cnt = Arc::clone(&self.atomic_cnt);
-        Ok(Borrowed::new(value, exclusive, atomic_cnt))
+
+        #[cfg(feature = "borrow_check")]
+        {
+            let exclusive = true;
+            let cnt = std::sync::Arc::clone(&self.cnt);
+            Ok(Borrowed::new(value, exclusive, cnt))
+        }
+
+        #[cfg(not(feature = "borrow_check"))]
+        Ok(Borrowed::new(value))
     }
 
-    pub fn get(&self) -> BorrowResult<&V, A> {
+    pub fn get(&self) -> BorrowResult<&V> {
         self.count_ref()?;
         let value = &self.value;
-        let exclusive = false;
-        let atomic_cnt = Arc::clone(&self.atomic_cnt);
-        Ok(Borrowed::new(value, exclusive, atomic_cnt))
+
+        #[cfg(feature = "borrow_check")]
+        {
+            let exclusive = false;
+            let cnt = std::sync::Arc::clone(&self.cnt);
+            Ok(Borrowed::new(value, exclusive, cnt))
+        }
+
+        #[cfg(not(feature = "borrow_check"))]
+        Ok(Borrowed::new(value))
     }
 
-    pub fn get_mut(&mut self) -> BorrowResult<&mut V, A> {
+    pub fn get_mut(&mut self) -> BorrowResult<&mut V> {
         self.count_mut()?;
         let value = &mut self.value;
-        let exclusive = true;
-        let atomic_cnt = Arc::clone(&self.atomic_cnt);
-        Ok(Borrowed::new(value, exclusive, atomic_cnt))
+
+        #[cfg(feature = "borrow_check")]
+        {
+            let exclusive = true;
+            let cnt = std::sync::Arc::clone(&self.cnt);
+            Ok(Borrowed::new(value, exclusive, cnt))
+        }
+
+        #[cfg(not(feature = "borrow_check"))]
+        Ok(Borrowed::new(value))
     }
 
-    /// Retrieves current reference count.
-    /// If it is greater than zero, it means there exist immutable [`Borrowed`].
-    /// If it is [`Self::CNT_EXC`], it means there exist mutable `Borrowed`.
-    /// Otherwise, in other words, it's zero, there's no `Borrowed`.
+    /// Returns shared reference to inner value without borrow check.
+    ///
+    /// # Safety
+    ///
+    /// Undefine behavior if exclusive borrow happend before.
+    pub unsafe fn get_unchecked(&self) -> &V {
+        &self.value
+    }
+
+    /// Returns mutable reference to inner value without borrow check.
+    ///
+    /// # Safety
+    ///
+    /// Undefine behavior if exclusive borrow happend before.
+    pub unsafe fn get_unchecked_mut(&mut self) -> &mut V {
+        &mut self.value
+    }
+
+    /// Retrieves current reference count. If it is greater than zero, it means
+    /// there exist immutable [`Borrowed`]. If it is [`Self::CNT_EXC`], it means
+    /// there exist mutable `Borrowed`. Otherwise, in other words, it's zero,
+    /// there's no `Borrowed`.
     pub fn borrow_count(&self) -> i32 {
-        self.atomic_cnt.load(Ordering::Relaxed)
-    }
+        #[cfg(feature = "borrow_check")]
+        {
+            self.cnt.load(std::sync::atomic::Ordering::Relaxed)
+        }
 
-    fn count_ref(&self) -> Result<(), BorrowError> {
-        let old = self.atomic_cnt.add(1, Ordering::Relaxed);
-        if old > Self::CNT_MAX {
-            self.atomic_cnt.sub(1, Ordering::Relaxed);
-            Err(BorrowError::TooManyBorrow)
-        } else if old == Self::CNT_EXC {
-            self.atomic_cnt.sub(1, Ordering::Relaxed);
-            Err(BorrowError::ExclusiveFailed)
-        } else {
-            Ok(())
+        #[cfg(not(feature = "borrow_check"))]
+        {
+            0
         }
     }
 
+    fn count_ref(&self) -> Result<(), BorrowError> {
+        #[cfg(feature = "borrow_check")]
+        {
+            use std::sync::atomic::Ordering;
+
+            let old = self.cnt.fetch_add(1, Ordering::Relaxed);
+            if old > Self::CNT_MAX {
+                self.cnt.fetch_sub(1, Ordering::Relaxed);
+                Err(BorrowError::TooManyBorrow)
+            } else if old == Self::CNT_EXC {
+                self.cnt.fetch_sub(1, Ordering::Relaxed);
+                Err(BorrowError::ExclusiveFailed)
+            } else {
+                Ok(())
+            }
+        }
+
+        #[cfg(not(feature = "borrow_check"))]
+        Ok(())
+    }
+
     fn count_mut(&mut self) -> Result<(), BorrowError> {
-        self.atomic_cnt
-            .compare_exchange(
-                Self::CNT_INIT,
-                Self::CNT_EXC,
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-            )
-            .map_err(|_| BorrowError::ExclusiveFailed)?;
+        #[cfg(feature = "borrow_check")]
+        {
+            use std::sync::atomic::Ordering;
+
+            self.cnt
+                .compare_exchange(
+                    Self::CNT_INIT,
+                    Self::CNT_EXC,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                )
+                .map_err(|_| BorrowError::ExclusiveFailed)?;
+            Ok(())
+        }
+
+        #[cfg(not(feature = "borrow_check"))]
         Ok(())
     }
 }
 
-impl<V, BI, BM, A: Atomic<i32>> Drop for Holder<V, BI, BM, A> {
+impl<V, BI, BM> Drop for Holder<V, BI, BM> {
     fn drop(&mut self) {
-        // Borrowed is dropped with Release ordering and it's synchronized with this Acquire.
-        // Therefore, this thread can observe modification happend before when Borrowed is dropped.
-        //
-        // NOTE: Can we test whether it fails or not if we used Relaxed here?
-        let cnt = self.atomic_cnt.load(Ordering::Acquire);
-        if cnt != 0 {
-            // Holder may be dropped while some threads are using Borrowed.
-            // It's definitely unintended behavior.
-            if thread::panicking() {
-                process::abort();
-            } else {
-                panic!("Holder was dropped while someone is still using Borrowed");
+        #[cfg(feature = "borrow_check")]
+        {
+            let cnt = self.cnt.load(std::sync::atomic::Ordering::Relaxed);
+            if cnt != 0 {
+                // Holder may be dropped while some threads are using Borrowed.
+                // It's definitely unintended behavior.
+                if std::thread::panicking() {
+                    std::process::abort();
+                } else {
+                    panic!("Holder was dropped while someone is still using Borrowed");
+                }
             }
         }
     }
 }
 
 #[derive(Debug)]
-pub struct Borrowed<B, A: Atomic<i32>> {
+pub struct Borrowed<B> {
     value: B,
+    #[cfg(feature = "borrow_check")]
     exclusive: bool,
-    atomic_cnt: Arc<A>,
+    #[cfg(feature = "borrow_check")]
+    cnt: std::sync::Arc<std::sync::atomic::AtomicI32>,
 }
 
-impl<B, A: Atomic<i32>> Borrowed<B, A> {
-    pub const fn new(value: B, exclusive: bool, atomic_cnt: Arc<A>) -> Self {
+impl<B> Borrowed<B> {
+    #[cfg(feature = "borrow_check")]
+    pub const fn new(
+        value: B,
+        exclusive: bool,
+        cnt: std::sync::Arc<std::sync::atomic::AtomicI32>,
+    ) -> Self {
         Self {
             value,
             exclusive,
-            atomic_cnt,
+            cnt,
         }
     }
 
-    pub fn map<T>(mut self, f: impl FnOnce(B) -> T) -> Borrowed<T, A> {
+    #[cfg(not(feature = "borrow_check"))]
+    pub const fn new(value: B) -> Self {
+        Self { value }
+    }
+
+    pub fn map<T>(mut self, f: impl FnOnce(B) -> T) -> Borrowed<T> {
         // Safety: We're going to call forget() on `self`.
         let res = unsafe { self.map_copy(f) };
         mem::forget(self);
         res
     }
 
-    /// Turns inner type into another type, then returns instance.
-    /// But `self` will leave as it was, so do not use it any longer.
-    /// That means you must not call drop on it as well.
-    /// Consider using mem::forget() or something like that on `self` after calling this method.
+    /// Turns inner type into another type, then returns instance.  But `self`
+    /// will leave as it was, so do not use it any longer.  That means you must
+    /// not call drop on it as well. Consider using mem::forget() or something
+    /// like that on `self` after calling this method.
     ///
     /// # Safety
     ///
     /// Undefined behavior if `self` is used again.
-    pub unsafe fn map_copy<T>(&mut self, f: impl FnOnce(B) -> T) -> Borrowed<T, A> {
+    pub unsafe fn map_copy<T>(&mut self, f: impl FnOnce(B) -> T) -> Borrowed<T> {
         let value: B = ptr::read(&self.value as *const _);
-        let atomic_cnt = ptr::read(&self.atomic_cnt as *const _);
-        Borrowed::new(f(value), self.exclusive, atomic_cnt)
+
+        #[cfg(feature = "borrow_check")]
+        {
+            let cnt = ptr::read(&self.cnt as *const _);
+            Borrowed::new(f(value), self.exclusive, cnt)
+        }
+
+        #[cfg(not(feature = "borrow_check"))]
+        Borrowed::new(f(value))
     }
 
     pub fn map_ref<T>(&self, f: impl FnOnce(&B) -> &T) -> &T {
@@ -222,7 +332,7 @@ impl<B, A: Atomic<i32>> Borrowed<B, A> {
     }
 }
 
-impl<B, A: Atomic<i32>> Deref for Borrowed<B, A> {
+impl<B> Deref for Borrowed<B> {
     type Target = B;
 
     fn deref(&self) -> &Self::Target {
@@ -230,18 +340,23 @@ impl<B, A: Atomic<i32>> Deref for Borrowed<B, A> {
     }
 }
 
-impl<B, A: Atomic<i32>> DerefMut for Borrowed<B, A> {
+impl<B> DerefMut for Borrowed<B> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
     }
 }
 
-impl<B, A: Atomic<i32>> Drop for Borrowed<B, A> {
+impl<B> Drop for Borrowed<B> {
     fn drop(&mut self) {
-        if self.exclusive {
-            self.atomic_cnt.add(1, Ordering::Release);
-        } else {
-            self.atomic_cnt.sub(1, Ordering::Release);
+        #[cfg(feature = "borrow_check")]
+        {
+            use std::sync::atomic::Ordering;
+
+            if self.exclusive {
+                self.cnt.fetch_add(1, Ordering::Relaxed);
+            } else {
+                self.cnt.fetch_sub(1, Ordering::Relaxed);
+            }
         }
     }
 }

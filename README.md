@@ -7,7 +7,7 @@ Entity Component System(ECS) implementation.
 - Supports CPU parallelism based on rayon.  
 [example](examples/parallel.rs)
 
-- Supports asynchronous tasks.
+- Supports asynchronous tasks.  
 [example](examples/async.rs)
 
 - Supports wasm32-unknown-unknown target.  

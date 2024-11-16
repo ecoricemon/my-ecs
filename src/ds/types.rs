@@ -239,7 +239,6 @@ macro_rules! tinfo {
     }};
 }
 
-#[cfg_attr(not(debug_assertions), repr(transparent), derive(Debug))]
 pub struct TypeIdExt {
     inner: TypeId,
     #[cfg(debug_assertions)]

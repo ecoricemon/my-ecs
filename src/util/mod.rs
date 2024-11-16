@@ -28,19 +28,17 @@ pub struct PowerOfTwo {
 
 impl PowerOfTwo {
     pub const fn new(value: usize) -> Option<Self> {
-        if value.is_power_of_two() {
-            Some(if value == 0 {
-                Self {
-                    value,
-                    k: 0,
-                    mask: 0,
-                }
-            } else {
-                Self {
-                    value,
-                    k: value.trailing_zeros(),
-                    mask: usize::MAX,
-                }
+        if value == 0 {
+            Some(Self {
+                value,
+                k: 0,
+                mask: 0,
+            })
+        } else if value.is_power_of_two() {
+            Some(Self {
+                value,
+                k: value.trailing_zeros(),
+                mask: usize::MAX,
             })
         } else {
             None
@@ -72,6 +70,14 @@ impl<T, const N: usize> Multi<T, N> {
         let _: () = const { assert!(N > 0, "N must be greater than 0") };
 
         Self { items, cur: 0 }
+    }
+
+    pub fn items(&self) -> &[T; N] {
+        &self.items
+    }
+
+    pub fn items_mut(&mut self) -> &mut [T; N] {
+        &mut self.items
     }
 
     pub fn get(&self, index: usize) -> Option<&T> {

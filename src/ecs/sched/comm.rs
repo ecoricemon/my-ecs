@@ -2,7 +2,7 @@ use super::task::{ParTask, Task};
 use crate::{
     ds::prelude::*,
     ecs::{
-        cmd::Command,
+        cmd::CommandObject,
         worker::{Message, WorkerId},
     },
 };
@@ -10,11 +10,10 @@ use crossbeam_deque as cb;
 use std::{
     cell::Cell,
     fmt,
-    marker::PhantomData,
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError},
-        Arc, Mutex,
+        mpsc::{self, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
+        Arc,
     },
     thread::{self, Thread},
     time::Duration,
@@ -26,7 +25,7 @@ pub(crate) struct SubComm {
     /// It works in spmc fashion and push/pop occurs as follows.
     /// - 'Push' occurs by main worker.
     /// - 'Pop' occurs by all sub workers.
-    global: Arc<cb::Injector<Task>>,
+    injector: Arc<cb::Injector<Task>>,
 
     /// Local task queue contains [`Task::System`], [`Task::Parallel`], and
     /// [`Task::Future`].
@@ -52,7 +51,7 @@ pub(crate) struct SubComm {
     tx_msg: ParkingSender<Message>,
 
     /// Channel sending commands to main worker.
-    tx_cmd: ParkingSender<Box<dyn Command>>,
+    tx_cmd: CommandSender,
 
     /// Signal to wake or block workers and some counts.
     signal: Arc<GlobalSignal>,
@@ -63,10 +62,11 @@ pub(crate) struct SubComm {
 
 impl SubComm {
     pub(super) fn with_len(
-        global: &Arc<cb::Injector<Task>>,
+        group_index: u16,
+        injector: &Arc<cb::Injector<Task>>,
         signal: &Arc<GlobalSignal>,
         tx_msg: &ParkingSender<Message>,
-        tx_cmd: &ParkingSender<Box<dyn Command>>,
+        tx_cmd: &CommandSender,
         len: usize,
     ) -> Vec<Self> {
         thread_local! {
@@ -89,28 +89,28 @@ impl SubComm {
         locals
             .into_iter()
             .enumerate()
-            .map(|(i, local)| {
+            .map(|(worker_index, local)| {
                 let id = WORKER_ID_GEN.get();
                 WORKER_ID_GEN.set(id + 1);
                 Self {
-                    global: Arc::clone(global),
+                    injector: Arc::clone(injector),
                     local,
                     siblings: Arc::clone(&siblings),
                     futures: Arc::clone(&asyncs),
                     tx_msg: tx_msg.clone(),
                     tx_cmd: tx_cmd.clone(),
-                    wid: WorkerId::new(id, i as u32),
+                    wid: WorkerId::new(id, group_index, worker_index as u16),
                     signal: Arc::clone(signal),
                 }
             })
             .collect()
     }
 
-    pub(super) fn signal(&self) -> &GlobalSignal {
+    pub(crate) fn signal(&self) -> &GlobalSignal {
         &self.signal
     }
 
-    pub(super) const fn worker_id(&self) -> WorkerId {
+    pub(crate) const fn worker_id(&self) -> WorkerId {
         self.wid
     }
 
@@ -123,21 +123,21 @@ impl SubComm {
     }
 
     pub(super) fn wait(&self) {
-        self.signal.add_idle_count();
-        self.signal.sub().wait(self.wid.index());
-        self.signal.sub_idle_count();
+        self.signal.sub().wait(self.wid.worker_index() as usize);
     }
 
     pub(super) fn wake_self(&self) {
-        self.signal.sub().notify(self.wid.index());
+        self.signal.sub().notify(self.wid.worker_index() as usize);
     }
 
     pub(crate) fn send_message(&self, msg: Message) {
         self.tx_msg.send(msg).unwrap();
     }
 
-    pub(crate) fn send_command(&self, cmd: Box<dyn Command>) {
-        self.tx_cmd.send(cmd).unwrap();
+    pub(crate) fn send_command(&self, cmd: CommandObject) {
+        if let Err(SendError(cmd)) = self.tx_cmd.send(cmd) {
+            cmd.cancel();
+        }
     }
 
     pub(super) fn pop(&self) -> cb::Steal<Task> {
@@ -154,7 +154,7 @@ impl SubComm {
 
     pub(super) fn pop_future(&self) -> cb::Steal<Task> {
         loop {
-            let steal = self.futures[self.wid.index()].steal();
+            let steal = self.futures[self.wid.worker_index() as usize].steal();
             match &steal {
                 cb::Steal::Retry => {}
                 _ => return steal,
@@ -167,7 +167,7 @@ impl SubComm {
     }
 
     pub(super) fn push_future_task(&self, handle: UnsafeFuture) {
-        self.futures[self.wid.index()].push(Task::Future(handle));
+        self.futures[self.wid.worker_index() as usize].push(Task::Future(handle));
     }
 
     pub(super) fn is_local_empty(&self) -> bool {
@@ -175,14 +175,14 @@ impl SubComm {
     }
 
     pub(super) fn search(&self) -> cb::Steal<Task> {
-        self.search_global()
+        self.search_injector()
             .or_else(|| self.search_sibling_locals())
             .or_else(|| self.search_futures())
     }
 
-    pub(super) fn search_global(&self) -> cb::Steal<Task> {
+    pub(super) fn search_injector(&self) -> cb::Steal<Task> {
         loop {
-            let steal = self.global.steal_batch_and_pop(&self.local);
+            let steal = self.injector.steal_batch_and_pop(&self.local);
             match &steal {
                 cb::Steal::Success(_task) => {
                     if !self.local.is_empty() {
@@ -202,7 +202,7 @@ impl SubComm {
             .siblings
             .iter()
             .cycle()
-            .skip(self.wid.index() + 1)
+            .skip(self.wid.worker_index() as usize + 1)
             .take(self.siblings.len() - 1)
         {
             loop {
@@ -227,7 +227,7 @@ impl SubComm {
             .futures
             .iter()
             .cycle()
-            .skip(self.wid.index())
+            .skip(self.wid.worker_index() as usize)
             .take(self.futures.len())
         {
             loop {
@@ -249,34 +249,34 @@ impl SubComm {
 }
 
 #[derive(Debug)]
-pub(super) struct GlobalSignal {
-    /// Handle of main worker.
+pub(crate) struct GlobalSignal {
+    /// Handle of main worker.  
     /// Sub workers can wake the main worker up through this handle.
     main: Thread,
 
-    /// [`Signal`] for sub workers.
+    /// [`Signal`] for sub workers.  
     /// Main or sub worker can wake up any sub worker through this signal.
     sub: Signal,
 
-    /// Abort flag.
-    /// This flag is written by main worker only.
-    /// If this is true, sub workers will cancel out remaining tasks.
-    is_abort: AtomicBool,
-
-    /// Close flag.
+    /// Abort flag.  
     /// This flag is written by main worker only.
     /// If this is true, sub workers will be closed soon.
-    is_close: AtomicBool,
+    is_abort: AtomicBool,
 
-    /// Number of open sub workers.
+    /// Number of open sub workers.  
     /// This count is written by sub workers only.
     /// Main worker will make use of this count for making some decisions.
     open_cnt: AtomicU32,
 
-    /// Number of idle(waiting) sub workers and future tasks.
+    /// Number of working sub workers.  
     /// This count is written by sub workers only.
     /// Main worker will make use of this count for making some decisions.
-    idle_fut_cnt: Mutex<IdleFutureCount>,
+    work_cnt: AtomicU32,
+
+    /// Number of running future tasks.  
+    /// This count is written by sub workers only.
+    /// Main worker will make use of this count for making some decisions.
+    fut_cnt: AtomicU32,
 }
 
 impl GlobalSignal {
@@ -292,8 +292,6 @@ impl GlobalSignal {
     /// Don't forget to r-shift on the filtered value to get 'target' number.
     const TARGET_MASK: u32 = !Self::COUNT_MASK;
 
-    pub(super) const ANY_TARGET: u32 = u32::MAX;
-
     pub(super) fn new(sub_handles: Vec<Thread>) -> Self {
         let mut sub = Signal::default();
         sub.set_handles(sub_handles);
@@ -302,131 +300,85 @@ impl GlobalSignal {
             main: thread::current(),
             sub,
             is_abort: AtomicBool::new(false),
-            is_close: AtomicBool::new(false),
             open_cnt: AtomicU32::new(0),
-            idle_fut_cnt: Mutex::new(IdleFutureCount {
-                idle: 0,
-                fut: 0,
-                notify: false,
-                idle_target: 0,
-                fut_target: 0,
-            }),
+            work_cnt: AtomicU32::new(0),
+            fut_cnt: AtomicU32::new(0),
         }
     }
 
-    pub(super) fn sub(&self) -> &Signal {
+    pub(crate) fn sub(&self) -> &Signal {
         &self.sub
     }
 
-    // === Methods related to abort flag ===
+    // === Methods related to ABORT flag ===
 
-    pub(super) fn is_abort(&self) -> bool {
+    pub(crate) fn is_abort(&self) -> bool {
         self.is_abort.load(Ordering::Relaxed)
     }
 
-    pub(super) fn set_abort(&self, is_abort: bool) {
+    pub(crate) fn set_abort(&self, is_abort: bool) {
         self.is_abort.store(is_abort, Ordering::Relaxed);
     }
 
-    // === Methods related to close flag ===
+    // === Methods related to OPEN count ===
+    // OPEN count is wait-wake-able.
 
-    pub(super) fn is_close(&self) -> bool {
-        self.is_close.load(Ordering::Relaxed)
-    }
-
-    pub(super) fn set_exit(&self, is_exit: bool) {
-        self.is_close.store(is_exit, Ordering::Relaxed);
-    }
-
-    // === Methods related to open count ===
-
-    pub(super) fn open_count(&self) -> u32 {
+    pub(crate) fn open_count(&self) -> u32 {
         self.open_cnt.load(Ordering::Relaxed) & Self::COUNT_MASK
     }
 
-    pub(super) fn wait_open_count(&self, target: u32) {
+    pub(crate) fn wait_open_count(&self, target: u32) {
         Self::wait_for_target(&self.open_cnt, target);
     }
 
-    pub(super) fn add_open_count(&self) {
-        let old = self.open_cnt.fetch_add(1, Ordering::Relaxed);
-        Self::wake_by_target(&self.main, &self.open_cnt, old, 1);
+    pub(crate) fn add_open_count(&self, value: u32) -> u32 {
+        let old = self.open_cnt.fetch_add(value, Ordering::Relaxed);
+        Self::wake_by_target(&self.main, old, value as i32);
+        (old & Self::COUNT_MASK).wrapping_add(value)
     }
 
-    pub(super) fn sub_open_count(&self) {
-        let old = self.open_cnt.fetch_sub(1, Ordering::Relaxed);
-        Self::wake_by_target(&self.main, &self.open_cnt, old, -1);
+    pub(crate) fn sub_open_count(&self, value: u32) -> u32 {
+        let old = self.open_cnt.fetch_sub(value, Ordering::Relaxed);
+        Self::wake_by_target(&self.main, old, -(value as i32));
+        (old & Self::COUNT_MASK).wrapping_sub(value)
     }
 
-    // === Methods related to idle & future count ===
+    // === Methods related to WORK count ===
+    // WORK count is wait-wake-able.
 
-    pub(super) fn idle_future_counts(&self) -> (u32, u32) {
-        let IdleFutureCount { idle, fut, .. } = *self.idle_fut_cnt.lock().unwrap();
-        (idle, fut)
+    pub(crate) fn work_count(&self) -> u32 {
+        self.work_cnt.load(Ordering::Relaxed) & Self::COUNT_MASK
     }
 
-    pub(super) fn wait_idle_future_counts(&self, idle_target: u32, fut_target: u32) -> (u32, u32) {
-        debug_assert!(
-            idle_target != Self::ANY_TARGET || fut_target != Self::ANY_TARGET,
-            "Both idle and future targets cannot be ANY at the same time"
-        );
-
-        // If the condition is already met, returns without blocking.
-        let mut cnt = self.idle_fut_cnt.lock().unwrap();
-        if (idle_target == Self::ANY_TARGET || cnt.idle == idle_target)
-            && (fut_target == Self::ANY_TARGET || cnt.fut == fut_target)
-        {
-            return (cnt.idle, cnt.fut);
-        }
-
-        // Sets flag and targets.
-        cnt.notify = true;
-        cnt.idle_target = idle_target;
-        cnt.fut_target = fut_target;
-        drop(cnt);
-
-        // Blocks current worker.
-        loop {
-            thread::park();
-            let cnt = self.idle_fut_cnt.lock().unwrap();
-            if !cnt.notify {
-                return (cnt.idle, cnt.fut);
-            }
-        }
+    pub(crate) fn add_work_count(&self, value: u32) -> u32 {
+        let old = self.work_cnt.fetch_add(value, Ordering::Relaxed);
+        Self::wake_by_target(&self.main, old, value as i32);
+        (old & Self::COUNT_MASK).wrapping_add(value)
     }
 
-    fn add_idle_count(&self) {
-        self.modify_idle_count(1);
+    pub(crate) fn sub_work_count(&self, value: u32) -> u32 {
+        let old = self.work_cnt.fetch_sub(value, Ordering::Relaxed);
+        Self::wake_by_target(&self.main, old, -(value as i32));
+        (old & Self::COUNT_MASK).wrapping_sub(value)
     }
 
-    fn sub_idle_count(&self) {
-        self.modify_idle_count(-1);
+    // === Methods related to FUTURE count ===
+    // FUTURE count is wait-wake-able.
+
+    pub(crate) fn future_count(&self) -> u32 {
+        self.fut_cnt.load(Ordering::Relaxed) & Self::COUNT_MASK
     }
 
-    pub(super) fn add_future_count(&self) {
-        self.modify_future_count(1);
+    pub(crate) fn add_future_count(&self, value: u32) -> u32 {
+        let old = self.fut_cnt.fetch_add(value, Ordering::Relaxed);
+        Self::wake_by_target(&self.main, old, value as i32);
+        (old & Self::COUNT_MASK).wrapping_add(value)
     }
 
-    pub(super) fn sub_future_count(&self) {
-        self.modify_future_count(-1);
-    }
-
-    fn modify_idle_count(&self, delta: i32) {
-        let mut cnt = self.idle_fut_cnt.lock().unwrap();
-        cnt.idle = (cnt.idle as i32 + delta) as u32;
-        if cnt.need_notify() {
-            cnt.notify = false;
-            self.main.unpark();
-        }
-    }
-
-    fn modify_future_count(&self, delta: i32) {
-        let mut cnt = self.idle_fut_cnt.lock().unwrap();
-        cnt.fut = (cnt.fut as i32 + delta) as u32;
-        if cnt.need_notify() {
-            cnt.notify = false;
-            self.main.unpark();
-        }
+    pub(crate) fn sub_future_count(&self, value: u32) -> u32 {
+        let old = self.fut_cnt.fetch_sub(value, Ordering::Relaxed);
+        Self::wake_by_target(&self.main, old, -(value as i32));
+        (old & Self::COUNT_MASK).wrapping_sub(value)
     }
 
     fn wait_for_target(cnt: &AtomicU32, target: u32) {
@@ -451,26 +403,13 @@ impl GlobalSignal {
         }
 
         // We set the target bits. So waits for any sub worker to wake us up.
-        while cnt.load(Ordering::Relaxed) != target {
+        let target_target = target_bits | target;
+        while cnt.load(Ordering::Relaxed) != target_target {
             thread::park();
         }
-    }
 
-    fn wake_by_target(main: &Thread, cnt: &AtomicU32, old: u32, delta: i32) {
-        let high = old & Self::TARGET_MASK;
-        let low = old & Self::COUNT_MASK;
-        let target = (!high) >> Self::TARGET_SHIFT;
-        let cur = (low as i32 + delta) as u32;
-
-        // We didn't reach the target? Someone who reach the target will wake
-        // the main worker, so we're going to return.
-        if target != cur {
-            return;
-        }
-
-        // We reached the target, so we must wake the main worker up.
-        // Let's unpark the main once we succeeds to erase target bits.
-        let mut cur = high | cur;
+        // Resets target bits.
+        let mut cur = target_target;
         while (cur & Self::TARGET_MASK) != 0 {
             if let Err(old) = cnt.compare_exchange(
                 cur,
@@ -480,40 +419,76 @@ impl GlobalSignal {
             ) {
                 cur = old;
             } else {
-                main.unpark();
                 break;
             }
+        }
+    }
+
+    fn wake_by_target(main: &Thread, old: u32, delta: i32) {
+        let high = old & Self::TARGET_MASK;
+        let low = old & Self::COUNT_MASK;
+        let target = (!high) >> Self::TARGET_SHIFT;
+        let cur = (low as i32 + delta) as u32;
+
+        if target == cur {
+            main.unpark();
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct CommandSender {
+    inner: ParkingSender<CommandObject>,
+    open: Arc<AtomicBool>,
+}
+
+impl CommandSender {
+    pub(super) fn send(&self, cmd: CommandObject) -> Result<(), SendError<CommandObject>> {
+        if self.open.load(Ordering::Relaxed) {
+            self.inner.send(cmd)
+        } else {
+            Err(SendError(cmd))
         }
     }
 }
 
 #[derive(Debug)]
-struct IdleFutureCount {
-    idle: u32,
-    fut: u32,
-    notify: bool,
-    idle_target: u32,
-    fut_target: u32,
+pub(super) struct CommandReceiver {
+    inner: ParkingReceiver<CommandObject>,
+    open: Arc<AtomicBool>,
 }
 
-impl IdleFutureCount {
-    fn need_notify(&self) -> bool {
-        self.notify
-            && (self.idle_target == GlobalSignal::ANY_TARGET || self.idle == self.idle_target)
-            && (self.fut_target == GlobalSignal::ANY_TARGET || self.fut == self.fut_target)
+impl CommandReceiver {
+    pub(super) fn has(&self) -> bool {
+        self.inner.has()
+    }
+
+    pub(super) fn try_recv(&self) -> Result<CommandObject, TryRecvError> {
+        self.inner.try_recv()
+    }
+
+    pub(super) fn close(&self) {
+        self.open.store(false, Ordering::Relaxed);
     }
 }
 
-pub(super) struct ParkingChannel<T>(PhantomData<T>);
+pub(super) fn command_channel(th: Thread) -> (CommandSender, CommandReceiver) {
+    let (tx, rx) = parking_channel(th);
+    let open = Arc::new(AtomicBool::new(true));
+    let c_open = Arc::clone(&open);
 
-impl<T> ParkingChannel<T> {
-    pub(super) fn channel(_th: Thread) -> (ParkingSender<T>, ParkingReceiver<T>) {
-        let (tx, rx) = mpsc::channel();
-        (
-            ParkingSender::new(tx, _th.clone()),
-            ParkingReceiver::new(rx),
-        )
-    }
+    (
+        CommandSender { inner: tx, open },
+        CommandReceiver {
+            inner: rx,
+            open: c_open,
+        },
+    )
+}
+
+pub(super) fn parking_channel<T>(th: Thread) -> (ParkingSender<T>, ParkingReceiver<T>) {
+    let (tx, rx) = mpsc::channel();
+    (ParkingSender::new(tx, th.clone()), ParkingReceiver::new(rx))
 }
 
 #[derive(Debug)]
@@ -527,7 +502,7 @@ impl<T> ParkingSender<T> {
         Self { tx, th }
     }
 
-    pub(crate) fn send(&self, t: T) -> Result<(), std::sync::mpsc::SendError<T>> {
+    pub(crate) fn send(&self, t: T) -> Result<(), SendError<T>> {
         let res = self.tx.send(t);
         self.th.unpark();
         res

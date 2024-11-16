@@ -15,7 +15,7 @@ pub trait AsDedupVec {
     }
     fn contains(&self, value: &Self::Item) -> bool;
     fn push(&mut self, value: Self::Item);
-    fn remove(&mut self, value: &Self::Item);
+    fn remove(&mut self, value: &Self::Item) -> Option<Self::Item>;
     fn extend(&mut self, iter: impl IntoIterator<Item = Self::Item>);
     fn iter(&self) -> impl Iterator<Item = &Self::Item>;
 }
@@ -48,9 +48,11 @@ where
         }
     }
 
-    fn remove(&mut self, value: &Self::Item) {
+    fn remove(&mut self, value: &Self::Item) -> Option<Self::Item> {
         if let Ok(i) = self.inner.binary_search(value) {
-            self.inner.remove(i);
+            Some(self.inner.remove(i))
+        } else {
+            None
         }
     }
 
@@ -92,12 +94,11 @@ where
         self.inner.push(value);
     }
 
-    fn remove(&mut self, value: &Self::Item) {
-        for i in 0..self.inner.len() {
-            if &self.inner[i] == value {
-                self.inner.swap_remove(i);
-                return;
-            }
+    fn remove(&mut self, value: &Self::Item) -> Option<Self::Item> {
+        if let Some((i, _)) = self.inner.iter().enumerate().find(|(_, x)| *x == value) {
+            Some(self.inner.swap_remove(i))
+        } else {
+            None
         }
     }
 
@@ -143,8 +144,8 @@ where
         self.inner.push_back(value);
     }
 
-    fn remove(&mut self, value: &Self::Item) {
-        self.inner.remove(value);
+    fn remove(&mut self, value: &Self::Item) -> Option<Self::Item> {
+        self.inner.remove(value)
     }
 
     fn extend(&mut self, iter: impl IntoIterator<Item = Self::Item>) {
@@ -154,7 +155,7 @@ where
     }
 
     fn iter(&self) -> impl Iterator<Item = &Self::Item> {
-        self.inner.iter()
+        self.inner.values()
     }
 }
 
@@ -189,5 +190,34 @@ where
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "DedupVec({:?})", self.inner)
+    }
+}
+
+impl<T> From<DedupVec<T, true>> for Vec<T>
+where
+    T: Ord,
+{
+    fn from(value: DedupVec<T, true>) -> Self {
+        value.inner
+    }
+}
+
+#[cfg(not(debug_assertions))]
+impl<T> From<DedupVec<T, false>> for Vec<T>
+where
+    T: hash::Hash + Eq + Clone,
+{
+    fn from(value: DedupVec<T, false>) -> Self {
+        value.inner
+    }
+}
+
+#[cfg(debug_assertions)]
+impl<T> From<DedupVec<T, false>> for Vec<T>
+where
+    T: hash::Hash + Eq + Default + Clone,
+{
+    fn from(value: DedupVec<T, false>) -> Self {
+        value.inner.into()
     }
 }

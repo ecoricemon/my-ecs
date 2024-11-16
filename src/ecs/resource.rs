@@ -1,11 +1,9 @@
 use crate::{ds::prelude::*, util::prelude::*};
 use std::{
     any::Any,
-    cmp,
     collections::HashMap,
     hash::{BuildHasher, Hash},
     ptr::NonNull,
-    sync::atomic::AtomicI32,
 };
 
 /// There are two types of resources.
@@ -14,7 +12,7 @@ use std::{
 /// This structure has pointers to those resources and dosen't update it once it's set.
 /// Because, resource is a kind of unique data storage, so it makes sense.
 #[derive(Debug)]
-pub struct ResourceStorage<S> {
+pub(super) struct ResourceStorage<S> {
     /// Owned resources.
     owned: HashMap<ResourceKey, Box<dyn Any>, S>,
 
@@ -22,20 +20,17 @@ pub struct ResourceStorage<S> {
     /// Pointers to owned resources are guaranteed to be valid by the struct.
     /// Other pointers must be kept to be valid by client code.
     /// They must be well aligned, not aliased, and alive.
-    ptrs: OptVec<SimpleHolder<NonNullExt<u8>, AtomicI32>, S>,
+    ptrs: OptVec<SimpleHolder<NonNullExt<u8>>, S>,
 
     /// [`ResourceKey`] -> index in `Self::ptrs`.
     imap: HashMap<ResourceKey, usize, S>,
-
-    /// Grouped indices to `Self::ptrs` by [`ResourceKind`].
-    kind_idxs: HashMap<ResourceKind, Vec<usize>, S>,
 
     /// Dedicated resources, which are not allowed to be sent to other workers.
     /// So they must be handled by main worker.
     /// For example, in web environment, we must send JS objects through postMessage().
     /// That means objects that are not posted can't be accessed from other workers.
     /// Plus, ecs objects will be dedicated resource in most cases.
-    dedi_idxs: Vec<bool>,
+    is_dedi: Vec<bool>,
 }
 
 impl<S> ResourceStorage<S>
@@ -47,8 +42,7 @@ where
             owned: HashMap::default(),
             ptrs: OptVec::new(),
             imap: HashMap::default(),
-            kind_idxs: HashMap::default(),
-            dedi_idxs: Vec::new(),
+            is_dedi: Vec::new(),
         }
     }
 }
@@ -61,29 +55,30 @@ where
     /// If the registration succeeded, returns its resource index.
     /// Otherwise, nothing takes place and returns received value.
     /// In other words, the old resouce data won't be dropped.
-    pub(super) fn register(
-        &mut self,
-        key: ResourceKey,
-        value: MaybeOwned,
-        is_dedicated: bool,
-    ) -> Result<usize, MaybeOwned> {
-        if self.imap.contains_key(&key) {
-            return Err(value);
+    pub(super) fn register(&mut self, desc: ResourceDesc) -> Result<usize, ResourceDesc> {
+        if self.imap.contains_key(&desc.key) {
+            return Err(desc);
         }
 
-        let ptr = match value {
-            MaybeOwned::A(mut owned) => {
+        let ResourceDesc {
+            dedicated,
+            key,
+            data,
+        } = desc;
+
+        let ptr = match data {
+            Or::A(mut owned) => {
                 // Safety: Infallible.
                 let ptr = unsafe { NonNull::new_unchecked(&mut *owned as *mut dyn Any as *mut u8) };
                 let must_none = self.owned.insert(key, owned);
                 debug_assert!(must_none.is_none());
                 ptr
             }
-            MaybeOwned::B(ptr) => ptr,
+            Or::B(ptr) => ptr,
         };
 
         // Attaches ResourceKey's type info to the pointer for debug.
-        let ptr = NonNullExt::from_nonnull(ptr).with_type(**key.get_inner());
+        let ptr = NonNullExt::from_nonnull(ptr).with_type(*key.get_inner());
 
         // Adds the pointer.
         let holder = SimpleHolder::new(ptr);
@@ -92,23 +87,41 @@ where
         // Adds the index to the pointer list.
         self.imap.insert(key, index);
 
-        // Adds resource kind mapping.
-        let kind = key.kind();
-        self.kind_idxs
-            .entry(kind)
-            .and_modify(|idxs| idxs.push(index))
-            .or_insert(vec![index]);
-
         // Adds dedicated mapping.
-        if self.dedi_idxs.len() < index + 1 {
-            self.dedi_idxs.resize(index + 1, false);
+        if self.is_dedi.len() < index + 1 {
+            self.is_dedi.resize(index + 1, false);
         }
-        self.dedi_idxs[index] = is_dedicated;
+        self.is_dedi[index] = dedicated;
 
         Ok(index)
     }
 
-    pub fn contains<Q>(&self, key: &Q) -> bool
+    pub(super) fn unregister(
+        &mut self,
+        rkey: &ResourceKey,
+    ) -> Option<Or<Box<dyn Any>, NonNull<u8>>> {
+        // Removes the resource from `self.owned`, `self.ptrs`, and `self.imap`.
+        // But we don't have to remove `self.is_dedi`.
+        if let Some(i) = self.imap.remove(rkey) {
+            let data = self.owned.remove(rkey);
+            let ptr = self.ptrs.take(i);
+
+            // Safety: Pointer must exist.
+            debug_assert!(ptr.is_some());
+            let holder = unsafe { ptr.unwrap_unchecked() };
+            let ptr = *holder.into_value();
+
+            Some(if let Some(data) = data {
+                Or::A(data)
+            } else {
+                Or::B(ptr)
+            })
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn contains<Q>(&self, key: &Q) -> bool
     where
         ResourceKey: std::borrow::Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -116,7 +129,7 @@ where
         self.imap.contains_key(key)
     }
 
-    pub fn get_index<Q>(&self, key: &Q) -> Option<usize>
+    pub(super) fn index<Q>(&self, key: &Q) -> Option<usize>
     where
         ResourceKey: std::borrow::Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -124,11 +137,11 @@ where
         self.imap.get(key).cloned()
     }
 
-    pub fn is_dedicated(&self, index: usize) -> bool {
-        self.dedi_idxs[index]
+    pub(super) fn is_dedicated(&self, index: usize) -> bool {
+        self.is_dedi[index]
     }
 
-    pub fn is_dedicated2<Q>(&self, key: &Q) -> bool
+    pub(super) fn is_dedicated2<Q>(&self, key: &Q) -> bool
     where
         ResourceKey: std::borrow::Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -140,7 +153,7 @@ where
         }
     }
 
-    pub fn borrow(&self, index: usize) -> BorrowResult<ManagedConstPtr<u8>, AtomicI32> {
+    pub(super) fn borrow(&self, index: usize) -> BorrowResult<ManagedConstPtr<u8>> {
         if let Some(holder) = self.ptrs.get(index) {
             holder
                 .borrow()
@@ -150,19 +163,21 @@ where
         }
     }
 
-    pub fn borrow2<Q>(&self, key: &Q) -> BorrowResult<ManagedConstPtr<u8>, AtomicI32>
+    // For consistency
+    #[allow(dead_code)]
+    pub(super) fn borrow2<Q>(&self, key: &Q) -> BorrowResult<ManagedConstPtr<u8>>
     where
         ResourceKey: std::borrow::Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        if let Some(index) = self.get_index(key) {
+        if let Some(index) = self.index(key) {
             self.borrow(index)
         } else {
             Err(BorrowError::NotFound)
         }
     }
 
-    pub fn borrow_mut(&mut self, index: usize) -> BorrowResult<ManagedMutPtr<u8>, AtomicI32> {
+    pub(super) fn borrow_mut(&mut self, index: usize) -> BorrowResult<ManagedMutPtr<u8>> {
         if let Some(holder) = self.ptrs.get_mut(index) {
             holder
                 .borrow_mut()
@@ -172,40 +187,28 @@ where
         }
     }
 
-    pub fn borrow_mut2<Q>(&mut self, key: &Q) -> BorrowResult<ManagedMutPtr<u8>, AtomicI32>
+    // For consistency
+    #[allow(dead_code)]
+    pub(super) fn borrow_mut2<Q>(&mut self, key: &Q) -> BorrowResult<ManagedMutPtr<u8>>
     where
         ResourceKey: std::borrow::Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        if let Some(index) = self.get_index(key) {
+        if let Some(index) = self.index(key) {
             self.borrow_mut(index)
         } else {
             Err(BorrowError::NotFound)
         }
     }
 
-    pub fn borrow_kind<Q>(&self, kind: &Q) -> Option<ResourceIter<S>>
-    where
-        ResourceKind: std::borrow::Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
-    {
-        Some(ResourceIter {
-            ptrs: &self.ptrs,
-            idxs: self.kind_idxs.get(kind)?,
-            cur: 0,
-        })
-    }
-
-    pub fn borrow_kind_mut<Q>(&mut self, kind: &Q) -> Option<ResourceIterMut<S>>
-    where
-        ResourceKind: std::borrow::Borrow<Q>,
-        Q: Hash + Eq + ?Sized,
-    {
-        Some(ResourceIterMut {
-            ptrs: &mut self.ptrs,
-            idxs: self.kind_idxs.get(kind)?,
-            cur: 0,
-        })
+    /// # Safety
+    ///
+    /// Undefine behavior if exclusive borrow happend before.
+    //
+    // Allows dead_code for test.
+    #[allow(dead_code)]
+    pub(super) unsafe fn get_ptr(&self, index: usize) -> Option<NonNullExt<u8>> {
+        self.ptrs.get(index).map(|holder| *holder.get_unchecked())
     }
 }
 
@@ -218,176 +221,65 @@ where
     }
 }
 
-pub struct ResourceIter<'a, S> {
-    ptrs: &'a OptVec<SimpleHolder<NonNullExt<u8>, AtomicI32>, S>,
-    idxs: &'a [usize],
-    cur: usize,
+#[derive(Debug)]
+pub struct ResourceDesc {
+    pub dedicated: bool,
+    pub key: ResourceKey,
+    pub data: Or<Box<dyn Any>, NonNull<u8>>,
 }
 
-impl<'a, S> ResourceIter<'a, S> {
-    #[inline]
-    const fn len(&self) -> usize {
-        self.idxs.len() - self.cur
+impl ResourceDesc {
+    pub fn new() -> Self {
+        Self {
+            dedicated: false,
+            key: EmptyResource::resource_key(),
+            data: Or::B(NonNull::dangling()),
+        }
+    }
+
+    pub fn with_dedicated(mut self, is_dedicated: bool) -> Self {
+        self.dedicated = is_dedicated;
+        self
+    }
+
+    pub fn with_owned<R: Resource>(mut self, data: R) -> Self {
+        self.key = R::resource_key();
+        self.data = Or::A(Box::new(data));
+        self
+    }
+
+    /// # Safety
+    ///
+    /// If caller registered the resource to ecs and accesses memory at the data
+    /// address while ecs is working, it's undefined behavior.
+    pub unsafe fn with_ptr<R: Resource>(mut self, data: *mut R) -> Self {
+        self.key = R::resource_key();
+        self.data = Or::B(NonNull::new(data as *mut u8).unwrap());
+        self
     }
 }
 
-impl<'a, S> Iterator for ResourceIter<'a, S>
-where
-    S: BuildHasher,
-{
-    type Item = BorrowResult<ManagedConstPtr<u8>, AtomicI32>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let index = self.idxs.get(self.cur)?;
-        self.cur += 1;
-
-        // Safety: We picked the index up among valid indices `idxs`.
-        let holder = unsafe { self.ptrs.get_unchecked(*index) };
-
-        let borrowed = holder
-            .borrow()
-            .map(|borrowed| borrowed.map(|ptr| unsafe { ManagedConstPtr::new(ptr) }));
-
-        Some(borrowed)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = Self::len(self);
-        (len, Some(len))
-    }
-}
-
-impl<'a, S> ExactSizeIterator for ResourceIter<'a, S>
-where
-    S: BuildHasher,
-{
-    fn len(&self) -> usize {
-        Self::len(self)
-    }
-}
-
-pub struct ResourceIterMut<'a, S> {
-    ptrs: &'a mut OptVec<SimpleHolder<NonNullExt<u8>, AtomicI32>, S>,
-    idxs: &'a [usize],
-    cur: usize,
-}
-
-impl<'a, S> ResourceIterMut<'a, S> {
-    #[inline]
-    const fn len(&self) -> usize {
-        self.idxs.len() - self.cur
-    }
-}
-
-impl<'a, S> Iterator for ResourceIterMut<'a, S>
-where
-    S: BuildHasher,
-{
-    type Item = BorrowResult<ManagedMutPtr<u8>, AtomicI32>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let index = self.idxs.get(self.cur)?;
-        self.cur += 1;
-
-        // Safety: We picked the index up among valid indices `idxs`.
-        let holder = unsafe { self.ptrs.get_unchecked_mut(*index) };
-
-        let borrowed = holder
-            .borrow_mut()
-            .map(|borrowed| borrowed.map(|ptr| unsafe { ManagedMutPtr::new(ptr) }));
-
-        Some(borrowed)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = Self::len(self);
-        (len, Some(len))
-    }
-}
-
-impl<'a, S> ExactSizeIterator for ResourceIterMut<'a, S>
-where
-    S: BuildHasher,
-{
-    fn len(&self) -> usize {
-        Self::len(self)
+impl Default for ResourceDesc {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 /// Unique data over entire application.
-pub trait Resource: 'static {
-    fn key() -> ResourceKey {
-        ResourceKey {
-            inner: ResourceKeyInner::of::<Self>(),
-            kind: ResourceKind::Etc("unknown"),
-        }
+pub trait Resource: Send + 'static {
+    fn resource_key() -> ResourceKey {
+        ResourceKey::of::<Self>()
     }
 
-    fn rkey(&self) -> ResourceKey {
-        Self::key()
+    fn get_resource_key(&self) -> ResourceKey {
+        Self::resource_key()
     }
 }
+
+/// Empty resource.
+struct EmptyResource;
+impl Resource for EmptyResource {}
 
 /// [`TypeId`](std::any::TypeId) of a [`Resource`].
-#[derive(Debug, Clone, Copy)]
-pub struct ResourceKey {
-    inner: ResourceKeyInner,
-    kind: ResourceKind,
-}
-
-impl ResourceKey {
-    pub fn of<T: 'static>(kind: ResourceKind) -> Self {
-        Self {
-            inner: ResourceKeyInner::of::<T>(),
-            kind,
-        }
-    }
-
-    pub const fn get_inner(&self) -> &ResourceKeyInner {
-        &self.inner
-    }
-
-    pub const fn kind(&self) -> ResourceKind {
-        self.kind
-    }
-
-    pub fn is_kind_of(&self, kind: ResourceKind) -> bool {
-        self.kind == kind
-    }
-}
-
-impl PartialEq for ResourceKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.inner.eq(&other.inner)
-    }
-}
-
-impl Eq for ResourceKey {}
-
-impl PartialOrd for ResourceKey {
-    fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for ResourceKey {
-    fn cmp(&self, other: &Self) -> cmp::Ordering {
-        self.inner.cmp(&other.inner)
-    }
-}
-
-impl Hash for ResourceKey {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.inner.hash(state)
-    }
-}
-
-type ResourceKeyInner = ATypeId<ResourceKey>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ResourceKind {
-    EventQueue,
-    Etc(&'static str),
-}
-
-pub type MaybeOwned = Or<Box<dyn Any>, NonNull<u8>>;
+pub type ResourceKey = ATypeId<ResourceKey_>;
+pub struct ResourceKey_;

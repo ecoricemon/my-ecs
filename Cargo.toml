@@ -10,6 +10,13 @@ rust-version = "1.80" # std::sync::LazyLock is stable since 1.80.0.
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+# ================
+# === Features ===
+# ================
+
+[features]
+borrow_check = []
+
 # ====================
 # === Dependencies ===
 # ====================
@@ -17,9 +24,10 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 my-ecs-macros = { version = "0.0.2", path = "src/macros" }
 paste = { version = "1.0.14" }
-thiserror = { version = "1.0.57" }
+thiserror = { version = "2.0.3" }
 crossbeam-deque = { version = "0.8.5" }
 rayon = { version = "1.10.0" }
+bitflags = { version = "2.6.0" }
 # Debug mode only
 dashmap = { version = "6.0.1" }
 
@@ -48,6 +56,9 @@ parking_lot_core = { version = "0.9.10", features = ["nightly"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 async-io = { version = "2.3.4" }
+tide = { version = "0.16.0" }
+surf = { version = "2.3.2" }
+futures = { version = "0.3.31" }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = { version = "=0.3.42" }
@@ -78,11 +89,16 @@ path = "examples/async.rs"
 crate-type = ["bin"]
 
 [[example]]
-name = "debug"
-path = "examples/debug.rs"
+name = "async_io"
+path = "examples/async_io.rs"
 crate-type = ["bin"]
 
 [[example]]
 name = "parallel"
 path = "examples/parallel.rs"
 crate-type = ["bin"]
+
+# [[example]]
+# name = "debug"
+# path = "examples/debug.rs"
+# crate-type = ["bin"]

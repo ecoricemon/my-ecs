@@ -2,7 +2,6 @@ use super::entity::{AddEntity, BorrowComponent, ContainEntity, RegisterComponent
 use crate::ds::prelude::*;
 use std::{
     any::TypeId, cmp, collections::HashMap, fmt::Debug, hash::BuildHasher, mem, ptr::NonNull,
-    sync::atomic::AtomicI32,
 };
 
 /// Two dimensional storage containing heterogeneous types of data.
@@ -18,7 +17,7 @@ use std::{
 pub struct SparseSet<S> {
     sparse: OptVec<usize, S>,
     deref: Vec<usize>,
-    cols: Vec<Holder<ChunkAnyVec, RawGetter, RawGetter, AtomicI32>>,
+    cols: Vec<Holder<ChunkAnyVec, RawGetter, RawGetter>>,
     len: usize,
     map: HashMap<TypeId, usize, S>,
     add_cnt: usize,
@@ -125,8 +124,14 @@ where
         }
 
         // Adds column wrapped with Holder.
-        let chunk_len = (Self::CHUNK_SIZE / tinfo.size).next_power_of_two();
-        let chunk_len = cmp::max(chunk_len, Self::MIN_CHUNK_LEN);
+        let chunk_len = if tinfo.size != 0 {
+            cmp::max(
+                (Self::CHUNK_SIZE / tinfo.size).next_power_of_two(),
+                Self::MIN_CHUNK_LEN,
+            )
+        } else {
+            0 // Has no effect
+        };
         let value = ChunkAnyVec::new(tinfo, chunk_len);
         let holder = Holder::new(value, fn_imm, fn_mut);
         self.cols.push(holder);
@@ -184,7 +189,7 @@ impl<S> BorrowComponent for SparseSet<S>
 where
     S: BuildHasher + Default + Clone + 'static,
 {
-    fn borrow_column(&self, ci: usize) -> BorrowResult<RawGetter, AtomicI32> {
+    fn borrow_column(&self, ci: usize) -> BorrowResult<RawGetter> {
         #[cfg(debug_assertions)]
         let this_len = self.len();
 
@@ -209,7 +214,7 @@ where
         }
     }
 
-    fn borrow_column_mut(&mut self, ci: usize) -> BorrowResult<RawGetter, AtomicI32> {
+    fn borrow_column_mut(&mut self, ci: usize) -> BorrowResult<RawGetter> {
         #[cfg(debug_assertions)]
         let this_len = self.len();
 
@@ -232,6 +237,13 @@ where
         } else {
             Err(BorrowError::OutOfBound)
         }
+    }
+
+    unsafe fn get_column_ptr(&self, ci: usize) -> Option<NonNull<u8>> {
+        self.cols.get(ci).map(|col| {
+            let ptr = col.get_unchecked() as *const _ as *const u8;
+            NonNull::new_unchecked(ptr.cast_mut())
+        })
     }
 }
 

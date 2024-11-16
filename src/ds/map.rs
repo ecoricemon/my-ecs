@@ -161,7 +161,8 @@ where
         desc: GroupDesc<GK, GV, IK, IV>,
     ) -> Result<usize, GroupDesc<GK, GV, IK, IV>> {
         // Validates the descriptor.
-        if desc.items.is_empty() || self.contains_group2(&desc.group_key) {
+        assert!(!desc.items.is_empty());
+        if self.contains_group2(&desc.group_key) {
             return Err(desc);
         }
 
@@ -207,10 +208,10 @@ where
         self.add_group_from_desc(desc.into_group_and_items())
     }
 
-    pub fn remove_group(&mut self, index: usize) -> Option<GV> {
+    pub fn remove_group(&mut self, index: usize) -> Option<(GK, GV)> {
         // Removes group.
         let group_index = index;
-        let (old_group, item_indices) = self.groups.remove(group_index)?;
+        let (group_key, (old_group, item_indices)) = self.groups.remove_entry(group_index)?;
 
         // Removes corresponding items if it's possible.
         for item_index in item_indices.iter().cloned() {
@@ -221,10 +222,10 @@ where
             }
         }
 
-        Some(old_group)
+        Some((group_key, old_group))
     }
 
-    pub fn remove_group2<Q>(&mut self, key: &Q) -> Option<GV>
+    pub fn remove_group2<Q>(&mut self, key: &Q) -> Option<(GK, GV)>
     where
         GK: std::borrow::Borrow<Q>,
         Q: Hash + Eq + ?Sized,
@@ -291,10 +292,19 @@ where
 {
     /// Removes index from the map and returns its corresponding value.
     pub fn remove(&mut self, index: usize) -> Option<V> {
+        self.remove_entry(index).map(|(_key, value)| value)
+    }
+
+    pub fn remove_entry(&mut self, index: usize) -> Option<(K, V)> {
         let key = self.imap.get(index)?;
-        self.map.remove(key);
-        self.imap.take(index);
-        self.values.take(index)
+        let must_some = self.map.remove(key);
+        debug_assert!(must_some.is_some());
+        // Safety: The entry exists, checked by `?` above.
+        unsafe {
+            let key = self.imap.take(index).unwrap_unchecked();
+            let value = self.values.take(index).unwrap_unchecked();
+            Some((key, value))
+        }
     }
 }
 
@@ -349,7 +359,7 @@ where
             Entry::Vacant(vacant) => {
                 let index = self.values.add(value);
                 if IMAP {
-                    self.imap.add(vacant.key().clone());
+                    self.imap.extend_set(index, vacant.key().clone());
                 }
                 vacant.insert(index);
                 (index, None)
@@ -363,11 +373,23 @@ where
         K: std::borrow::Borrow<Q>,
         Q: Hash + Eq + ?Sized,
     {
-        let index = self.map.remove(key)?;
+        self.remove_entry2(key).map(|(_key, value)| value)
+    }
+
+    pub fn remove_entry2<Q>(&mut self, key: &Q) -> Option<(K, V)>
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let (key, index) = self.map.remove_entry(key)?;
         if IMAP {
-            self.imap.take(index);
+            let must_some = self.imap.take(index);
+            debug_assert!(must_some.is_some());
         }
-        self.values.take(index)
+        // Safety: We got `index` from `self.map`, which guarantees that the
+        // slot must be occupied.
+        let value = unsafe { self.values.take(index).unwrap_unchecked() };
+        Some((key, value))
     }
 
     /// Retrieves index corresponding to the `key`.

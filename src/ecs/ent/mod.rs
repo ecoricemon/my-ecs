@@ -8,5 +8,5 @@ pub mod prelude {
 
     pub use component::Component;
     pub use entity::{Entity, EntityIndex, EntityKey, EntityKeyKind, EntityName, EntityTypeId};
-    pub use storage::{AsEntityDesc, EntityContainer, EntityDesc};
+    pub use storage::{AsEntityReg, EntityContainer, EntityReg};
 }

@@ -30,8 +30,8 @@ unsafe impl Sync for AnyVec {}
 impl AnyVec {
     pub fn new(tinfo: TypeInfo) -> Self {
         // For now, allows only Send and Sync type.
-        assert!(tinfo.is_send, "AnyVec doesn't allow not Send type");
-        assert!(tinfo.is_sync, "AnyVec doesn't allow not Sync type");
+        assert!(tinfo.is_send, "AnyVec doesn't allow not Send type for now");
+        assert!(tinfo.is_sync, "AnyVec doesn't allow not Sync type for now");
 
         let mut v = Self {
             tinfo,
@@ -247,7 +247,10 @@ impl AnyVec {
         unsafe { self.set_len(self.len().checked_add(1).unwrap()) };
     }
 
-    pub fn push<T: 'static>(&mut self, mut value: T) {
+    /// # Safety
+    ///
+    /// Type of the value `T` must be the same as the type the vector knows.
+    pub unsafe fn push<T: 'static>(&mut self, mut value: T) {
         debug_assert!(self.is_type_of(&TypeId::of::<T>()));
 
         // Safety: Infallible.
@@ -286,7 +289,10 @@ impl AnyVec {
         }
     }
 
-    pub fn pop<T: 'static>(&mut self) -> Option<T> {
+    /// # Safety
+    ///
+    /// Type of the value `T` must be the same as the type the vector knows.
+    pub unsafe fn pop<T: 'static>(&mut self) -> Option<T> {
         debug_assert!(self.is_type_of(&TypeId::of::<T>()));
 
         if self.is_empty() {
@@ -338,7 +344,11 @@ impl AnyVec {
     /// # Panics
     ///
     /// Panics if `index` is out of bound..
-    pub fn swap_remove<T: 'static>(&mut self, index: usize) -> T {
+    ///
+    /// # Safety
+    ///
+    /// Type of the value `T` must be the same as the type the vector knows.
+    pub unsafe fn swap_remove<T: 'static>(&mut self, index: usize) -> T {
         // len - 1 can overflow but it causes panic in swap().
         self.swap(index, self.len() - 1);
         self.pop().unwrap()
@@ -388,21 +398,30 @@ impl AnyVec {
         self.ptr.as_ptr().add(offset)
     }
 
-    pub fn get<T: 'static>(&self, index: usize) -> Option<&T> {
+    /// # Safety
+    ///
+    /// Type of the value `T` must be the same as the type the vector knows.
+    pub unsafe fn get<T: 'static>(&self, index: usize) -> Option<&T> {
         debug_assert!(self.is_type_of(&TypeId::of::<T>()));
 
         self.get_raw(index)
             .map(|ptr| unsafe { (ptr.as_ptr() as *const T).as_ref().unwrap_unchecked() })
     }
 
-    pub fn get_mut<T: 'static>(&mut self, index: usize) -> Option<&mut T> {
+    /// # Safety
+    ///
+    /// Type of the value `T` must be the same as the type the vector knows.
+    pub unsafe fn get_mut<T: 'static>(&mut self, index: usize) -> Option<&mut T> {
         debug_assert!(self.is_type_of(&TypeId::of::<T>()));
 
         self.get_raw(index)
             .map(|ptr| unsafe { (ptr.as_ptr() as *mut T).as_mut().unwrap_unchecked() })
     }
 
-    pub fn resize_with<T, F>(&mut self, new_len: usize, mut f: F)
+    /// # Safety
+    ///
+    /// Type of the value `T` must be the same as the type the vector knows.
+    pub unsafe fn resize_with<T, F>(&mut self, new_len: usize, mut f: F)
     where
         T: 'static,
         F: FnMut() -> T,
@@ -451,7 +470,7 @@ impl AnyVec {
     }
 
     pub fn as_vec_mut<T: 'static>(&mut self) -> TypedAnyVec<'_, T> {
-        debug_assert!(self.is_type_of(&TypeId::of::<T>()));
+        assert!(self.is_type_of(&TypeId::of::<T>()));
 
         let typed = unsafe {
             Vec::from_raw_parts(self.ptr.as_ptr() as *mut T, self.len(), self.capacity())
@@ -460,13 +479,13 @@ impl AnyVec {
     }
 
     pub fn as_slice<T: 'static>(&self) -> &[T] {
-        debug_assert!(self.is_type_of(&TypeId::of::<T>()));
+        assert!(self.is_type_of(&TypeId::of::<T>()));
 
         unsafe { slice::from_raw_parts(self.ptr.as_ptr() as *const T, self.len()) }
     }
 
     pub fn as_mut_slice<T: 'static>(&mut self) -> &mut [T] {
-        debug_assert!(self.is_type_of(&TypeId::of::<T>()));
+        assert!(self.is_type_of(&TypeId::of::<T>()));
 
         unsafe { slice::from_raw_parts_mut(self.ptr.as_ptr() as *mut T, self.len()) }
     }
@@ -488,7 +507,7 @@ impl AnyVec {
 
     /// Mimics [`NonNull::dangling`].
     /// This helps to use lots of ptr module's APIs because they request aligned pointer even if the type is zero sized.
-    fn aligned_dangling(align: usize) -> NonNull<u8> {
+    pub(crate) fn aligned_dangling(align: usize) -> NonNull<u8> {
         NonNull::new(align as *mut u8).unwrap()
     }
 
@@ -634,119 +653,194 @@ mod tests {
 
     #[test]
     fn test_anyvec_clone() {
-        let mut a = AnyVec::new(crate::tinfo!(SA));
-        let mut b = a.clone();
+        // Safety: Type is correct.
+        unsafe {
+            let mut a = AnyVec::new(crate::tinfo!(SA));
+            let mut b = a.clone();
 
-        a.push(SA { x: [0, 0] });
-        b.push(SA { x: [1, 1] });
-        let c = a.clone();
-        let d = b.clone();
+            a.push(SA { x: [0, 0] });
+            b.push(SA { x: [1, 1] });
 
-        assert_eq!(a.len(), c.len());
-        assert_eq!(a.get::<SA>(0), c.get::<SA>(0));
-        assert_eq!(b.len(), d.len());
-        assert_eq!(b.get::<SA>(0), d.get::<SA>(0));
+            let c = a.clone();
+            let d = b.clone();
+
+            assert_eq!(a.len(), c.len());
+            assert_eq!(a.get::<SA>(0), c.get::<SA>(0));
+            assert_eq!(b.len(), d.len());
+            assert_eq!(b.get::<SA>(0), d.get::<SA>(0));
+        }
     }
 
     #[test]
     #[should_panic]
     fn test_anyvec_uncloneable_panic() {
-        #[allow(dead_code)]
-        struct S(i32);
-        let mut a = AnyVec::new(crate::tinfo!(S));
-        a.push(S(0));
-        let _ = a.clone();
+        // Safety: Type is correct.
+        unsafe {
+            #[allow(dead_code)]
+            struct S(i32);
+            let mut a = AnyVec::new(crate::tinfo!(S));
+            a.push(S(0));
+            let _ = a.clone();
+        }
+    }
+
+    #[test]
+    fn test_anyvec_drop() {
+        use std::sync::{Arc, Mutex};
+
+        struct X(Arc<Mutex<i32>>);
+        impl Drop for X {
+            fn drop(&mut self) {
+                *self.0.lock().unwrap() += 1;
+            }
+        }
+
+        // Safety: Type is correct.
+        unsafe {
+            let cnt = Arc::new(Mutex::new(0));
+            let mut v = AnyVec::new(crate::tinfo!(X));
+            for _ in 0..10 {
+                v.push(X(Arc::clone(&cnt)));
+            }
+
+            for i in 1..=5 {
+                v.pop_drop();
+                assert_eq!(*cnt.lock().unwrap(), i);
+            }
+
+            drop(v);
+            assert_eq!(*cnt.lock().unwrap(), 10);
+        }
     }
 
     #[test]
     fn test_anyvec_push_pop() {
-        let mut a = AnyVec::new(crate::tinfo!(SA));
-        assert_eq!(true, a.is_empty());
+        // Safety: Type is correct.
+        unsafe {
+            let mut a = AnyVec::new(crate::tinfo!(SA));
+            assert_eq!(true, a.is_empty());
 
-        a.push(SA { x: [0, 1] });
-        assert_eq!(1, a.len());
-        assert!(a.capacity() >= 1);
-        assert_eq!(false, a.is_empty());
+            a.push(SA { x: [0, 1] });
+            assert_eq!(1, a.len());
+            assert!(a.capacity() >= 1);
+            assert_eq!(false, a.is_empty());
 
-        a.push(SA { x: [2, 3] });
-        assert_eq!(2, a.len());
-        assert!(a.capacity() >= 2);
-        assert_eq!(false, a.is_empty());
+            a.push(SA { x: [2, 3] });
+            assert_eq!(2, a.len());
+            assert!(a.capacity() >= 2);
+            assert_eq!(false, a.is_empty());
 
-        assert_eq!(Some(SA { x: [2, 3] }), a.pop::<SA>());
-        assert_eq!(1, a.len());
-        assert!(a.capacity() >= 1);
-        assert_eq!(false, a.is_empty());
+            assert_eq!(Some(SA { x: [2, 3] }), a.pop::<SA>());
+            assert_eq!(1, a.len());
+            assert!(a.capacity() >= 1);
+            assert_eq!(false, a.is_empty());
 
-        assert_eq!(Some(SA { x: [0, 1] }), a.pop::<SA>());
-        assert_eq!(0, a.len());
-        assert_eq!(true, a.is_empty());
+            assert_eq!(Some(SA { x: [0, 1] }), a.pop::<SA>());
+            assert_eq!(0, a.len());
+            assert_eq!(true, a.is_empty());
 
-        assert_eq!(None, a.pop::<SA>());
+            assert_eq!(None, a.pop::<SA>());
+        }
     }
 
     #[test]
     fn test_anyvec_remove() {
-        let mut a = AnyVec::new(crate::tinfo!(SA));
+        // Safety: Type is correct.
+        unsafe {
+            let mut a = AnyVec::new(crate::tinfo!(SA));
 
-        a.push(SA { x: [0, 1] });
-        a.push(SA { x: [2, 3] });
-        a.push(SA { x: [4, 5] });
-        a.push(SA { x: [6, 7] });
+            a.push(SA { x: [0, 1] });
+            a.push(SA { x: [2, 3] });
+            a.push(SA { x: [4, 5] });
+            a.push(SA { x: [6, 7] });
 
-        let removed = a.swap_remove(1);
-        assert_eq!(SA { x: [2, 3] }, removed);
-        assert_eq!(3, a.len());
-        assert_eq!(Some(&SA { x: [0, 1] }), a.get(0));
-        assert_eq!(Some(&SA { x: [6, 7] }), a.get(1));
-        assert_eq!(Some(&SA { x: [4, 5] }), a.get(2));
+            let removed = a.swap_remove(1);
+            assert_eq!(SA { x: [2, 3] }, removed);
+            assert_eq!(3, a.len());
+            assert_eq!(Some(&SA { x: [0, 1] }), a.get(0));
+            assert_eq!(Some(&SA { x: [6, 7] }), a.get(1));
+            assert_eq!(Some(&SA { x: [4, 5] }), a.get(2));
 
-        a.swap_remove_drop(1);
-        assert_eq!(2, a.len());
-        assert_eq!(Some(&SA { x: [0, 1] }), a.get(0));
-        assert_eq!(Some(&SA { x: [4, 5] }), a.get(1));
+            a.swap_remove_drop(1);
+            assert_eq!(2, a.len());
+            assert_eq!(Some(&SA { x: [0, 1] }), a.get(0));
+            assert_eq!(Some(&SA { x: [4, 5] }), a.get(1));
+        }
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic]
     fn test_anyvec_push_incorrect_type_panic() {
-        let mut a = AnyVec::new(crate::tinfo!(SA));
-        a.push(SB {
-            x: [0, 1],
-            y: [0.1, 0.2],
-        });
+        // Unsafe: It will be panicked in debug mode.
+        unsafe {
+            let mut a = AnyVec::new(crate::tinfo!(SA));
+            a.push(SB {
+                x: [0, 1],
+                y: [0.1, 0.2],
+            });
+        }
     }
 
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic]
     fn test_anyvec_pop_incorrect_type_panic() {
-        let mut a = AnyVec::new(crate::tinfo!(SB));
-        a.push(SB {
-            x: [0, 1],
-            y: [0.1, 0.2],
-        });
-        let _ = a.pop::<SA>();
+        // Unsafe: It will be panicked in debug mode.
+        unsafe {
+            let mut a = AnyVec::new(crate::tinfo!(SB));
+            a.push(SB {
+                x: [0, 1],
+                y: [0.1, 0.2],
+            });
+            let _ = a.pop::<SA>();
+        }
     }
 
     #[test]
     fn test_anyvec_into_vec_push_pop() {
-        let mut a = AnyVec::new(crate::tinfo!(SA));
-        {
-            let mut v = (&mut a).as_vec_mut::<SA>();
-            v.push(SA { x: [0, 1] });
-            v.push(SA { x: [2, 3] });
-            assert_eq!(Some(SA { x: [2, 3] }), v.pop());
-        }
-        assert_eq!(Some(SA { x: [0, 1] }), a.pop::<SA>());
-        assert_eq!(None, a.pop::<SA>());
+        // Safety: Type is correct.
+        unsafe {
+            let mut a = AnyVec::new(crate::tinfo!(SA));
+            {
+                let mut v = (&mut a).as_vec_mut::<SA>();
+                v.push(SA { x: [0, 1] });
+                v.push(SA { x: [2, 3] });
+                assert_eq!(Some(SA { x: [2, 3] }), v.pop());
+            }
 
-        {
-            let mut v = (&mut a).as_vec_mut::<SA>();
-            v.push(SA { x: [0, 1] });
-            v.push(SA { x: [2, 3] });
+            assert_eq!(Some(SA { x: [0, 1] }), a.pop::<SA>());
+            assert_eq!(None, a.pop::<SA>());
+
+            {
+                let mut v = (&mut a).as_vec_mut::<SA>();
+                v.push(SA { x: [0, 1] });
+                v.push(SA { x: [2, 3] });
+            }
+            let v_imm = a.as_slice::<SA>();
+            assert_eq!(Some(&SA { x: [0, 1] }), v_imm.get(0));
+            assert_eq!(Some(&SA { x: [2, 3] }), v_imm.get(1));
         }
-        let v_imm = a.as_slice::<SA>();
-        assert_eq!(Some(&SA { x: [0, 1] }), v_imm.get(0));
-        assert_eq!(Some(&SA { x: [2, 3] }), v_imm.get(1));
+    }
+
+    #[test]
+    fn test_anyvec_zst() {
+        // Safety: Type is correct.
+        unsafe {
+            let mut v = AnyVec::new(crate::tinfo!(()));
+            assert!(v.is_empty());
+            for i in 1..10 {
+                v.push(());
+                assert_eq!(v.len(), i);
+            }
+
+            // Not allocated.
+            assert_eq!(v.ptr, AnyVec::aligned_dangling(crate::tinfo!(()).align));
+
+            for i in (1..10).rev() {
+                v.pop_drop();
+                assert_eq!(v.len(), i - 1);
+            }
+        }
     }
 }

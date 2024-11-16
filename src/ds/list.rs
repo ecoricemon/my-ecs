@@ -1,4 +1,4 @@
-use super::vec::OptVec;
+use super::vec::opt_vec::OptVec;
 use std::{
     collections::HashMap,
     fmt::Display,
@@ -78,6 +78,18 @@ where
     }
 }
 
+impl<V, S> IntoIterator for SetValueList<V, S>
+where
+    S: BuildHasher,
+{
+    type Item = V;
+    type IntoIter = IntoValues<V, S>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_values()
+    }
+}
+
 impl<V, S> From<&[V]> for SetValueList<V, S>
 where
     V: Hash + Eq + Clone + Default,
@@ -92,14 +104,28 @@ where
     }
 }
 
+impl<V, S> From<SetValueList<V, S>> for Vec<V>
+where
+    S: BuildHasher,
+{
+    fn from(value: SetValueList<V, S>) -> Self {
+        value.0.nodes.into_iter().map(|node| node.value).collect()
+    }
+}
+
 /// Set-like list based on [`OptVec`] with `HashMap` for pointing at nodes.
-/// Theoretically, insert/remove is done in O(1), but iteration is not good as much as `Vec`.
-/// Because iteration is not sequential, it needs jump to reach the next node.
-/// But we can expect it would be more memory friendly than `LinkedList` based on `Box`.
-/// Use [`VecDeque`](std::collections::VecDeque) if you need something like queue.
-/// Or use [`LinkedList`](std::collections::LinkedList) if you really want linked list.
+/// Theoretically, insert/remove is done in O(1), but iteration is not good as
+/// much as `Vec`. Because iteration is not sequential, it needs jump to reach
+/// the next node. But we can expect it would be more memory friendly than
+/// `LinkedList` based on `Box`. Use [`VecDeque`] if you need something like
+/// queue. Or use [`LinkedList`] if you really want linked list.
+///
+/// # NOTE
 ///
 /// Current implementation doesn't concern about ZST.
+///
+/// [`VecDeque`]: std::collections::VecDeque
+/// [`LinkedList`]: std::collections::LinkedList
 #[derive(Debug)]
 pub struct SetList<K, V, S> {
     nodes: OptVec<ListNode<V>, S>,
@@ -145,10 +171,7 @@ where
     }
 }
 
-impl<K, V, S> SetList<K, V, S>
-where
-    S: BuildHasher,
-{
+impl<K, V, S> SetList<K, V, S> {
     /// Retrieves the length of node buffer,
     /// which is default head node + # of vacant slots + # of occupied slots.
     //
@@ -200,21 +223,27 @@ where
         unsafe { self.get_value_unchecked_mut(self.tail) }
     }
 
-    pub fn iter(&self) -> ListIter<'_, V, S> {
+    pub fn values(&self) -> Values<'_, V, S> {
         // Safety: get_first_position() returns valid default head node's position.
-        unsafe { self.iter_from(self.get_first_position()) }
+        unsafe { self.values_from(self.get_first_position()) }
     }
 
-    pub fn iter_mut(&mut self) -> ListIterMut<'_, V, S> {
+    pub fn values_mut(&mut self) -> ValuesMut<'_, V, S> {
         // Safety: get_first_position() returns valid default head node's position.
-        unsafe { self.iter_mut_from(self.get_first_position()) }
+        unsafe { self.values_mut_from(self.get_first_position()) }
+    }
+
+    pub fn into_values(self) -> IntoValues<V, S> {
+        let pos = self.get_first_position();
+        // Safety: get_first_position() returns valid default head node's position.
+        unsafe { self.into_values_from(pos) }
     }
 
     /// # Safety
     ///
     /// Undefined behavior if `cur` is invalid.
-    pub unsafe fn iter_from(&self, cur: ListPos) -> ListIter<'_, V, S> {
-        ListIter {
+    pub unsafe fn values_from(&self, cur: ListPos) -> Values<'_, V, S> {
+        Values {
             nodes: &self.nodes,
             cur,
         }
@@ -223,8 +252,8 @@ where
     /// # Safety
     ///
     /// Undefined behavior if `cur` is invalid.
-    pub unsafe fn iter_mut_from(&mut self, cur: ListPos) -> ListIterMut<'_, V, S> {
-        ListIterMut {
+    pub unsafe fn values_mut_from(&mut self, cur: ListPos) -> ValuesMut<'_, V, S> {
+        ValuesMut {
             nodes: &mut self.nodes,
             cur,
         }
@@ -233,8 +262,18 @@ where
     /// # Safety
     ///
     /// Undefined behavior if `cur` is invalid.
-    pub unsafe fn iter_pos_from(&self, cur: ListPos) -> ListPosIter<'_, V, S> {
-        ListPosIter {
+    pub unsafe fn into_values_from(self, cur: ListPos) -> IntoValues<V, S> {
+        IntoValues {
+            nodes: self.nodes,
+            cur,
+        }
+    }
+
+    /// # Safety
+    ///
+    /// Undefined behavior if `cur` is invalid.
+    pub unsafe fn iter_pos_from(&self, cur: ListPos) -> PosIter<'_, V, S> {
+        PosIter {
             nodes: &self.nodes,
             cur,
         }
@@ -567,7 +606,7 @@ where
     /// Creates `Vec` from this list.
     pub fn values_as_vec(&self) -> Vec<V> {
         let mut v = Vec::new();
-        for value in self.iter() {
+        for value in self.values() {
             v.push(value.clone());
         }
         v
@@ -597,7 +636,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[")?;
         let last = self.len_occupied() - 1;
-        for (i, value) in self.iter().enumerate() {
+        for (i, value) in self.values().enumerate() {
             if i == last {
                 write!(f, "{value}")?;
             } else {
@@ -605,6 +644,18 @@ where
             }
         }
         write!(f, "]")
+    }
+}
+
+impl<K, V, S> IntoIterator for SetList<K, V, S>
+where
+    S: BuildHasher,
+{
+    type Item = (K, V);
+    type IntoIter = IntoIter<K, V, S>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter::new(self)
     }
 }
 
@@ -649,12 +700,12 @@ struct ListNode<V> {
 }
 
 #[derive(Debug, Clone)]
-pub struct ListIter<'a, V, S> {
+pub struct Values<'a, V, S> {
     nodes: &'a OptVec<ListNode<V>, S>,
     cur: ListPos,
 }
 
-impl<'a, V, S> Iterator for ListIter<'a, V, S>
+impl<'a, V, S> Iterator for Values<'a, V, S>
 where
     S: BuildHasher,
 {
@@ -673,15 +724,12 @@ where
 }
 
 #[derive(Debug)]
-pub struct ListIterMut<'a, V, S> {
+pub struct ValuesMut<'a, V, S> {
     nodes: &'a mut OptVec<ListNode<V>, S>,
     cur: ListPos,
 }
 
-impl<'a, V, S> Iterator for ListIterMut<'a, V, S>
-where
-    S: BuildHasher,
-{
+impl<'a, V, S> Iterator for ValuesMut<'a, V, S> {
     type Item = &'a mut V;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -698,16 +746,70 @@ where
     }
 }
 
+#[derive(Debug)]
+pub struct IntoValues<V, S> {
+    nodes: OptVec<ListNode<V>, S>,
+    cur: ListPos,
+}
+
+impl<V, S> Iterator for IntoValues<V, S>
+where
+    S: BuildHasher,
+{
+    type Item = V;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if !self.cur.is_end() {
+            // Safety: self.cur is always valid.
+            let node = unsafe { self.nodes.take(self.cur.into_inner()).unwrap_unchecked() };
+            self.cur = node.next;
+            Some(node.value)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct IntoIter<K, V, S> {
+    nodes: OptVec<ListNode<V>, S>,
+    map_iter: std::collections::hash_map::IntoIter<K, ListPos>,
+}
+
+impl<K, V, S> IntoIter<K, V, S> {
+    fn new(list: SetList<K, V, S>) -> Self {
+        Self {
+            nodes: list.nodes,
+            map_iter: list.map.into_iter(),
+        }
+    }
+}
+
+impl<K, V, S> Iterator for IntoIter<K, V, S>
+where
+    S: BuildHasher,
+{
+    type Item = (K, V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some((k, pos)) = self.map_iter.next() {
+            // Safety: We got the index from the map, so the slot must be
+            // occupied.
+            let node = unsafe { self.nodes.take(pos.into_inner()).unwrap_unchecked() };
+            Some((k, node.value))
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
-pub struct ListPosIter<'a, V, S> {
+pub struct PosIter<'a, V, S> {
     nodes: &'a OptVec<ListNode<V>, S>,
     cur: ListPos,
 }
 
-impl<'a, V, S> Iterator for ListPosIter<'a, V, S>
-where
-    S: BuildHasher,
-{
+impl<'a, V, S> Iterator for PosIter<'a, V, S> {
     type Item = ListPos;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -736,7 +838,7 @@ mod tests {
         list.push_back(2);
         list.push_front(0);
         assert_eq!(3, list.len_occupied());
-        let mut iter = list.iter();
+        let mut iter = list.values();
         assert_eq!(Some(&0), iter.next());
         assert_eq!(Some(&1), iter.next());
         assert_eq!(Some(&2), iter.next());
@@ -747,20 +849,20 @@ mod tests {
 
         // take 1
         assert_eq!(Some(1), list.remove(&1));
-        let mut iter = list.iter();
+        let mut iter = list.values();
         assert_eq!(Some(&0), iter.next());
         assert_eq!(Some(&2), iter.next());
         assert_eq!(None, iter.next());
         assert_eq!(2, list.len_occupied());
         // take 2
         assert_eq!(Some(2), list.remove(&2));
-        let mut iter = list.iter();
+        let mut iter = list.values();
         assert_eq!(Some(&0), iter.next());
         assert_eq!(None, iter.next());
         assert_eq!(1, list.len_occupied());
         // take 0
         assert_eq!(Some(0), list.remove(&0));
-        let mut iter = list.iter();
+        let mut iter = list.values();
         assert_eq!(None, iter.next());
         assert_eq!(0, list.len_occupied());
 
@@ -774,21 +876,34 @@ mod tests {
         // mutable iterator
         let src = [0, 1, 2];
         let mut list = SetValueList::<_, RandomState>::from(&src[..]);
-        for value in list.iter_mut() {
+        for value in list.values_mut() {
             *value *= 2;
         }
-        for (src, dst) in src.iter().cloned().zip(list.iter().cloned()) {
+        for (src, dst) in src.iter().cloned().zip(list.values().cloned()) {
             assert_eq!(src * 2, dst);
         }
         // iterator from
         let cur = list.get_first_position();
         let (next, v) = list.iter_next_mut(cur).unwrap();
         *v /= 2;
-        for v in unsafe { list.iter_mut_from(next) } {
+        for v in unsafe { list.values_mut_from(next) } {
             *v /= 2;
         }
-        for (src, dst) in src.iter().cloned().zip(list.iter().cloned()) {
+        for (src, dst) in src.iter().cloned().zip(list.values().cloned()) {
             assert_eq!(src, dst);
+        }
+    }
+
+    #[test]
+    fn test_setlist_into_iter() {
+        let mut list = SetValueList::<_, RandomState>::new_with_default();
+        for i in 0..10 {
+            list.push_back(i);
+        }
+
+        let values = list.into_iter();
+        for (i, value) in values.enumerate() {
+            assert_eq!(value, i as i32);
         }
     }
 }

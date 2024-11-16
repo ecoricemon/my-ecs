@@ -15,6 +15,7 @@ mod non_web {
     };
 
     #[derive(Debug)]
+    #[repr(transparent)]
     pub struct WorkerPool {
         workers: Vec<Worker>,
     }
@@ -26,7 +27,7 @@ mod non_web {
             }
         }
 
-        pub fn with_default() -> Self {
+        pub fn with_num_cpus() -> Self {
             let num_cpus = thread::available_parallelism()
                 .unwrap_or(unsafe { NonZeroUsize::new_unchecked(1) })
                 .get();
@@ -57,10 +58,6 @@ mod non_web {
         pub fn append(&mut self, worker: Worker) {
             self.workers.push(worker);
         }
-
-        pub fn clear(&mut self) {
-            self.workers.clear();
-        }
     }
 
     impl Default for WorkerPool {
@@ -69,11 +66,15 @@ mod non_web {
         }
     }
 
-    impl HoldWorkers for WorkerPool {
-        type Worker = Worker;
+    impl From<Vec<Worker>> for WorkerPool {
+        fn from(value: Vec<Worker>) -> Self {
+            Self { workers: value }
+        }
+    }
 
-        fn workers(&mut self) -> &mut [Self::Worker] {
-            &mut self.workers
+    impl From<WorkerPool> for Vec<Worker> {
+        fn from(value: WorkerPool) -> Self {
+            value.workers
         }
     }
 
@@ -157,7 +158,11 @@ mod non_web {
 
 #[cfg(target_arch = "wasm32")]
 mod web {
-    use crate::{ds::prelude::*, ecs::prelude::*, util::prelude::*};
+    use crate::{
+        ds::prelude::*,
+        ecs::prelude::*,
+        util::{self, prelude::*},
+    };
     use std::{
         cell::RefCell,
         collections::VecDeque,
@@ -172,6 +177,7 @@ mod web {
     use wasm_bindgen::prelude::*;
 
     #[derive(Debug)]
+    #[repr(transparent)]
     pub struct WorkerPool {
         workers: Vec<Worker>,
     }
@@ -181,6 +187,27 @@ mod web {
             Self {
                 workers: Vec::new(),
             }
+        }
+
+        pub fn into_vec(self) -> Vec<Worker> {
+            self.workers
+        }
+
+        pub fn with_num_cpus() -> Self {
+            Self::with_len(web_util::available_parallelism())
+        }
+
+        pub fn with_len(len: usize) -> Self {
+            let mut this = Self::new();
+
+            let mut name = "worker0".to_owned();
+            for _ in 0..len {
+                let worker = WorkerBuilder::new(&name).spawn().unwrap();
+                this.append(worker);
+                util::str::increase_rnumber(&mut name);
+            }
+
+            this
         }
 
         pub fn len(&self) -> usize {
@@ -195,7 +222,7 @@ mod web {
             self.workers.push(worker);
         }
 
-        pub fn clear(&mut self) {
+        fn clear(&mut self) {
             self.workers.clear();
         }
     }
@@ -206,11 +233,15 @@ mod web {
         }
     }
 
-    impl HoldWorkers for WorkerPool {
-        type Worker = Worker;
+    impl From<Vec<Worker>> for WorkerPool {
+        fn from(value: Vec<Worker>) -> Self {
+            Self { workers: value }
+        }
+    }
 
-        fn workers(&mut self) -> &mut [Self::Worker] {
-            &mut self.workers
+    impl From<WorkerPool> for Vec<Worker> {
+        fn from(value: WorkerPool) -> Self {
+            value.workers
         }
     }
 
@@ -275,7 +306,7 @@ mod web {
                         for _ in 0..num {
                             str_util::increase_rnumber(&mut cx.child_name);
                             let worker = WorkerBuilder::new(&cx.child_name).spawn().unwrap();
-                            cx.worker_pool.append(worker);
+                            cx.pool.append(worker);
                         }
                     });
                 },
@@ -330,7 +361,7 @@ mod web {
     impl Drop for MainWorker {
         fn drop(&mut self) {
             JS_MAIN_CX.with_borrow_mut(|cx| {
-                cx.worker_pool.clear();
+                cx.pool.clear();
             });
         }
     }
@@ -383,7 +414,7 @@ mod web {
 
     pub struct MainWorkerContext {
         /// Worker pool.
-        worker_pool: WorkerPool,
+        pool: WorkerPool,
 
         /// Child worker name that will be given to the next spawned child worker.
         child_name: String,
@@ -398,7 +429,7 @@ mod web {
     impl MainWorkerContext {
         fn new() -> Self {
             Self {
-                worker_pool: WorkerPool::new(),
+                pool: WorkerPool::new(),
                 child_name: "sub-worker0".to_owned(),
                 pend_mut_fs: VecDeque::new(),
                 pend_f: None,
@@ -406,7 +437,7 @@ mod web {
         }
 
         fn ready_run(&mut self) {
-            let children = self.worker_pool.workers();
+            let children = &mut self.pool.workers;
             if children.iter().all(|child| child.is_ready()) {
                 // Runs `pend_mut_fs` first.
                 while let Some(f) = self.pend_mut_fs.pop_front() {
@@ -415,7 +446,7 @@ mod web {
 
                 // Then, runs `pend_f` with giving the worker pool.
                 if let Some(f) = self.pend_f.take() {
-                    f(mem::take(&mut self.worker_pool));
+                    f(mem::take(&mut self.pool));
                 }
             } else {
                 READY_RUN.with_borrow(|ready_run| {
@@ -433,7 +464,7 @@ mod web {
     impl fmt::Debug for MainWorkerContext {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.debug_struct("MainWorkerContext")
-                .field("worker_pool", &self.worker_pool)
+                .field("pool", &self.pool)
                 .finish_non_exhaustive()
         }
     }
@@ -594,7 +625,10 @@ mod web {
     impl Work for Worker {
         fn unpark(&mut self, cx: ManagedConstPtr<SubContext>) -> bool {
             let ptr = cx.inner().as_ptr();
+
+            #[cfg(feature = "borrow_check")]
             drop(cx);
+
             let res = self.handle.post_message(&JsValue::from(ptr));
             res.is_ok()
         }

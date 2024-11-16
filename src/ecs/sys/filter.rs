@@ -15,8 +15,7 @@ use std::{
     marker::PhantomData,
     ops::{Deref, DerefMut},
     ptr::NonNull,
-    rc::Rc,
-    sync::atomic::AtomicI32,
+    sync::Arc,
 };
 
 /// A filter to select [`Component`] array.
@@ -39,7 +38,7 @@ use std::{
 ///   any of these `Component`s.
 ///   It's something like *NOR* condition.
 ///   Buf if `None` is empty, then any entities won't be rejected.
-pub trait Filter: 'static {
+pub trait Filter: Send + 'static {
     type Target: Component;
     type All: Components;
     type Any: Components;
@@ -56,7 +55,7 @@ pub trait Filter: 'static {
         FilterKey::of::<Self>()
     }
 
-    fn info<S>(info_stor: &mut S) -> Rc<FilterInfo>
+    fn info<S>(info_stor: &mut S) -> Arc<FilterInfo>
     where
         S: StoreFilterInfo + ?Sized,
     {
@@ -65,7 +64,7 @@ pub trait Filter: 'static {
             info
         } else {
             let [all, any, none] = Self::ids();
-            let info = Rc::new(FilterInfo {
+            let info = Arc::new(FilterInfo {
                 name: any::type_name::<Self>(),
                 target: ComponentKey::of::<Self::Target>(),
                 all,
@@ -128,8 +127,8 @@ pub fn is_disjoint(a: &FilterInfo, b: &FilterInfo) -> bool {
 }
 
 pub trait StoreFilterInfo {
-    fn get(&self, key: &FilterKey) -> Option<Rc<FilterInfo>>;
-    fn insert(&mut self, key: FilterKey, info: &Rc<FilterInfo>);
+    fn get(&self, key: &FilterKey) -> Option<Arc<FilterInfo>>;
+    fn insert(&mut self, key: FilterKey, info: &Arc<FilterInfo>);
 }
 
 /// [`TypeId`] of a [`Filter`].
@@ -187,12 +186,12 @@ impl FilterInfo {
 }
 
 /// Filtered component arryas by a [Filter].  
-/// This struct contains borrowed [Filter::Target] arrays.
-/// But, this struct doesn't bring lifetime constraint into inside the struct.
-/// although it borrows component arrays.
-/// Instead, borrowed data are encapsulated by [Borrowed],
-/// which is a run-time borrow checker.
-/// In other words, component arrays must be borrowed and released everytime.
+///
+// This struct contains borrowed [Filter::Target] arrays. But, this struct
+// doesn't bring lifetime constraint into inside the struct although it
+// borrows component arrays. Instead, borrowed data are encapsulated by
+// [Borrowed], which is a run-time borrow checker. In other words, component
+// arrays must be borrowed and released everytime.
 //
 // This struct is intended to be used as a cache without lifetime.
 // Cache is a data storage which lives as long as system data.
@@ -216,7 +215,7 @@ pub struct RawFiltered {
     /// Real user, system, owns it and will drop it after using it.
     //
     // See `request::BufferCleaner` for more details.
-    query_res: Vec<Borrowed<RawGetter, AtomicI32>>,
+    query_res: Vec<Borrowed<RawGetter>>,
 }
 
 impl RawFiltered {
@@ -228,20 +227,25 @@ impl RawFiltered {
         }
     }
 
-    pub(crate) fn take(
-        &mut self,
-    ) -> (
-        &Vec<EntityTag>,
-        &Vec<usize>,
-        &mut Vec<Borrowed<RawGetter, AtomicI32>>,
-    ) {
+    pub(crate) fn take(&mut self) -> (&Vec<EntityTag>, &Vec<usize>, &mut Vec<Borrowed<RawGetter>>) {
         (&self.etags, &self.col_idxs, &mut self.query_res)
     }
 
-    // By putting `etag` and `ci` in together, `Self::etags` and `Self::col_idxs` have the same length.
+    // `etags` and `col_idxs` always have the same length.
     pub(crate) fn add(&mut self, etag: EntityTag, ci: usize) {
         self.etags.push(etag);
         self.col_idxs.push(ci);
+    }
+
+    // `etags` and `col_idxs` always have the same length.
+    pub(crate) fn remove(&mut self, ci: usize) -> Option<EntityTag> {
+        if let Some((i, _)) = self.col_idxs.iter().enumerate().find(|(_, &x)| x == ci) {
+            let old = self.etags.swap_remove(i);
+            self.col_idxs.swap_remove(i);
+            Some(old)
+        } else {
+            None
+        }
     }
 
     /// Retrieve an iterator that traverses over entity and column index pair.
@@ -260,12 +264,12 @@ impl RawFiltered {
         self.query_res.clear();
     }
 
-    fn entity_tags(&self) -> &Vec<EntityTag> {
-        &self.etags
+    pub(crate) fn query_res(&self) -> &Vec<Borrowed<RawGetter>> {
+        &self.query_res
     }
 
-    fn query_res(&self) -> &Vec<Borrowed<RawGetter, AtomicI32>> {
-        &self.query_res
+    fn entity_tags(&self) -> &Vec<EntityTag> {
+        &self.etags
     }
 }
 
@@ -327,19 +331,27 @@ impl<'cont, Comp> FilteredMut<'cont, Comp> {
     }
 
     pub fn iter(&self) -> FilteredIter<'cont, Comp> {
-        FilteredIter::new(&self.0)
+        self.0.iter()
     }
 
     pub fn iter_mut(&mut self) -> FilteredIterMut<'cont, Comp> {
         FilteredIterMut::new(self.iter())
     }
+
+    pub fn par_iter(&self) -> ParFilteredIter<'cont, Comp> {
+        self.0.par_iter()
+    }
+
+    pub fn par_iter_mut(&mut self) -> ParFilteredIterMut<'cont, Comp> {
+        ParFilteredIterMut::new(self.iter_mut())
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct FilteredIter<'cont, Comp: 'cont> {
-    getter_cur: SendSyncPtr<Borrowed<RawGetter, AtomicI32>>,
+    getter_cur: SendSyncPtr<Borrowed<RawGetter>>,
 
-    getter_end: SendSyncPtr<Borrowed<RawGetter, AtomicI32>>,
+    getter_end: SendSyncPtr<Borrowed<RawGetter>>,
 
     etag_cur: SendSyncPtr<EntityTag>,
 
@@ -388,8 +400,37 @@ impl<'cont, Comp> FilteredIter<'cont, Comp> {
         ParFilteredIter(self)
     }
 
+    #[inline]
+    fn split_at(self, index: usize) -> (Self, Self) {
+        let l_getter_cur = self.getter_cur;
+        let l_getter_end = unsafe { self.getter_cur.add(index) };
+        let r_getter_cur = l_getter_end;
+        let r_getter_end = self.getter_end;
+
+        let l_etag_cur = self.etag_cur;
+        let l_etag_end = unsafe { self.etag_cur.add(index) };
+        let r_etag_cur = l_etag_end;
+        let r_etag_end = self.etag_end;
+
+        let l = FilteredIter {
+            getter_cur: l_getter_cur,
+            getter_end: l_getter_end,
+            etag_cur: l_etag_cur,
+            etag_end: l_etag_end,
+            _marker: PhantomData,
+        };
+        let r = FilteredIter {
+            getter_cur: r_getter_cur,
+            getter_end: r_getter_end,
+            etag_cur: r_etag_cur,
+            etag_end: r_etag_end,
+            _marker: PhantomData,
+        };
+        (l, r)
+    }
+
     unsafe fn create_item(
-        getter: SendSyncPtr<Borrowed<RawGetter, AtomicI32>>,
+        getter: SendSyncPtr<Borrowed<RawGetter>>,
         etag: SendSyncPtr<EntityTag>,
     ) -> TaggedGetter<'cont, Comp> {
         let raw = **getter.as_ref();
@@ -462,24 +503,9 @@ impl<'cont, Comp> ParFilteredIter<'cont, Comp> {
         self.0.len()
     }
 
+    #[inline]
     pub const fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
-
-impl<'cont, Comp> Deref for ParFilteredIter<'cont, Comp> {
-    type Target = FilteredIter<'cont, Comp>;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<'cont, Comp> DerefMut for ParFilteredIter<'cont, Comp> {
-    #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        self.0.is_empty()
     }
 }
 
@@ -523,30 +549,7 @@ impl<'cont, Comp: Send + Sync> Producer for ParFilteredIter<'cont, Comp> {
 
     #[inline]
     fn split_at(self, index: usize) -> (Self, Self) {
-        let l_getter_cur = self.getter_cur;
-        let l_getter_end = unsafe { self.getter_cur.add(index) };
-        let r_getter_cur = l_getter_end;
-        let r_getter_end = self.getter_end;
-
-        let l_etag_cur = self.etag_cur;
-        let l_etag_end = unsafe { self.etag_cur.add(index) };
-        let r_etag_cur = l_etag_end;
-        let r_etag_end = self.etag_end;
-
-        let l = FilteredIter {
-            getter_cur: l_getter_cur,
-            getter_end: l_getter_end,
-            etag_cur: l_etag_cur,
-            etag_end: l_etag_end,
-            _marker: PhantomData,
-        };
-        let r = FilteredIter {
-            getter_cur: r_getter_cur,
-            getter_end: r_getter_end,
-            etag_cur: r_etag_cur,
-            etag_end: r_etag_end,
-            _marker: PhantomData,
-        };
+        let (l, r) = FilteredIter::split_at(self.into_seq(), index);
         (l.into_par(), r.into_par())
     }
 }
@@ -559,6 +562,27 @@ pub struct FilteredIterMut<'cont, Comp: 'cont>(FilteredIter<'cont, Comp>);
 impl<'cont, Comp> FilteredIterMut<'cont, Comp> {
     const fn new(inner: FilteredIter<'cont, Comp>) -> Self {
         Self(inner)
+    }
+
+    #[inline]
+    pub const fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[inline]
+    pub const fn into_par(self) -> ParFilteredIterMut<'cont, Comp> {
+        ParFilteredIterMut(self)
+    }
+
+    #[inline]
+    fn split_at(self, index: usize) -> (Self, Self) {
+        let (l, r) = FilteredIter::split_at(self.0, index);
+        (Self(l), Self(r))
     }
 }
 
@@ -584,7 +608,7 @@ impl<'cont, Comp> Iterator for FilteredIterMut<'cont, Comp> {
 
 impl<'cont, Comp> ExactSizeIterator for FilteredIterMut<'cont, Comp> {
     fn len(&self) -> usize {
-        self.0.len()
+        Self::len(self)
     }
 }
 
@@ -599,6 +623,80 @@ impl<'cont, Comp> DoubleEndedIterator for FilteredIterMut<'cont, Comp> {
                 etag,
             }
         })
+    }
+}
+
+/// Parallel [`FilteredIterMut`].
+//
+// `Iterator` and `ParallelIterator` have the same signature methods,
+// So clients have to write fully-qualified syntax to specify methods.
+// This new type helps clients avoid it.
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct ParFilteredIterMut<'cont, Comp: 'cont>(FilteredIterMut<'cont, Comp>);
+
+impl<'cont, Comp> ParFilteredIterMut<'cont, Comp> {
+    const fn new(iter: FilteredIterMut<'cont, Comp>) -> Self {
+        Self(iter)
+    }
+
+    pub const fn into_seq(self) -> FilteredIterMut<'cont, Comp> {
+        self.0
+    }
+
+    #[inline]
+    pub const fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<'cont, Comp: Send + Sync> ParallelIterator for ParFilteredIterMut<'cont, Comp> {
+    type Item = TaggedGetterMut<'cont, Comp>;
+
+    #[inline]
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+    where
+        C: UnindexedConsumer<Self::Item>,
+    {
+        par::bridge(self, consumer)
+    }
+}
+
+impl<'cont, Comp: Send + Sync> IndexedParallelIterator for ParFilteredIterMut<'cont, Comp> {
+    #[inline]
+    fn len(&self) -> usize {
+        Self::len(self)
+    }
+
+    #[inline]
+    fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
+        par::bridge(self, consumer)
+    }
+
+    #[inline]
+    fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
+        callback.callback(self)
+    }
+}
+
+impl<'cont, Comp: Send + Sync> Producer for ParFilteredIterMut<'cont, Comp> {
+    type Item = TaggedGetterMut<'cont, Comp>;
+    type IntoIter = FilteredIterMut<'cont, Comp>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.into_seq()
+    }
+
+    #[inline]
+    fn split_at(self, index: usize) -> (Self, Self) {
+        let (l, r) = FilteredIterMut::split_at(self.into_seq(), index);
+        (l.into_par(), r.into_par())
     }
 }
 

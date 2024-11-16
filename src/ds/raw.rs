@@ -584,7 +584,7 @@ impl ExactSizeIterator for NestedRawIter {
 // To implement rayon's ParallelIterator, we have to implement
 // `ExactSizeIterator` and `DoubleEndedIterator`.
 // So we track right side status and total number of items.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FlatRawIter {
     /// Left [RawIter::cur].
     /// When [Iterator::next] is called, this pointer may be returned.
@@ -1119,6 +1119,10 @@ impl RawGetter {
     pub fn iter(&self) -> FlatRawIter {
         // Safety: Owners guarantee validity.
         unsafe { (self.fn_iter)(self.this.as_nonnull()) }
+    }
+
+    pub fn ptr(&self) -> NonNull<u8> {
+        self.this.as_nonnull()
     }
 }
 

@@ -1,5 +1,5 @@
 use super::{
-    filter::{self, RawFiltered},
+    filter::{self, FilterInfo, FilterKey, RawFiltered, StoreFilterInfo},
     query::{
         EntQueryInfo, EntQueryKey, EntQueryMut, Query, QueryInfo, QueryKey, QueryMut, ResQuery,
         ResQueryInfo, ResQueryKey, ResQueryMut, StoreEntQueryInfo, StoreQueryInfo,
@@ -13,8 +13,265 @@ use crate::{
         ent::entity::{ContainEntity, EntityKey},
         resource::ResourceKey,
     },
+    DefaultHasher,
 };
-use std::{any, marker::PhantomData, ptr::NonNull, rc::Rc, sync::atomic::AtomicI32};
+use std::{
+    any,
+    collections::HashMap,
+    hash::BuildHasher,
+    marker::PhantomData,
+    ptr::NonNull,
+    sync::{Arc, LazyLock, Mutex},
+};
+
+/// A storage including request, query and filter information together.
+//
+// When a system is registered, it's corresponding request and
+// related other information is registered here, and it can be shared from other systems.
+// When it comes to unregister, each system data will unregister itself from
+// this stroage when it's dropped.
+pub(crate) static RINFO_STOR: LazyLock<Arc<Mutex<RequestInfoStorage<DefaultHasher>>>> =
+    const { LazyLock::new(|| Arc::new(Mutex::new(RequestInfoStorage::new()))) };
+
+/// Storage containig request and other info.
+#[derive(Debug)]
+pub(crate) struct RequestInfoStorage<S> {
+    /// [`RequestKey`] -> [`RequestInfo`].
+    rinfo: HashMap<RequestKey, Arc<RequestInfo>, S>,
+
+    /// [`QueryKey`] -> [`QueryInfo`].
+    qinfo: HashMap<QueryKey, Arc<QueryInfo>, S>,
+
+    /// [`ResQueryKey`] -> [`ResQueryInfo`].
+    rqinfo: HashMap<ResQueryKey, Arc<ResQueryInfo>, S>,
+
+    /// [`EntQueryKey`] -> [`EntQueryInfo`].
+    eqinfo: HashMap<EntQueryKey, Arc<EntQueryInfo>, S>,
+
+    /// [`FilterKey`] -> [`FilterInfo`].
+    finfo: HashMap<FilterKey, Arc<FilterInfo>, S>,
+}
+
+impl<S> RequestInfoStorage<S>
+where
+    S: Default,
+{
+    fn new() -> Self {
+        Self {
+            rinfo: HashMap::default(),
+            qinfo: HashMap::default(),
+            rqinfo: HashMap::default(),
+            eqinfo: HashMap::default(),
+            finfo: HashMap::default(),
+        }
+    }
+}
+
+impl<S> RequestInfoStorage<S>
+where
+    S: BuildHasher,
+{
+    // for future use.
+    #[allow(dead_code)]
+    pub(crate) fn get_request_info(&self, key: &RequestKey) -> Option<Arc<RequestInfo>> {
+        StoreRequestInfo::get(self, key)
+    }
+
+    // for future use.
+    #[allow(dead_code)]
+    pub(crate) fn get_query_info(&self, key: &QueryKey) -> Option<Arc<QueryInfo>> {
+        StoreQueryInfo::get(self, key)
+    }
+
+    // for future use.
+    #[allow(dead_code)]
+    pub(crate) fn get_resource_query_info(&self, key: &ResQueryKey) -> Option<Arc<ResQueryInfo>> {
+        StoreResQueryInfo::get(self, key)
+    }
+
+    // for future use.
+    #[allow(dead_code)]
+    pub(crate) fn get_entity_query_info(&self, key: &EntQueryKey) -> Option<Arc<EntQueryInfo>> {
+        StoreEntQueryInfo::get(self, key)
+    }
+
+    // for future use.
+    #[allow(dead_code)]
+    pub(crate) fn get_filter_info(&self, key: &FilterKey) -> Option<Arc<FilterInfo>> {
+        StoreFilterInfo::get(self, key)
+    }
+
+    fn remove(&mut self, key: &RequestKey) {
+        // Removes request info if it's not referenced from external anymore.
+        if matches!(self.rinfo.get(key), Some(x) if Arc::strong_count(x) == 1) {
+            // Safety: We checked it in matches.
+            let rinfo = unsafe { self.rinfo.remove(key).unwrap_unchecked() };
+
+            // `RequestInfo` contains other info, so copy keys and drop rinfo first
+            // in order to keep remove code simple.
+            let read_key = rinfo.read().0;
+            let write_key = rinfo.write().0;
+            let res_read_key = rinfo.res_read().0;
+            let res_write_key = rinfo.res_write().0;
+            let ent_write_key = rinfo.ent_write().0;
+            drop(rinfo);
+
+            // Removes read & write query and filter info.
+            remove_qinfo_finfo(self, &read_key);
+            remove_qinfo_finfo(self, &write_key);
+
+            // Removes read & write resource info.
+            remove_rqinfo(self, &res_read_key);
+            remove_rqinfo(self, &res_write_key);
+
+            // Removes write entity info.
+            remove_eqinfo(self, &ent_write_key);
+        }
+
+        // Removes query and filter info if it's not referenced from external anymore.
+        // This function must be called inside `remove()`.
+        fn remove_qinfo_finfo<S>(this: &mut RequestInfoStorage<S>, key: &QueryKey)
+        where
+            S: BuildHasher,
+        {
+            // `self.qinfo` = 1.
+            const QINFO_EMPTY_STRONG_CNT: usize = 1;
+
+            if matches! (
+                this.qinfo.get(key),
+                Some(x) if Arc::strong_count(x) == QINFO_EMPTY_STRONG_CNT
+            ) {
+                // `QueryInfo` contains `FilterInfo` in it.
+                // We need to remove `FilterInfo` first.
+                // Safety: We checked it in matches.
+                let qinfo = unsafe { this.qinfo.remove(key).unwrap_unchecked() };
+
+                // Removes filter info it's not referenced from external anymore.
+                for (fkey, finfo) in qinfo.filters() {
+                    // `finfo` + `self.finfo` = 2.
+                    const FINFO_EMPTY_STRONG_CNT: usize = 2;
+
+                    if Arc::strong_count(finfo) == FINFO_EMPTY_STRONG_CNT {
+                        this.finfo.remove(fkey);
+                    }
+                }
+            }
+        }
+
+        // Removes resource query info if it's not referenced from external anymore.
+        // This function must be called inside `remove()`.
+        fn remove_rqinfo<S>(this: &mut RequestInfoStorage<S>, key: &ResQueryKey)
+        where
+            S: BuildHasher,
+        {
+            // `self.rqinfo` = 1.
+            const EMPTY_STRONG_CNT: usize = 1;
+
+            if matches! (
+                this.rqinfo.get(key),
+                Some(x) if Arc::strong_count(x) == EMPTY_STRONG_CNT
+            ) {
+                this.rqinfo.remove(key);
+            }
+        }
+
+        // Removes entity query info if it's not referenced from external anymore.
+        // This function must be called inside `remove()`.
+        fn remove_eqinfo<S>(this: &mut RequestInfoStorage<S>, key: &EntQueryKey)
+        where
+            S: BuildHasher,
+        {
+            // `self.eqinfo` = 1.
+            const EMPTY_STRONG_CNT: usize = 1;
+
+            if matches! (
+                this.eqinfo.get(key),
+                Some(x) if Arc::strong_count(x) == EMPTY_STRONG_CNT
+            ) {
+                this.eqinfo.remove(key);
+            }
+        }
+    }
+}
+
+impl<S> Default for RequestInfoStorage<S>
+where
+    S: Default,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<S> StoreRequestInfo for RequestInfoStorage<S>
+where
+    S: BuildHasher,
+{
+    fn get(&self, key: &RequestKey) -> Option<Arc<RequestInfo>> {
+        self.rinfo.get(key).map(Arc::clone)
+    }
+
+    fn insert(&mut self, key: RequestKey, info: &Arc<RequestInfo>) {
+        self.rinfo.insert(key, Arc::clone(info));
+    }
+
+    // Top level cleaner.
+    fn remove(&mut self, key: &RequestKey) {
+        self.remove(key)
+    }
+}
+
+impl<S> StoreQueryInfo for RequestInfoStorage<S>
+where
+    S: BuildHasher,
+{
+    fn get(&self, key: &QueryKey) -> Option<Arc<QueryInfo>> {
+        self.qinfo.get(key).map(Arc::clone)
+    }
+
+    fn insert(&mut self, key: QueryKey, info: &Arc<QueryInfo>) {
+        self.qinfo.insert(key, Arc::clone(info));
+    }
+}
+
+impl<S> StoreResQueryInfo for RequestInfoStorage<S>
+where
+    S: BuildHasher,
+{
+    fn get(&self, key: &ResQueryKey) -> Option<Arc<ResQueryInfo>> {
+        self.rqinfo.get(key).map(Arc::clone)
+    }
+
+    fn insert(&mut self, key: ResQueryKey, info: &Arc<ResQueryInfo>) {
+        self.rqinfo.insert(key, Arc::clone(info));
+    }
+}
+
+impl<S> StoreEntQueryInfo for RequestInfoStorage<S>
+where
+    S: BuildHasher,
+{
+    fn get(&self, key: &EntQueryKey) -> Option<Arc<EntQueryInfo>> {
+        self.eqinfo.get(key).map(Arc::clone)
+    }
+
+    fn insert(&mut self, key: EntQueryKey, info: &Arc<EntQueryInfo>) {
+        self.eqinfo.insert(key, Arc::clone(info));
+    }
+}
+
+impl<S> StoreFilterInfo for RequestInfoStorage<S>
+where
+    S: BuildHasher,
+{
+    fn get(&self, key: &FilterKey) -> Option<Arc<FilterInfo>> {
+        self.finfo.get(key).map(Arc::clone)
+    }
+
+    fn insert(&mut self, key: FilterKey, info: &Arc<FilterInfo>) {
+        self.finfo.insert(key, Arc::clone(info));
+    }
+}
 
 /// A single request is about needs for all sorts of components, resources,
 /// and entity containers.
@@ -22,67 +279,79 @@ use std::{any, marker::PhantomData, ptr::NonNull, rc::Rc, sync::atomic::AtomicI3
 /// and queries for entity containers.
 /// They must be requested at once in order to prevent dead lock.
 /// You can make a request by implementing this trait and put it in a system.
-//
-// TODO: For now, `Request` doesn't have to be `Send`.
-// But, when clients register not thread safe resources to ECS,
-// And request it, will it be safe?
-pub trait Request: 'static {
-    /// Read-only access [`Query`] composed of [`Filter`](super::filter::Filter)s.
-    /// Read-only access can help us execute systems simultaneously.
+pub trait Request: Send + 'static {
+    /// Read-only access [`Query`] consisting of [`Filter`]s.
+    /// Read-only access helps us execute systems simultaneously.
+    ///
+    /// [`Filter`]: super::filter::Filter
     type Read: Query;
 
-    /// Writable access [`QueryMut`] composed of [`Filter`](super::filter::Filter)s.
+    /// Writable access [`QueryMut`] consisting of [`Filter`]s.
     /// Writable access always takes exclusive authority over the target.
+    ///
+    /// [`Filter`]: super::filter::Filter
     type Write: QueryMut;
 
-    /// Read-only access [`ResQuery`] composed of [`Resource`](super::resource::Resource)s.
+    /// Read-only access [`ResQuery`] consisting of [`Resource`]s.
     /// Read-only access can help us execute systems simultaneously.
+    ///
+    /// [`Resource`]: super::super::resource::Resource
     type ResRead: ResQuery;
 
-    /// Writable access [`ResQueryMut`] composed of [`Resource`](super::resource::Resource)s.
+    /// Writable access [`ResQueryMut`] consisting of [`Resource`]s.
     /// Writable access always takes exclusive authority over the target.
+    ///
+    /// [`Resource`]: super::super::resource::Resource
     type ResWrite: ResQueryMut;
 
-    /// Writable access [`EntQueryMut`] composed of [`Entity`](super::entity::Entity).
+    /// Writable access [`EntQueryMut`] consisting of [`Entity`].
     /// Writable acess always takes exclusive authority over the target.
+    ///
+    /// [`Entity`]: super::super::ent::entity::Entity
     type EntWrite: EntQueryMut;
 
-    fn key() -> RequestKey {
+    /// Provided.
+    fn request_key() -> RequestKey {
         RequestKey::of::<Self>()
+    }
+
+    /// Provided.
+    fn as_request_key(&self) -> RequestKey {
+        Self::request_key()
     }
 }
 
 /// [`Request`], but not exposed to clients.
 /// This trait is implemented and used in the crate only.
 pub(crate) trait PrivateRequest: Request {
-    fn get_info<S>(stor: &mut S) -> Rc<RequestInfo>
+    fn get_info<S>(stor: &mut S) -> Arc<RequestInfo>
     where
         S: StoreRequestInfo + ?Sized,
     {
-        let key = Self::key();
+        let key = Self::request_key();
         if let Some(info) = StoreRequestInfo::get(stor, &key) {
             info
         } else {
-            let info = Rc::new(RequestInfo {
+            let info = Arc::new(RequestInfo {
                 name: any::type_name::<Self>(),
                 read: (
-                    <Self::Read as Query>::key(),
+                    <Self::Read as Query>::query_key(),
                     <Self::Read as Query>::get_info(stor),
                 ),
                 write: (
-                    <Self::Write as QueryMut>::key(),
+                    <Self::Write as QueryMut>::query_mut_key(),
                     <Self::Write as QueryMut>::get_info(stor),
                 ),
                 res_read: (
-                    <Self::ResRead as ResQuery>::key(),
+                    <Self::ResRead as ResQuery>::resource_query_key(),
                     <Self::ResRead as ResQuery>::get_info(stor),
                 ),
                 res_write: (
-                    <Self::ResWrite as ResQueryMut>::key(),
+                    <Self::ResWrite as ResQueryMut>::resource_query_mut_key(),
                     <Self::ResWrite as ResQueryMut>::get_info(stor),
                 ),
                 ent_write: (
-                    <Self::EntWrite as EntQueryMut>::key(),
+                    <Self::EntWrite as EntQueryMut>::entity_query_mut_key(),
                     <Self::EntWrite as EntQueryMut>::get_info(stor),
                 ),
             });
@@ -110,7 +379,7 @@ where
     type EntWrite = EW;
 }
 
-/// A macro for declaration of an empty structure and implementation [`Request`] for the structure.
+/// This macro declares an empty struct and implements [`Request`] fot it.
 #[macro_export]
 macro_rules! request {
     (
@@ -145,8 +414,8 @@ macro_rules! request {
 pub(crate) trait StoreRequestInfo:
     StoreQueryInfo + StoreResQueryInfo + StoreEntQueryInfo
 {
-    fn get(&self, key: &RequestKey) -> Option<Rc<RequestInfo>>;
-    fn insert(&mut self, key: RequestKey, info: &Rc<RequestInfo>);
+    fn get(&self, key: &RequestKey) -> Option<Arc<RequestInfo>>;
+    fn insert(&mut self, key: RequestKey, info: &Arc<RequestInfo>);
     fn remove(&mut self, key: &RequestKey);
 }
 
@@ -157,11 +426,11 @@ pub struct RequestKey_;
 #[derive(Debug, Clone)]
 pub(crate) struct RequestInfo {
     name: &'static str,
-    read: (QueryKey, Rc<QueryInfo>),
-    write: (QueryKey, Rc<QueryInfo>),
-    res_read: (ResQueryKey, Rc<ResQueryInfo>),
-    res_write: (ResQueryKey, Rc<ResQueryInfo>),
-    ent_write: (EntQueryKey, Rc<EntQueryInfo>),
+    read: (QueryKey, Arc<QueryInfo>),
+    write: (QueryKey, Arc<QueryInfo>),
+    res_read: (ResQueryKey, Arc<ResQueryInfo>),
+    res_write: (ResQueryKey, Arc<ResQueryInfo>),
+    ent_write: (EntQueryKey, Arc<EntQueryInfo>),
 }
 
 impl RequestInfo {
@@ -171,23 +440,23 @@ impl RequestInfo {
         self.name
     }
 
-    pub(crate) fn read(&self) -> &(QueryKey, Rc<QueryInfo>) {
+    pub(crate) fn read(&self) -> &(QueryKey, Arc<QueryInfo>) {
         &self.read
     }
 
-    pub(crate) fn write(&self) -> &(QueryKey, Rc<QueryInfo>) {
+    pub(crate) fn write(&self) -> &(QueryKey, Arc<QueryInfo>) {
         &self.write
     }
 
-    pub(crate) fn res_read(&self) -> &(ResQueryKey, Rc<ResQueryInfo>) {
+    pub(crate) fn res_read(&self) -> &(ResQueryKey, Arc<ResQueryInfo>) {
         &self.res_read
     }
 
-    pub(crate) fn res_write(&self) -> &(ResQueryKey, Rc<ResQueryInfo>) {
+    pub(crate) fn res_write(&self) -> &(ResQueryKey, Arc<ResQueryInfo>) {
         &self.res_write
     }
 
-    pub(crate) fn ent_write(&self) -> &(EntQueryKey, Rc<EntQueryInfo>) {
+    pub(crate) fn ent_write(&self) -> &(EntQueryKey, Arc<EntQueryInfo>) {
         &self.ent_write
     }
 
@@ -291,7 +560,7 @@ impl Request for () {
 /// Because the buffer exists as long as the system and won't be freed.
 /// Plus, each field must be released individually.
 //
-// Why system buffer, not request buffer?
+// Why system buffer rather than request buffer?
 // Q. Many systems can have the same request, so is they be able to share the same buffer?
 // A. Because of borrow check, we need system-individual buffer.
 // - We check borrow status, so we need to borrow and release data everytime.
@@ -309,13 +578,13 @@ pub struct SystemBuffer {
     pub(crate) write: Box<[RawFiltered]>,
 
     /// Buffer for read-only borrowed resources for the system's request.
-    pub(crate) res_read: Vec<Borrowed<ManagedConstPtr<u8>, AtomicI32>>,
+    pub(crate) res_read: Vec<Borrowed<ManagedConstPtr<u8>>>,
 
     /// Buffer for writable borrowed resources for the system's request.
-    pub(crate) res_write: Vec<Borrowed<ManagedMutPtr<u8>, AtomicI32>>,
+    pub(crate) res_write: Vec<Borrowed<ManagedMutPtr<u8>>>,
 
     /// Buffer for writable borrowed entity container for the system's request.
-    pub(crate) ent_write: Vec<Borrowed<NonNull<dyn ContainEntity>, AtomicI32>>,
+    pub(crate) ent_write: Vec<Borrowed<NonNull<dyn ContainEntity>>>,
 }
 
 // We're going to send this buffer to other threads with a system implementation.
@@ -336,6 +605,11 @@ impl SystemBuffer {
     }
 
     pub(crate) fn clear(&mut self) {
+        #[cfg(feature = "borrow_check")]
+        self.clear_force();
+    }
+
+    pub(crate) fn clear_force(&mut self) {
         for read in self.read.iter_mut() {
             read.clear();
         }
@@ -364,7 +638,7 @@ pub struct Response<'buf, Req: Request> {
 }
 
 impl<'buf, Req: Request> Response<'buf, Req> {
-    pub fn new(buf: &'buf mut SystemBuffer) -> Self {
+    pub(crate) fn new(buf: &'buf mut SystemBuffer) -> Self {
         // Safety: Infallible.
         let _cleaner = BufferCleaner {
             buf_ptr: unsafe { NonNull::new_unchecked(buf as *mut _) },

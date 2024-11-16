@@ -15,34 +15,38 @@ pub trait Work {
     fn name(&self) -> &str;
 }
 
-pub trait HoldWorkers {
-    type Worker: Work;
-
-    fn workers(&mut self) -> &mut [Self::Worker];
-}
-
 #[derive(Hash, PartialEq, Eq, Clone, Copy, Debug)]
 pub(crate) struct WorkerId {
     id: u32,
-    index: u32,
+    group_index: u16,
+    worker_index: u16,
 }
 
 impl WorkerId {
     const DUMMY: Self = Self {
         id: u32::MAX,
-        index: u32::MAX,
+        group_index: u16::MAX,
+        worker_index: u16::MAX,
     };
 
-    pub(crate) const fn new(id: u32, index: u32) -> Self {
-        Self { id, index }
+    pub(crate) const fn new(id: u32, group_index: u16, worker_index: u16) -> Self {
+        Self {
+            id,
+            group_index,
+            worker_index,
+        }
     }
 
     pub(crate) const fn dummy() -> Self {
         Self::DUMMY
     }
 
-    pub(crate) const fn index(&self) -> usize {
-        self.index as usize
+    pub(crate) const fn group_index(&self) -> u16 {
+        self.group_index
+    }
+
+    pub(crate) const fn worker_index(&self) -> u16 {
+        self.worker_index
     }
 }
 

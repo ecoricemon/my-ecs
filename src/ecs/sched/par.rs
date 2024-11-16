@@ -2,7 +2,7 @@ use super::{
     ctrl::SUB_CONTEXT,
     task::{ParTask, ParTaskHolder, TaskId},
 };
-use crate::ds::prelude::*;
+use crate::ds;
 use rayon::iter::{
     plumbing::{Consumer, Folder, Producer, ProducerCallback, Reducer, UnindexedConsumer},
     IndexedParallelIterator, ParallelIterator,
@@ -240,8 +240,8 @@ where
 mod impl_iter {
     use super::*;
 
-    impl ParallelIterator for ParRawIter {
-        type Item = SendSyncPtr<u8>;
+    impl ParallelIterator for ds::raw::ParRawIter {
+        type Item = ds::ptr::SendSyncPtr<u8>;
 
         #[inline]
         fn drive_unindexed<C>(self, consumer: C) -> C::Result
@@ -252,7 +252,7 @@ mod impl_iter {
         }
     }
 
-    impl IndexedParallelIterator for ParRawIter {
+    impl IndexedParallelIterator for ds::raw::ParRawIter {
         #[inline]
         fn len(&self) -> usize {
             Self::len(self)
@@ -269,9 +269,9 @@ mod impl_iter {
         }
     }
 
-    impl Producer for ParRawIter {
-        type Item = SendSyncPtr<u8>;
-        type IntoIter = RawIter;
+    impl Producer for ds::raw::ParRawIter {
+        type Item = ds::ptr::SendSyncPtr<u8>;
+        type IntoIter = ds::raw::RawIter;
 
         #[inline]
         fn into_iter(self) -> Self::IntoIter {
@@ -288,15 +288,15 @@ mod impl_iter {
             // Safety: Splitting is safe.
             let (l, r) = unsafe {
                 (
-                    RawIter::new(l_cur.as_nonnull(), l_end.as_nonnull(), self.stride),
-                    RawIter::new(r_cur.as_nonnull(), r_end.as_nonnull(), self.stride),
+                    ds::raw::RawIter::new(l_cur.as_nonnull(), l_end.as_nonnull(), self.stride),
+                    ds::raw::RawIter::new(r_cur.as_nonnull(), r_end.as_nonnull(), self.stride),
                 )
             };
             (l.into_par(), r.into_par())
         }
     }
 
-    impl<'a, T: Send + Sync> ParallelIterator for ParIter<'a, T> {
+    impl<'a, T: Send + Sync> ParallelIterator for ds::raw::ParIter<'a, T> {
         type Item = &'a T;
 
         #[inline]
@@ -308,7 +308,7 @@ mod impl_iter {
         }
     }
 
-    impl<'a, T: Send + Sync> IndexedParallelIterator for ParIter<'a, T> {
+    impl<'a, T: Send + Sync> IndexedParallelIterator for ds::raw::ParIter<'a, T> {
         #[inline]
         fn len(&self) -> usize {
             Self::len(self)
@@ -325,9 +325,9 @@ mod impl_iter {
         }
     }
 
-    impl<'a, T: Send + Sync> Producer for ParIter<'a, T> {
+    impl<'a, T: Send + Sync> Producer for ds::raw::ParIter<'a, T> {
         type Item = &'a T;
-        type IntoIter = Iter<'a, T>;
+        type IntoIter = ds::raw::Iter<'a, T>;
 
         #[inline]
         fn into_iter(self) -> Self::IntoIter {
@@ -341,7 +341,7 @@ mod impl_iter {
         }
     }
 
-    impl<'a, T: Send + Sync> ParallelIterator for ParIterMut<'a, T> {
+    impl<'a, T: Send + Sync> ParallelIterator for ds::raw::ParIterMut<'a, T> {
         type Item = &'a mut T;
 
         #[inline]
@@ -353,7 +353,7 @@ mod impl_iter {
         }
     }
 
-    impl<'a, T: Send + Sync> IndexedParallelIterator for ParIterMut<'a, T> {
+    impl<'a, T: Send + Sync> IndexedParallelIterator for ds::raw::ParIterMut<'a, T> {
         #[inline]
         fn len(&self) -> usize {
             Self::len(self)
@@ -370,9 +370,9 @@ mod impl_iter {
         }
     }
 
-    impl<'a, T: Send + Sync> Producer for ParIterMut<'a, T> {
+    impl<'a, T: Send + Sync> Producer for ds::raw::ParIterMut<'a, T> {
         type Item = &'a mut T;
-        type IntoIter = IterMut<'a, T>;
+        type IntoIter = ds::raw::IterMut<'a, T>;
 
         #[inline]
         fn into_iter(self) -> Self::IntoIter {
@@ -395,8 +395,8 @@ mod impl_iter {
         }
     }
 
-    impl ParallelIterator for ParFlatRawIter {
-        type Item = SendSyncPtr<u8>;
+    impl ParallelIterator for ds::raw::ParFlatRawIter {
+        type Item = ds::ptr::SendSyncPtr<u8>;
 
         #[inline]
         fn drive_unindexed<C>(self, consumer: C) -> C::Result
@@ -407,7 +407,7 @@ mod impl_iter {
         }
     }
 
-    impl IndexedParallelIterator for ParFlatRawIter {
+    impl IndexedParallelIterator for ds::raw::ParFlatRawIter {
         #[inline]
         fn len(&self) -> usize {
             Self::len(self)
@@ -424,9 +424,9 @@ mod impl_iter {
         }
     }
 
-    impl Producer for ParFlatRawIter {
-        type Item = SendSyncPtr<u8>;
-        type IntoIter = FlatRawIter;
+    impl Producer for ds::raw::ParFlatRawIter {
+        type Item = ds::ptr::SendSyncPtr<u8>;
+        type IntoIter = ds::raw::FlatRawIter;
 
         #[inline]
         fn into_iter(self) -> Self::IntoIter {
@@ -436,7 +436,7 @@ mod impl_iter {
         #[inline]
         fn split_at(self, index: usize) -> (Self, Self) {
             let (
-                RawIter {
+                ds::raw::RawIter {
                     cur: ml, end: mr, ..
                 },
                 mi,
@@ -468,7 +468,7 @@ mod impl_iter {
 
             let is_left_chunk_cut = mi + 1 == self.li;
             let lchild = if !is_left_chunk_cut {
-                FlatRawIter {
+                ds::raw::FlatRawIter {
                     ll: self.ll,
                     lr: self.lr,
                     rl: ml,
@@ -483,7 +483,7 @@ mod impl_iter {
                     len: index,
                 }
             } else {
-                FlatRawIter {
+                ds::raw::FlatRawIter {
                     ll: self.ll,
                     lr: mm,
                     rl: self.ll,
@@ -501,7 +501,7 @@ mod impl_iter {
 
             let is_right_chunk_cut = mi == self.ri;
             let rchild = if !is_right_chunk_cut {
-                FlatRawIter {
+                ds::raw::FlatRawIter {
                     ll: mm,
                     lr: mr,
                     rl: self.rl,
@@ -516,7 +516,7 @@ mod impl_iter {
                     len: self.len - index,
                 }
             } else {
-                FlatRawIter {
+                ds::raw::FlatRawIter {
                     ll: mm,
                     lr: self.rr,
                     rl: mm,
@@ -536,7 +536,7 @@ mod impl_iter {
         }
     }
 
-    impl<'a, T: Send + Sync> ParallelIterator for ParFlatIter<'a, T> {
+    impl<'a, T: Send + Sync> ParallelIterator for ds::raw::ParFlatIter<'a, T> {
         type Item = &'a T;
 
         #[inline]
@@ -548,7 +548,7 @@ mod impl_iter {
         }
     }
 
-    impl<'a, T: Send + Sync> IndexedParallelIterator for ParFlatIter<'a, T> {
+    impl<'a, T: Send + Sync> IndexedParallelIterator for ds::raw::ParFlatIter<'a, T> {
         #[inline]
         fn len(&self) -> usize {
             Self::len(self)
@@ -565,9 +565,9 @@ mod impl_iter {
         }
     }
 
-    impl<'a, T: Send + Sync> Producer for ParFlatIter<'a, T> {
+    impl<'a, T: Send + Sync> Producer for ds::raw::ParFlatIter<'a, T> {
         type Item = &'a T;
-        type IntoIter = FlatIter<'a, T>;
+        type IntoIter = ds::raw::FlatIter<'a, T>;
 
         #[inline]
         fn into_iter(self) -> Self::IntoIter {
@@ -582,7 +582,7 @@ mod impl_iter {
         }
     }
 
-    impl<'a, T: Send + Sync> ParallelIterator for ParFlatIterMut<'a, T> {
+    impl<'a, T: Send + Sync> ParallelIterator for ds::raw::ParFlatIterMut<'a, T> {
         type Item = &'a mut T;
 
         #[inline]
@@ -594,7 +594,7 @@ mod impl_iter {
         }
     }
 
-    impl<'a, T: Send + Sync> IndexedParallelIterator for ParFlatIterMut<'a, T> {
+    impl<'a, T: Send + Sync> IndexedParallelIterator for ds::raw::ParFlatIterMut<'a, T> {
         #[inline]
         fn len(&self) -> usize {
             Self::len(self)
@@ -611,9 +611,9 @@ mod impl_iter {
         }
     }
 
-    impl<'a, T: Send + Sync> Producer for ParFlatIterMut<'a, T> {
+    impl<'a, T: Send + Sync> Producer for ds::raw::ParFlatIterMut<'a, T> {
         type Item = &'a mut T;
-        type IntoIter = FlatIterMut<'a, T>;
+        type IntoIter = ds::raw::FlatIterMut<'a, T>;
 
         #[inline]
         fn into_iter(self) -> Self::IntoIter {

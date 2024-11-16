@@ -1,9 +1,9 @@
 use crate::ds::prelude::*;
 
 /// Granular data such as position, speed, and something like that.
-pub trait Component: 'static {
+pub trait Component: Send + 'static {
     /// Provided.
-    fn key() -> ComponentKey {
+    fn component_key() -> ComponentKey {
         ComponentKey::of::<Self>()
     }
 }
@@ -28,7 +28,7 @@ macro_rules! impl_components {
 
                 fn keys() -> Self::Output {
                     [
-                        $([<A $i>]::key()),*
+                        $([<A $i>]::component_key()),*
                     ]
                 }
             }

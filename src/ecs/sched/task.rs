@@ -71,7 +71,7 @@ impl SysTask {
 
         #[cfg(target_arch = "wasm32")]
         {
-            #[cfg(not(debug_assertions))]
+            #[cfg(not(feature = "borrow_check"))]
             {
                 let Self {
                     mut invoker,
@@ -83,17 +83,16 @@ impl SysTask {
 
             // In web and debug mode, drops `ManagedMutPtr` first
             // to be recovered when the invoker panics.
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "borrow_check")]
             {
                 let Self { invoker, buf, .. } = self;
+
                 let mut invoker_ptr = invoker.inner();
                 let mut buf_ptr = buf.inner();
                 drop(invoker);
                 drop(buf);
                 // Safety: Managed pointers.
-                unsafe {
-                    invoker_ptr.as_mut().invoke(buf_ptr.as_mut());
-                }
+                unsafe { invoker_ptr.as_mut().invoke(buf_ptr.as_mut()) };
             }
 
             Ok(())

@@ -43,6 +43,14 @@ pub fn web_panic_hook(_info: &PanicInfo<'_>) {
         // The corresponding thread was panicked a bit ago and
         // it's running this function now.
         let cx = unsafe { ptr.as_ref() };
+
+        // A sub worker was panicked while it was working on a task. That means
+        // it was in OPEN & WORK states. In web, however, those states cannot be
+        // cancelled and remained as it was. Therefore, we need to cancel it out
+        // here.
+        cx.comm().signal().sub_work_count(1);
+        cx.comm().signal().sub_open_count(1);
+
         cx.comm().send_message(Message::Panic(msg));
     }
 

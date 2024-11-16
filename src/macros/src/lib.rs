@@ -80,7 +80,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         };
     };
 
-    // Determines hasher for `EntityDesc`.
+    // Determines hasher for `EntityReg`.
     let hasher = input
         .attrs
         .iter()
@@ -95,12 +95,12 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         .next()
         .unwrap_or(quote! { std::hash::RandomState });
 
-    // Implements `AsEntityDesc` trait.
+    // Implements `AsEntityReg` trait.
     let impl_as_entity_desc = quote! {
-        impl my_ecs::ecs::ent::storage::AsEntityDesc for #ident {
-            fn as_entity_descriptor() -> my_ecs::ecs::ent::storage::EntityDesc {
+        impl my_ecs::ecs::ent::storage::AsEntityReg for #ident {
+            fn as_entity_descriptor() -> my_ecs::ecs::ent::storage::EntityReg {
                 let mut desc =
-                    my_ecs::ecs::ent::storage::EntityDesc::new_with_default_container::<#hasher>(
+                    my_ecs::ecs::ent::storage::EntityReg::new_with_default_container::<#hasher>(
                     my_ecs::ecs::ent::entity::EntityName::new(#ident_str.into()),
                     Some(my_ecs::ecs::ent::entity::EntityTypeId::of::<#ident>()),
                 );

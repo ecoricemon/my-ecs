@@ -12,9 +12,8 @@ pub fn worker_post_message(msg: &JsValue) -> Result<(), JsValue> {
 }
 
 /// Returns a number between 1 and the number of logical processors available
-/// to the user agent.
-/// It may be lower than the actual number of logical processors
-/// depending on browser.
+/// to the user agent. It may be lower than the actual number of logical
+/// processors depending on browser.
 pub fn available_parallelism() -> usize {
     if let Some(window) = web_sys::window() {
         let navigator = window.navigator();

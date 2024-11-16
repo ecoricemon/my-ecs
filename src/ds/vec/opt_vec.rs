@@ -27,11 +27,9 @@ where
     }
 }
 
-impl<T, S> OptVec<T, S>
-where
-    S: BuildHasher,
-{
+impl<T, S> OptVec<T, S> {
     /// Gets total number of slots including vacant slot.
+    #[allow(clippy::len_without_is_empty)] // confusing
     pub fn len(&self) -> usize {
         self.values.len()
     }
@@ -45,11 +43,6 @@ where
     /// Gets number of vacant slots.
     pub fn len_vacant(&self) -> usize {
         self.vacancies.len()
-    }
-
-    /// Determines whether there's no slots at all.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
     }
 
     /// Retrieves inner vector's capacity.
@@ -120,6 +113,56 @@ where
             .unwrap_unchecked()
     }
 
+    /// Swaps two occupied items.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `a` or `b` are out of bounds or vacant.
+    pub fn swap_occupied(&mut self, a: usize, b: usize) {
+        assert!(self.is_occupied(a) && self.is_occupied(b));
+        self.values.swap(a, b);
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (usize, &Option<T>)> {
+        self.values.iter().enumerate()
+    }
+
+    pub fn iter_occupied(&self) -> impl Iterator<Item = (usize, &T)> {
+        self.iter().filter_map(|(i, v)| v.as_ref().map(|v| (i, v)))
+    }
+
+    pub fn iter_occupied_mut(&mut self) -> impl Iterator<Item = (usize, &mut T)> {
+        self.values
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(i, v)| v.as_mut().map(|v| (i, v)))
+    }
+
+    // `Option<T>` is not supposed to be modified without concerning vacancies.
+    // That's why no iter_mut().
+    /// Returns an iterator traversing over all types of slots.
+    pub fn values(&self) -> std::slice::Iter<'_, Option<T>> {
+        self.values.iter()
+    }
+
+    /// Returns an iterator traversing only *occupied* slots.
+    /// Use [`Self::values`] to iterate over all slots including vacant slots.
+    pub fn values_occupied(&self) -> impl Iterator<Item = &T> + Clone {
+        self.values().filter_map(|v| v.as_ref())
+    }
+
+    // This operation is allowed because it can't take inner value inside Option.
+    /// Returns an iterator traversing only *occupied* slots.
+    /// Use [`Self::values`] to iterate over all slots including vacant slots.
+    pub fn values_occupied_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.values.iter_mut().filter_map(|v| v.as_mut())
+    }
+}
+
+impl<T, S> OptVec<T, S>
+where
+    S: BuildHasher,
+{
     /// Sets value wrapped with Option itself.
     ///
     /// # Panics
@@ -168,51 +211,6 @@ where
         Some(old)
     }
 
-    /// Swaps two occupied items.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `a` or `b` are out of bounds or vacant.
-    pub fn swap_occupied(&mut self, a: usize, b: usize) {
-        assert!(self.is_occupied(a) && self.is_occupied(b));
-        self.values.swap(a, b);
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (usize, &Option<T>)> {
-        self.values.iter().enumerate()
-    }
-
-    pub fn iter_occupied(&self) -> impl Iterator<Item = (usize, &T)> {
-        self.iter().filter_map(|(i, v)| v.as_ref().map(|v| (i, v)))
-    }
-
-    pub fn iter_occupied_mut(&mut self) -> impl Iterator<Item = (usize, &mut T)> {
-        self.values
-            .iter_mut()
-            .enumerate()
-            .filter_map(|(i, v)| v.as_mut().map(|v| (i, v)))
-    }
-
-    // `Option<T>` is not supposed to be modified without concerning vacancies.
-    // That's why no iter_mut().
-    /// Returns an iterator traversing over all types of slots.
-    pub fn values(&self) -> std::slice::Iter<'_, Option<T>> {
-        self.values.iter()
-    }
-
-    /// Returns an iterator traversing only *occupied* slots.
-    /// Use [`Self::values`] to iterate over all slots including vacant slots.
-    pub fn values_occupied(&self) -> impl Iterator<Item = &T> + Clone {
-        self.values().filter_map(|v| v.as_ref())
-    }
-
-    // This operation is allowed because it can't take inner value inside Option.
-    /// Returns an iterator traversing only *occupied* slots.
-    /// Use [`Self::values`] to iterate over all slots including vacant slots.
-    pub fn values_occupied_mut(&mut self) -> impl Iterator<Item = &mut T> {
-        self.values.iter_mut().filter_map(|v| v.as_mut())
-    }
-
     /// Removes some slots from the end, so that `len` slots will remain after that.
     /// It does nothing if `len` is equal to or grater than currenet length.
     /// Note that you can't truncate less than offset you set.
@@ -240,11 +238,65 @@ where
     }
 }
 
-// Do not implement IndexMut because we need to modify vacancies if users take the value from the slot.
+// Do not implement IndexMut because we need to modify vacancies if users take
+// the value from the slot.
 impl<T, S> Index<usize> for OptVec<T, S> {
     type Output = Option<T>;
 
     fn index(&self, index: usize) -> &Self::Output {
         &self.values[index]
+    }
+}
+
+impl<T, S> IntoIterator for OptVec<T, S>
+where
+    S: BuildHasher,
+{
+    type Item = T;
+    type IntoIter = IntoIter<T, S>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        IntoIter::new(self)
+    }
+}
+
+impl<T, S> From<OptVec<T, S>> for Vec<T>
+where
+    S: BuildHasher,
+{
+    fn from(value: OptVec<T, S>) -> Self {
+        value.into_iter().collect()
+    }
+}
+
+#[derive(Debug)]
+pub struct IntoIter<T, S> {
+    vec: OptVec<T, S>,
+    cur: usize,
+}
+
+impl<T, S> IntoIter<T, S> {
+    fn new(vec: OptVec<T, S>) -> Self {
+        Self { vec, cur: 0 }
+    }
+}
+
+impl<T, S> Iterator for IntoIter<T, S>
+where
+    S: BuildHasher,
+{
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.vec.len_occupied() == 0 {
+            return None;
+        }
+
+        let mut output = None;
+        while output.is_none() {
+            output = self.vec.take(self.cur);
+            self.cur += 1;
+        }
+        output
     }
 }

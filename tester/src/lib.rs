@@ -45,7 +45,43 @@ struct Rb(String);
 
 // === Defines test primitives ===
 
-/// Systems can have five types of parameters, which are
+fn try_register_system(pool: WorkerPool) -> WorkerPool {
+    let pool = try_register_struct_system(pool);
+    try_register_fn_system(pool)
+}
+
+fn try_register_struct_system(pool: WorkerPool) -> WorkerPool {
+    let num_workers = pool.len();
+    let mut ecs = Ecs::default(pool, [num_workers]);
+
+    // Registers resources and entities.
+    ecs.register_resource(ResourceDesc::new().with_owned(Ra("A".to_owned())))
+        .unwrap();
+    ecs.register_resource(ResourceDesc::new().with_owned(Rb("B".to_owned())))
+        .unwrap();
+    ecs.register_entity_of::<Ec>().unwrap();
+
+    struct S;
+    request!(
+        Req,
+        Read = (Fa),
+        Write = (Fb),
+        ResRead = (Ra),
+        ResWrite = (Rb),
+        EntWrite = (Ec)
+    );
+
+    impl System for S {
+        type Request = Req;
+        fn run(&mut self, _resp: Response<'_, Self::Request>) {}
+    }
+
+    ecs.add_system(SystemDesc::new().with_system(S)).unwrap();
+
+    ecs.set_workers(Vec::new(), [0]).into()
+}
+
+/// Function systems can have five types of parameters, which are
 /// 1. Read<Filter>
 /// 2. Write<Filter>
 /// 3. ResRead<Resource>
@@ -54,28 +90,16 @@ struct Rb(String);
 ///
 /// Tests if we're able to register those parameter combinations.
 #[rustfmt::skip]
-fn try_register_fn_system(worker_pool: WorkerPool) -> WorkerPool {
-    use paste::paste;
-
-    let mut ecs = Ecs::default(worker_pool);
-
-    const LIVE: NonZeroTick = NonZeroTick::MAX;
-    const VOLATILE: bool = true;
+fn try_register_fn_system(pool: WorkerPool) -> WorkerPool {
+    let num_workers = pool.len();
+    let mut ecs = Ecs::default(pool, [num_workers]);
 
     // Registers resources and entities.
-    ecs.register_resource(
-        Ra::key(),
-        MaybeOwned::A(Box::new(Ra("A".to_owned()))),
-        false,
-    )
+    ecs.register_resource(ResourceDesc::new().with_owned(Ra("A".to_owned())))
     .unwrap();
-    ecs.register_resource(
-        Rb::key(),
-        MaybeOwned::A(Box::new(Ra("A".to_owned()))),
-        false,
-    )
+    ecs.register_resource(ResourceDesc::new().with_owned(Rb("B".to_owned())))
     .unwrap();
-    ecs.register_entity_of::<Ec>();
+    ecs.register_entity_of::<Ec>().unwrap();
 
     let s = String::new();
 
@@ -87,27 +111,35 @@ fn try_register_fn_system(worker_pool: WorkerPool) -> WorkerPool {
             $(rw=$rw:ident)? 
             $(ew=$ew:ident)?
         ) => {
-            paste! {
-                ecs.append_system(0, LIVE, VOLATILE,
-                    |
-                        $([<_ $r>]: Read<Fa>,)? 
-                        $([<_ $w>]: Write<Fb>,)? 
-                        $([<_ $rr>]: ResRead<Ra>,)? 
-                        $([<_ $rw>]: ResWrite<Rb>,)? 
-                        $([<_ $ew>]: EntWrite<Ec>,)?
-                    | {}
-                ).unwrap();
+            paste::paste! {
+                // Registers as FnMut.
+                ecs.add_system(
+                    SystemDesc::new().with_system(
+                        |
+                            $([<_ $r>]: Read<Fa>,)? 
+                            $([<_ $w>]: Write<Fb>,)? 
+                            $([<_ $rr>]: ResRead<Ra>,)? 
+                            $([<_ $rw>]: ResWrite<Rb>,)? 
+                            $([<_ $ew>]: EntWrite<Ec>,)?
+                        | {}
+                    )
+                )
+                .unwrap();
 
+                // Registers as FnOnce.
                 let c_s = s.clone();
-                ecs.append_once_system(0,
-                    move |
-                        $([<_ $r>]: Read<Fa>,)? 
-                        $([<_ $w>]: Write<Fb>,)? 
-                        $([<_ $rr>]: ResRead<Ra>,)? 
-                        $([<_ $rw>]: ResWrite<Rb>,)? 
-                        $([<_ $ew>]: EntWrite<Ec>,)?
-                    | { drop(c_s); }
-                ).unwrap();
+                ecs.add_system(
+                    SystemDesc::new().with_once(
+                        move |
+                            $([<_ $r>]: Read<Fa>,)? 
+                            $([<_ $w>]: Write<Fb>,)? 
+                            $([<_ $rr>]: ResRead<Ra>,)? 
+                            $([<_ $rw>]: ResWrite<Rb>,)? 
+                            $([<_ $ew>]: EntWrite<Ec>,)?
+                        | { drop(c_s); }
+                    )
+                )
+                .unwrap();
             }
         };
     }
@@ -177,12 +209,13 @@ fn try_register_fn_system(worker_pool: WorkerPool) -> WorkerPool {
     // R, W, RR, RW, EW
     test!(r=r w=w rr=rr rw=rw ew=ew);
 
-    ecs.set_worker_pool(WorkerPool::default())
+    ecs.set_workers(Vec::new(), [0]).into()
 }
 
-fn try_open_close(worker_pool: WorkerPool) -> WorkerPool {
+fn try_open_close(pool: WorkerPool) -> WorkerPool {
     // Creates instance.
-    let mut ecs = Ecs::default(worker_pool);
+    let num_workers = pool.len();
+    let mut ecs = Ecs::default(pool, [num_workers]);
 
     const REPEAT: usize = 10;
 
@@ -191,22 +224,23 @@ fn try_open_close(worker_pool: WorkerPool) -> WorkerPool {
         let _ = ecs.run();
     }
 
-    ecs.set_worker_pool(WorkerPool::default())
+    ecs.set_workers(Vec::new(), [0]).into()
 }
 
-fn try_schedule(worker_pool: WorkerPool) -> WorkerPool {
+fn try_schedule(pool: WorkerPool) -> WorkerPool {
     // Creates instance.
-    let mut ecs = Ecs::default(worker_pool);
+    let num_workers = pool.len();
+    let mut ecs = Ecs::default(pool, [num_workers]);
 
     // Registers and inserts entities.
-    ecs.register_entity_of::<Ea>();
-    ecs.register_entity_of::<Eb>();
-    ecs.append_once_system(0, |mut ew: EntWrite<Ea>| {
+    ecs.register_entity_of::<Ea>().unwrap();
+    ecs.register_entity_of::<Eb>().unwrap();
+    ecs.add_system(SystemDesc::new().with_once(|mut ew: EntWrite<Ea>| {
         ew.add_entity(Ea { a: Ca(1) });
         ew.add_entity(Ea { a: Ca(2) });
-    })
+    }))
     .unwrap();
-    ecs.append_once_system(0, |mut ew: EntWrite<Eb>| {
+    ecs.add_system(SystemDesc::new().with_once(|mut ew: EntWrite<Eb>| {
         ew.add_entity(Eb {
             a: Ca(3),
             b: Cb(10),
@@ -215,40 +249,38 @@ fn try_schedule(worker_pool: WorkerPool) -> WorkerPool {
             a: Ca(4),
             b: Cb(20),
         });
-    })
+    }))
     .unwrap();
 
     // Registers resources.
-    ecs.register_resource(
-        Ra::key(),
-        MaybeOwned::A(Box::new(Ra("A".to_owned()))),
-        false,
-    )
-    .unwrap();
-    ecs.register_resource(
-        Rb::key(),
-        MaybeOwned::A(Box::new(Ra("A".to_owned()))),
-        false,
-    )
-    .unwrap();
+    ecs.register_resource(ResourceDesc::new().with_owned(Ra("A".to_owned())))
+        .unwrap();
+    ecs.register_resource(ResourceDesc::new().with_owned(Rb("B".to_owned())))
+        .unwrap();
 
     // Test.
-    let live = NonZeroTick::MAX;
-    let volatile: bool = true;
-    ecs.append_system(0, live, volatile, inc_ca).unwrap();
-    ecs.append_system(0, live, volatile, inc_cb).unwrap();
-    ecs.append_system(0, live, volatile, dec_ca).unwrap();
-    ecs.append_system(0, live, volatile, dec_cb).unwrap();
-    ecs.append_system(0, live, volatile, iter_ca).unwrap();
-    ecs.append_system(0, live, volatile, iter_cb).unwrap();
-    ecs.append_system(0, live, volatile, attach_ra).unwrap();
-    ecs.append_system(0, live, volatile, detach_ra).unwrap();
+    ecs.add_system(SystemDesc::new().with_system(inc_ca))
+        .unwrap();
+    ecs.add_system(SystemDesc::new().with_system(inc_cb))
+        .unwrap();
+    ecs.add_system(SystemDesc::new().with_system(dec_ca))
+        .unwrap();
+    ecs.add_system(SystemDesc::new().with_system(dec_cb))
+        .unwrap();
+    ecs.add_system(SystemDesc::new().with_system(iter_ca))
+        .unwrap();
+    ecs.add_system(SystemDesc::new().with_system(iter_cb))
+        .unwrap();
+    ecs.add_system(SystemDesc::new().with_system(attach_ra))
+        .unwrap();
+    ecs.add_system(SystemDesc::new().with_system(detach_ra))
+        .unwrap();
 
-    ecs.run_default();
+    ecs.run().schedule_all();
 
     assert!(ecs.collect_poisoned_systems().is_empty());
 
-    return ecs.set_worker_pool(WorkerPool::default());
+    return ecs.set_workers(Vec::new(), [0]).into();
 
     // === Internal struct and functions ===
 
@@ -323,35 +355,36 @@ fn try_schedule(worker_pool: WorkerPool) -> WorkerPool {
     }
 }
 
-fn try_command(worker_pool: WorkerPool) -> WorkerPool {
+fn try_command(pool: WorkerPool) -> WorkerPool {
     use std::sync::{Arc, Mutex};
 
     const REPEAT: usize = 5;
 
     // Creates instance.
-    let mut ecs = Ecs::default(worker_pool);
+    let num_workers = pool.len();
+    let mut ecs = Ecs::default(pool, [num_workers]);
 
     // Counts number of system execution.
     let count = Arc::new(Mutex::new(0));
     let c_count = Arc::clone(&count);
 
     // In system, we're appending another system to increase the count.
-    ecs.append_once_system(0, move || {
+    ecs.add_system(SystemDesc::new().with_once(move || {
         // Command will append a system at the end of cycle.
         let cmd = move |mut ecs: Ecs| {
-            ecs.append_system(0, NonZeroTick::MAX, true, move || {
+            ecs.add_system(SystemDesc::new().with_system(move || {
                 let mut c = c_count.lock().unwrap();
                 *c += 1;
-            })
+            }))
             .unwrap();
         };
-        schedule_command(cmd);
-    })
+        schedule_command(CommandObject::Boxed(Box::new(cmd)));
+    }))
     .unwrap();
 
     // Repeats running.
     for _ in 0..REPEAT {
-        ecs.run_default();
+        ecs.run().schedule_all();
     }
 
     // Why REPEAT - 1?
@@ -359,71 +392,88 @@ fn try_command(worker_pool: WorkerPool) -> WorkerPool {
     // In the first run, the system was not registered yet.
     assert_eq!(*count.lock().unwrap(), REPEAT - 1);
 
-    ecs.set_worker_pool(WorkerPool::default())
+    ecs.set_workers(Vec::new(), [0]).into()
 }
 
-fn try_parallel_task(worker_pool: WorkerPool) -> WorkerPool {
+fn try_parallel_task(pool: WorkerPool) -> WorkerPool {
     const START: i32 = 0;
     const END: i32 = 10_000;
     const NUM: i32 = END - START + 1;
     const SUM: i32 = ((START as i64 + END as i64) * NUM as i64 / 2) as i32;
 
     // Creates instance.
-    let mut ecs = Ecs::default(worker_pool);
+    let num_workers = pool.len();
+    let mut ecs = Ecs::default(pool, [num_workers]);
 
     // Registers and inserts entities.
-    ecs.register_entity_of::<Ea>();
-    ecs.append_once_system(0, |mut ew: EntWrite<Ea>| {
+    ecs.register_entity_of::<Ea>().unwrap();
+    ecs.add_system(SystemDesc::new().with_once(|mut ew: EntWrite<Ea>| {
         for val in START..=END {
             ew.add_entity(Ea { a: Ca(val) });
         }
-    })
+    }))
     .unwrap();
 
-    // Test.
-    ecs.append_once_system(0, |r: Read<Fa>| {
-        let r = r.take();
-        let par_iter = r.par_iter().flatten();
+    // Tests immutable parallel iterator.
+    ecs.add_system(SystemDesc::new().with_once(|r: Read<Fa>| {
+        // Sum
+        let par_iter = r.take().par_iter().flatten();
         let sum = par_iter
             .fold(|| 0_i32, |sum, ca| sum + ca.0)
             .reduce(|| 0_i32, |sum_a, sum_b| sum_a + sum_b);
         assert_eq!(sum, SUM);
-    })
+    }))
     .unwrap();
 
-    ecs.run_default();
+    // Tests mutable parallel iterator.
+    ecs.add_system(SystemDesc::new().with_once(|w: Write<Fa>| {
+        let mut w = w.take();
+
+        // x 2
+        let par_iter = w.par_iter_mut().flatten();
+        par_iter.for_each(|ca| ca.0 *= 2);
+
+        // Sum
+        let par_iter = w.par_iter_mut().flatten();
+        let sum = par_iter
+            .fold(|| 0_i32, |sum, ca| sum + ca.0)
+            .reduce(|| 0_i32, |sum_a, sum_b| sum_a + sum_b);
+
+        assert_eq!(sum, SUM * 2);
+    }))
+    .unwrap();
+
+    ecs.run().schedule_all();
 
     assert!(ecs.collect_poisoned_systems().is_empty());
 
-    ecs.set_worker_pool(WorkerPool::default())
+    ecs.set_workers(Vec::new(), [0]).into()
 }
 
-fn try_recover_from_panic(worker_pool: WorkerPool) -> (WorkerPool, i32) {
+fn try_recover_from_panic(pool: WorkerPool) -> (WorkerPool, i32) {
     const START: i32 = 0;
     const END: i32 = 10;
     const NUM: i32 = END - START + 1;
     const SUM: i32 = ((START as i64 + END as i64) * NUM as i64 / 2) as i32;
 
     // Creates instance.
-    let mut ecs = Ecs::default(worker_pool);
+    let num_workers = pool.len();
+    let mut ecs = Ecs::default(pool, [num_workers]);
 
     // Registers and inserts entities.
-    ecs.register_entity_of::<Ea>();
-    ecs.append_once_system(0, |mut ew: EntWrite<Ea>| {
+    ecs.register_entity_of::<Ea>().unwrap();
+    ecs.add_system(SystemDesc::new().with_once(|mut ew: EntWrite<Ea>| {
         for val in START..=END {
             ew.add_entity(Ea { a: Ca(val) });
         }
-    })
+    }))
     .unwrap();
 
     // Registers resources.
-    ecs.register_resource(Ra::key(), MaybeOwned::A(Box::new(Ra("".to_owned()))), false)
+    ecs.register_resource(ResourceDesc::new().with_owned(Ra("".to_owned())))
         .unwrap();
 
     // Registers systems.
-    const LIVE: NonZeroTick = NonZeroTick::MAX;
-    const VOLATILE: bool = true;
-
     let ok_sys = |r: Read<Fa>, rw: ResWrite<Ra>| {
         let rw = rw.take();
         rw.0.push('x');
@@ -433,62 +483,63 @@ fn try_recover_from_panic(worker_pool: WorkerPool) -> (WorkerPool, i32) {
     };
     let fail_sys = |_w: Write<Fa>| panic!("Panics on purpose");
 
-    let sid_ok_a = ecs.append_system(0, LIVE, VOLATILE, ok_sys).unwrap();
-    let sid_fail = ecs.append_system(0, LIVE, VOLATILE, fail_sys).unwrap();
-    let sid_ok_b = ecs.append_system(0, LIVE, VOLATILE, ok_sys).unwrap();
+    let sid_ok_a = ecs
+        .add_system(SystemDesc::new().with_system(ok_sys))
+        .unwrap();
+    let sid_fail = ecs
+        .add_system(SystemDesc::new().with_system(fail_sys))
+        .unwrap();
+    let sid_ok_b = ecs
+        .add_system(SystemDesc::new().with_system(ok_sys))
+        .unwrap();
 
-    ecs.run_default();
+    ecs.run().schedule_all();
     let poisoned = ecs.collect_poisoned_systems();
 
     assert_eq!(poisoned.len(), 1);
     assert_eq!(sid_fail, poisoned[0].0.id());
 
-    ecs.run_default();
+    ecs.run().schedule_all();
 
     // TODO: check system len.
 
-    assert!(ecs.inactivate_system(0, &sid_ok_a).is_ok());
-    assert!(ecs.inactivate_system(0, &sid_ok_b).is_ok());
+    assert!(ecs.inactivate_system(0, sid_ok_a).is_ok());
+    assert!(ecs.inactivate_system(0, sid_ok_b).is_ok());
 
-    ecs.append_once_system(0, |rr: ResRead<Ra>| {
+    ecs.add_system(SystemDesc::new().with_once(|rr: ResRead<Ra>| {
         let rr = rr.take();
         assert_eq!(rr.0.len(), 4);
-    })
+    }))
     .unwrap();
 
     const NUM_EXPECTED_PANICS: i32 = 1;
-    (
-        ecs.set_worker_pool(WorkerPool::default()),
-        NUM_EXPECTED_PANICS,
-    )
+    (ecs.set_workers(Vec::new(), [0]).into(), NUM_EXPECTED_PANICS)
 }
 
-fn try_recover_from_panic_in_parallel_task(worker_pool: WorkerPool) -> (WorkerPool, i32) {
+fn try_recover_from_panic_in_parallel_task(pool: WorkerPool) -> (WorkerPool, i32) {
     const START: i32 = 0;
     const END: i32 = 10_000;
     const NUM: i32 = END - START + 1;
     const SUM: i32 = ((START as i64 + END as i64) * NUM as i64 / 2) as i32;
 
     // Creates instance.
-    let mut ecs = Ecs::default(worker_pool);
+    let num_workers = pool.len();
+    let mut ecs = Ecs::default(pool, [num_workers]);
 
     // Registers and inserts entities.
-    ecs.register_entity_of::<Ea>();
-    ecs.append_once_system(0, |mut ew: EntWrite<Ea>| {
+    ecs.register_entity_of::<Ea>().unwrap();
+    ecs.add_system(SystemDesc::new().with_once(|mut ew: EntWrite<Ea>| {
         for val in START..=END {
             ew.add_entity(Ea { a: Ca(val) });
         }
-    })
+    }))
     .unwrap();
 
     // Registers resources.
-    ecs.register_resource(Ra::key(), MaybeOwned::A(Box::new(Ra("".to_owned()))), false)
+    ecs.register_resource(ResourceDesc::new().with_owned(Ra("".to_owned())))
         .unwrap();
 
     // Registers systems.
-    const LIVE: NonZeroTick = NonZeroTick::MAX;
-    const VOLATILE: bool = true;
-
     let ok_sys = |r: Read<Fa>, rw: ResWrite<Ra>| {
         let rw = rw.take();
         rw.0.push('x');
@@ -513,34 +564,37 @@ fn try_recover_from_panic_in_parallel_task(worker_pool: WorkerPool) -> (WorkerPo
         assert_eq!(sum, SUM);
     };
 
-    let sid_ok_a = ecs.append_system(0, LIVE, VOLATILE, ok_sys).unwrap();
-    let sid_fail = ecs.append_system(0, LIVE, VOLATILE, fail_sys).unwrap();
-    let sid_ok_b = ecs.append_system(0, LIVE, VOLATILE, ok_sys).unwrap();
+    let sid_ok_a = ecs
+        .add_system(SystemDesc::new().with_system(ok_sys))
+        .unwrap();
+    let sid_fail = ecs
+        .add_system(SystemDesc::new().with_system(fail_sys))
+        .unwrap();
+    let sid_ok_b = ecs
+        .add_system(SystemDesc::new().with_system(ok_sys))
+        .unwrap();
 
-    ecs.run_default();
+    ecs.run().schedule_all();
     let poisoned = ecs.collect_poisoned_systems();
 
     assert_eq!(poisoned.len(), 1);
     assert_eq!(sid_fail, poisoned[0].0.id());
 
-    ecs.run_default();
+    ecs.run().schedule_all();
 
     // TODO: check system len.
 
-    assert!(ecs.inactivate_system(0, &sid_ok_a).is_ok());
-    assert!(ecs.inactivate_system(0, &sid_ok_b).is_ok());
+    assert!(ecs.inactivate_system(0, sid_ok_a).is_ok());
+    assert!(ecs.inactivate_system(0, sid_ok_b).is_ok());
 
-    ecs.append_once_system(0, |rr: ResRead<Ra>| {
+    ecs.add_system(SystemDesc::new().with_once(|rr: ResRead<Ra>| {
         let rr = rr.take();
         assert_eq!(rr.0.len(), 4);
-    })
+    }))
     .unwrap();
 
     const NUM_EXPECTED_PANICS: i32 = 1;
-    (
-        ecs.set_worker_pool(WorkerPool::default()),
-        NUM_EXPECTED_PANICS,
-    )
+    (ecs.set_workers(Vec::new(), [0]).into(), NUM_EXPECTED_PANICS)
 }
 
 // === Non-web tests ===
@@ -550,8 +604,8 @@ mod non_web_test {
     use super::*;
 
     #[test]
-    fn test_register_fn_system() {
-        try_register_fn_system(worker_pool());
+    fn test_register_system() {
+        try_register_system(worker_pool());
     }
 
     #[test]
@@ -630,25 +684,25 @@ mod web_test {
 
             // Does all success tests.
             m_worker.spawn_children(NUM_WORKERS);
-            m_worker.with_worker_pool(|worker_pool| {
+            m_worker.with_worker_pool(|pool| {
                 let mut total_panics = 0;
 
-                let worker_pool = try_register_fn_system(worker_pool);
-                Self::print_ok_with(&try_register_fn_system);
+                let pool = try_register_system(pool);
+                Self::print_ok_with(&try_register_system);
 
-                let worker_pool = try_open_close(worker_pool);
+                let pool = try_open_close(pool);
                 Self::print_ok_with(&try_open_close);
 
-                let worker_pool = try_schedule(worker_pool);
+                let pool = try_schedule(pool);
                 Self::print_ok_with(&try_schedule);
 
-                let worker_pool = try_command(worker_pool);
+                let pool = try_command(pool);
                 Self::print_ok_with(&try_command);
 
-                let worker_pool = try_parallel_task(worker_pool);
+                let pool = try_parallel_task(pool);
                 Self::print_ok_with(&try_parallel_task);
 
-                let (_worker_pool, num_panics) = try_recover_from_panic(worker_pool);
+                let (_pool, num_panics) = try_recover_from_panic(pool);
                 total_panics += num_panics;
                 Self::print_ok_with(&try_recover_from_panic);
 

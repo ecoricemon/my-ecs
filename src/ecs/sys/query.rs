@@ -7,8 +7,7 @@ use crate::ecs::{
 use std::{
     ops::{Deref, DerefMut},
     ptr::NonNull,
-    rc::Rc,
-    sync::atomic::AtomicI32,
+    sync::Arc,
 };
 
 /// A shallow wrapper structure for the [`Query::Output`].
@@ -134,7 +133,7 @@ pub struct EntQueryKey_;
 #[derive(Debug, Clone)]
 pub struct QueryInfo {
     name: &'static str,
-    filters: Box<[(FilterKey, Rc<FilterInfo>)]>,
+    filters: Box<[(FilterKey, Arc<FilterInfo>)]>,
 }
 
 impl QueryInfo {
@@ -142,7 +141,7 @@ impl QueryInfo {
         self.name
     }
 
-    pub fn filters(&self) -> &[(FilterKey, Rc<FilterInfo>)] {
+    pub fn filters(&self) -> &[(FilterKey, Arc<FilterInfo>)] {
         &self.filters
     }
 }
@@ -180,32 +179,37 @@ impl EntQueryInfo {
 }
 
 pub trait StoreQueryInfo: StoreFilterInfo {
-    fn get(&self, key: &QueryKey) -> Option<Rc<QueryInfo>>;
-    fn insert(&mut self, key: QueryKey, info: &Rc<QueryInfo>);
+    fn get(&self, key: &QueryKey) -> Option<Arc<QueryInfo>>;
+    fn insert(&mut self, key: QueryKey, info: &Arc<QueryInfo>);
 }
 
 pub trait StoreResQueryInfo {
-    fn get(&self, key: &ResQueryKey) -> Option<Rc<ResQueryInfo>>;
-    fn insert(&mut self, key: ResQueryKey, info: &Rc<ResQueryInfo>);
+    fn get(&self, key: &ResQueryKey) -> Option<Arc<ResQueryInfo>>;
+    fn insert(&mut self, key: ResQueryKey, info: &Arc<ResQueryInfo>);
 }
 
 pub trait StoreEntQueryInfo {
-    fn get(&self, key: &EntQueryKey) -> Option<Rc<EntQueryInfo>>;
-    fn insert(&mut self, key: EntQueryKey, info: &Rc<EntQueryInfo>);
+    fn get(&self, key: &EntQueryKey) -> Option<Arc<EntQueryInfo>>;
+    fn insert(&mut self, key: EntQueryKey, info: &Arc<EntQueryInfo>);
 }
 
 /// [`Query`] is a combination of [`Filter`](super::filter::Filter)s for read-only access.
 /// For instance, `()`, `FilterA`, and `(FilterA, FilterB)` are sorts `Query`.
-pub trait Query: 'static {
+pub trait Query: Send + 'static {
     type Output<'buf>;
 
     /// Provided.
-    fn key() -> QueryKey {
+    fn query_key() -> QueryKey {
         QueryKey::of::<Self>()
     }
 
+    /// Provided.
+    fn as_query_key(&self) -> QueryKey {
+        Self::query_key()
+    }
+
     /// Required.
-    fn get_info<S: StoreQueryInfo + ?Sized>(stor: &mut S) -> Rc<QueryInfo>;
+    fn get_info<S: StoreQueryInfo + ?Sized>(stor: &mut S) -> Arc<QueryInfo>;
 
     /// Required.
     fn convert(buf: &mut [RawFiltered]) -> Self::Output<'_>;
@@ -213,17 +217,28 @@ pub trait Query: 'static {
 
 /// [`QueryMut`] is a combination of [`Filter`](super::filter::Filter)s for writable access.
 /// For instance, `()`, `FilterA`, and `(FilterA, FilterB)` are sorts of `Query`.
-pub trait QueryMut: 'static + Sized {
+pub trait QueryMut: Send + 'static {
     type Output<'buf>;
 
     /// Provided.
-    fn key() -> QueryKey {
+    fn query_mut_key() -> QueryKey
+    where
+        Self: Sized,
+    {
         struct QueryMutSalt;
         QueryKey::of::<(Self, QueryMutSalt)>()
     }
 
+    /// Provided.
+    fn as_query_mut_key(&self) -> QueryKey
+    where
+        Self: Sized,
+    {
+        Self::query_mut_key()
+    }
+
     /// Required.
-    fn get_info<S: StoreQueryInfo + ?Sized>(stor: &mut S) -> Rc<QueryInfo>;
+    fn get_info<S: StoreQueryInfo + ?Sized>(stor: &mut S) -> Arc<QueryInfo>;
 
     /// Required.
     fn convert(buf: &mut [RawFiltered]) -> Self::Output<'_>;
@@ -231,21 +246,26 @@ pub trait QueryMut: 'static + Sized {
 
 /// [`ResQuery`] is a combination of [`Resource`](super::resource::Resource)s for read-only access.
 /// For instance, `()`, `ResA`, and `(ResA, ResB)` are sorts of `ResQuery`.
-pub trait ResQuery: 'static {
+pub trait ResQuery: Send + 'static {
     type Output<'buf>;
 
     /// Provided.
-    fn key() -> ResQueryKey {
+    fn resource_query_key() -> ResQueryKey {
         ResQueryKey::of::<Self>()
     }
 
     /// Provided.
-    fn get_info<S: StoreResQueryInfo + ?Sized>(stor: &mut S) -> Rc<ResQueryInfo> {
-        let key = <Self as ResQuery>::key();
+    fn as_resource_query_key(&self) -> ResQueryKey {
+        Self::resource_query_key()
+    }
+
+    /// Provided.
+    fn get_info<S: StoreResQueryInfo + ?Sized>(stor: &mut S) -> Arc<ResQueryInfo> {
+        let key = Self::resource_query_key();
         if let Some(info) = StoreResQueryInfo::get(stor, &key) {
             info
         } else {
-            let info = Rc::new(Self::info());
+            let info = Arc::new(Self::info());
             StoreResQueryInfo::insert(stor, key, &info);
             info
         }
@@ -255,27 +275,41 @@ pub trait ResQuery: 'static {
     fn info() -> ResQueryInfo;
 
     /// Required.
-    fn convert(buf: &mut Vec<Borrowed<ManagedConstPtr<u8>, AtomicI32>>) -> Self::Output<'_>;
+    fn convert(buf: &mut Vec<Borrowed<ManagedConstPtr<u8>>>) -> Self::Output<'_>;
 }
 
 /// [`ResQueryMut`] is a combination of [`Resource`](super::resource::Resource)s for writable access.
 /// For instance, `()`, `ResA`, and `(ResA, ResB)` are sorts of `ResQueryMut`.
-pub trait ResQueryMut: 'static + Sized {
+pub trait ResQueryMut: Send + 'static {
     type Output<'buf>;
 
     /// Provided.
-    fn key() -> ResQueryKey {
+    fn resource_query_mut_key() -> ResQueryKey
+    where
+        Self: Sized,
+    {
         struct ResQueryMutSalt;
         ResQueryKey::of::<(Self, ResQueryMutSalt)>()
     }
 
     /// Provided.
-    fn get_info<S: StoreResQueryInfo + ?Sized>(stor: &mut S) -> Rc<ResQueryInfo> {
-        let key = <Self as ResQueryMut>::key();
+    fn as_resource_query_mut_key(&self) -> ResQueryKey
+    where
+        Self: Sized,
+    {
+        Self::resource_query_mut_key()
+    }
+
+    /// Provided.
+    fn get_info<S: StoreResQueryInfo + ?Sized>(stor: &mut S) -> Arc<ResQueryInfo>
+    where
+        Self: Sized,
+    {
+        let key = Self::resource_query_mut_key();
         if let Some(info) = StoreResQueryInfo::get(stor, &key) {
             info
         } else {
-            let info = Rc::new(Self::info());
+            let info = Arc::new(Self::info());
             StoreResQueryInfo::insert(stor, key, &info);
             info
         }
@@ -285,26 +319,31 @@ pub trait ResQueryMut: 'static + Sized {
     fn info() -> ResQueryInfo;
 
     /// Required.
-    fn convert(buf: &mut Vec<Borrowed<ManagedMutPtr<u8>, AtomicI32>>) -> Self::Output<'_>;
+    fn convert(buf: &mut Vec<Borrowed<ManagedMutPtr<u8>>>) -> Self::Output<'_>;
 }
 
 /// [`EntQueryMut`] is a combination of [`ContainEntity`](super::entity::ContainEntity)s for writable access.
 /// For instance, `()`, `EntA`, and `(EntA, EntB)` are sorts of `EntQueryMut`.
-pub trait EntQueryMut: 'static {
+pub trait EntQueryMut: Send + 'static {
     type Output<'buf>;
 
     /// Provided.
-    fn key() -> EntQueryKey {
+    fn entity_query_mut_key() -> EntQueryKey {
         EntQueryKey::of::<Self>()
     }
 
     /// Provided.
-    fn get_info<S: StoreEntQueryInfo + ?Sized>(stor: &mut S) -> Rc<EntQueryInfo> {
-        let key = <Self as EntQueryMut>::key();
+    fn as_entity_query_mut_key(&self) -> EntQueryKey {
+        Self::entity_query_mut_key()
+    }
+
+    /// Provided.
+    fn get_info<S: StoreEntQueryInfo + ?Sized>(stor: &mut S) -> Arc<EntQueryInfo> {
+        let key = Self::entity_query_mut_key();
         if let Some(info) = StoreEntQueryInfo::get(stor, &key) {
             info
         } else {
-            let info = Rc::new(Self::info());
+            let info = Arc::new(Self::info());
             StoreEntQueryInfo::insert(stor, key, &info);
             info
         }
@@ -314,7 +353,7 @@ pub trait EntQueryMut: 'static {
     fn info() -> EntQueryInfo;
 
     /// Required.
-    fn convert(buf: &mut Vec<Borrowed<NonNull<dyn ContainEntity>, AtomicI32>>) -> Self::Output<'_>;
+    fn convert(buf: &mut Vec<Borrowed<NonNull<dyn ContainEntity>>>) -> Self::Output<'_>;
 }
 
 /// Implements the trait [`Query`] and [`QueryMut`] for an anonymous tuple of [`Filter`](super::filter::Filter)s.
@@ -326,7 +365,7 @@ macro_rules! impl_query {
             query::{Query, QueryInfo, StoreQueryInfo},
             filter::{Filter, RawFiltered, Filtered, FilteredMut},
         };
-        use std::{any::type_name, rc::Rc};
+        use std::{any::type_name, sync::Arc};
         use paste::paste;
 
         // Implements `Query` for (A0, A1, ...).
@@ -335,15 +374,15 @@ macro_rules! impl_query {
             impl<$([<A $i>]: Filter),*> Query for ( $([<A $i>]),* ) {
                 type Output<'buf> = ( $(Filtered<'buf, <[<A $i>] as Filter>::Target>),* );
 
-                fn get_info<S>(stor: &mut S) -> Rc<QueryInfo>
+                fn get_info<S>(stor: &mut S) -> Arc<QueryInfo>
                 where
                     S: StoreQueryInfo + ?Sized,
                 {
-                    let key = <Self as Query>::key();
+                    let key = Self::query_key();
                     if let Some(info) = StoreQueryInfo::get(stor, &key) {
                         info
                     } else {
-                        let info = Rc::new(QueryInfo {
+                        let info = Arc::new(QueryInfo {
                             name: type_name::<Self>(),
                             filters: [$((
                                 <[<A $i>] as Filter>::key(),
@@ -379,15 +418,15 @@ macro_rules! impl_query {
             impl<$([<A $i>]: Filter),*> QueryMut for ( $([<A $i>]),* ) {
                 type Output<'buf> = ( $(FilteredMut<'buf, <[<A $i>] as Filter>::Target>),* );
 
-                fn get_info<S>(stor: &mut S) -> Rc<QueryInfo>
+                fn get_info<S>(stor: &mut S) -> Arc<QueryInfo>
                 where
                     S: StoreQueryInfo + ?Sized,
                 {
-                    let key = <Self as QueryMut>::key();
+                    let key = Self::query_mut_key();
                     if let Some(info) = StoreQueryInfo::get(stor, &key) {
                         info
                     } else {
-                        let info = Rc::new(QueryInfo {
+                        let info = Arc::new(QueryInfo {
                             name: type_name::<Self>(),
                             filters: [$((
                                 <[<A $i>] as Filter>::key(),
@@ -440,7 +479,7 @@ macro_rules! impl_res_query {
             },
             ds::{borrow::Borrowed, ptr::{ManagedConstPtr, ManagedMutPtr}},
         };
-        use std::{any::type_name, sync::atomic::AtomicI32};
+        use std::any::type_name;
         use paste::paste;
 
         // Implements `ResQuery` for (A0, A1, ...).
@@ -452,12 +491,12 @@ macro_rules! impl_res_query {
                 fn info() -> ResQueryInfo {
                     ResQueryInfo {
                         name: type_name::<Self>(),
-                        rkeys: [$(<[<A $i>] as Resource>::key()),*].into(),
+                        rkeys: [$(<[<A $i>] as Resource>::resource_key()),*].into(),
                     }
                 }
 
-                fn convert(_buf: &mut Vec<Borrowed<ManagedConstPtr<u8>, AtomicI32>>) -> Self::Output<'_> {
-                    #[cfg(debug_assertions)]
+                fn convert(_buf: &mut Vec<Borrowed<ManagedConstPtr<u8>>>) -> Self::Output<'_> {
+                    #[cfg(feature = "borrow_check")]
                     {
                         // Input length must be the same as output length.
                         assert_eq!($n, _buf.len());
@@ -469,9 +508,8 @@ macro_rules! impl_res_query {
                             let ptr: NonNullExt<_> = _buf[$i].inner();
                             let lhs: &TypeIdExt = ptr.get_type().unwrap();
 
-                            let rkey: ResourceKey = [<A $i>]::key();
-                            let ty: ATypeId<_> = *rkey.get_inner();
-                            let rhs: &TypeIdExt = ty.get_inner();
+                            let rkey: ResourceKey = [<A $i>]::resource_key();
+                            let rhs: &TypeIdExt = rkey.get_inner();
 
                             assert_eq!(lhs, rhs);
                         )*
@@ -497,12 +535,12 @@ macro_rules! impl_res_query {
                 fn info() -> ResQueryInfo {
                     ResQueryInfo {
                         name: type_name::<Self>(),
-                        rkeys: [$(<[<A $i>] as Resource>::key()),*].into(),
+                        rkeys: [$(<[<A $i>] as Resource>::resource_key()),*].into(),
                     }
                 }
 
-                fn convert(_buf: &mut Vec<Borrowed<ManagedMutPtr<u8>, AtomicI32>>) -> Self::Output<'_> {
-                    #[cfg(debug_assertions)]
+                fn convert(_buf: &mut Vec<Borrowed<ManagedMutPtr<u8>>>) -> Self::Output<'_> {
+                    #[cfg(feature = "borrow_check")]
                     {
                         // Input length must be the same as output length.
                         assert_eq!($n, _buf.len());
@@ -514,9 +552,8 @@ macro_rules! impl_res_query {
                             let ptr: NonNullExt<_> = _buf[$i].inner();
                             let lhs: &TypeIdExt = ptr.get_type().unwrap();
 
-                            let rkey: ResourceKey = [<A $i>]::key();
-                            let ty: ATypeId<_> = *rkey.get_inner();
-                            let rhs: &TypeIdExt = ty.get_inner();
+                            let rkey: ResourceKey = [<A $i>]::resource_key();
+                            let rhs: &TypeIdExt = rkey.get_inner();
 
                             assert_eq!(lhs, rhs);
                         )*
@@ -529,9 +566,9 @@ macro_rules! impl_res_query {
                         // so no problem.
                         // Safety: Infallible.
                         {
-                            let x: *mut Borrowed<ManagedMutPtr<u8>, AtomicI32>
+                            let x: *mut Borrowed<ManagedMutPtr<u8>>
                                 = &mut _buf[$i] as *mut _;
-                            let x: &mut Borrowed<ManagedMutPtr<u8>, AtomicI32>
+                            let x: &mut Borrowed<ManagedMutPtr<u8>>
                                 = unsafe { x.as_mut().unwrap_unchecked() };
                             x.map_mut(|ptr| {
                                 let mut ptr: NonNullExt<[<A $i>]> = ptr.inner().cast();
@@ -568,7 +605,7 @@ macro_rules! impl_ent_query {
             },
             ds::borrow::Borrowed,
         };
-        use std::{any::type_name, sync::atomic::AtomicI32};
+        use std::any::type_name;
         use paste::paste;
 
         // Implements `EntQueryMut` for (A0, A1, ...).
@@ -580,11 +617,11 @@ macro_rules! impl_ent_query {
                 fn info() -> EntQueryInfo {
                     EntQueryInfo {
                         name: type_name::<Self>(),
-                        ekeys: [$(<[<A $i>] as Entity>::key()),*].into(),
+                        ekeys: [$(<[<A $i>] as Entity>::entity_key()),*].into(),
                     }
                 }
 
-                fn convert(buf: &mut Vec<Borrowed<NonNull<dyn ContainEntity>, AtomicI32>>) -> Self::Output<'_> {
+                fn convert(buf: &mut Vec<Borrowed<NonNull<dyn ContainEntity>>>) -> Self::Output<'_> {
                     debug_assert_eq!($n, buf.len());
 
                     // clippy warns about possibility that
