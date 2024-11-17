@@ -1,0 +1,11 @@
+services:
+  rust-wasm-dev:
+    image: ecoricemon/rust-wasm-dev
+    container_name: rust-wasm-dev
+    volumes:
+      - ..:/workspace:rw
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    stop_grace_period: 1s
+    command: tail -f /dev/null
