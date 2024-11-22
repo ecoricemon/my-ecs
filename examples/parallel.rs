@@ -39,7 +39,7 @@ fn main() {
 
         // Computes sum using rayon's parallel iterator. Visit this link to see
         // what rayon is. https://github.com/rayon-rs/rayon
-        let sum: i64 = r.take().par_iter().flatten().map(|ca| ca.0).sum();
+        let sum: i64 = r.take().ecs_par_iter().flatten().map(|ca| ca.0).sum();
         assert_eq!(sum, SUM);
 
         let elapsed = start.elapsed();

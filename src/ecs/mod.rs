@@ -16,7 +16,7 @@ pub mod prelude {
     pub use super::sys::prelude::*;
 
     pub use super::cmd::{schedule_command, Command, CommandObject};
-    pub use super::entry::{Ecs, EcsApp, EcsEntry, RunningEcs};
+    pub use super::entry::{Ecs, EcsApp, EcsEntry, RawEcsApp, RunningEcs};
     pub use super::lock::request_lock;
     pub use super::resource::{Resource, ResourceDesc, ResourceKey};
     #[cfg(target_arch = "wasm32")]

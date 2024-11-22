@@ -5,6 +5,8 @@ services:
     volumes:
       - ..:/workspace:rw
     working_dir: /workspace
+    ports:
+      - "8080:8080"
     stdin_open: true
     tty: true
     stop_grace_period: 1s

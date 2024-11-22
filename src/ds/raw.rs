@@ -1,23 +1,27 @@
 use super::ptr::SendSyncPtr;
 use rayon::iter::IntoParallelIterator;
 use std::{
+    iter,
     marker::PhantomData,
-    ops::{Deref, DerefMut},
+    mem,
+    ops::{Deref, DerefMut, Range},
     ptr::NonNull,
 };
 
 pub trait AsRawIter {
     fn iter(&self) -> RawIter;
-    fn par_iter(&self) -> ParRawIter;
+
+    /// Provided.
+    #[inline]
+    fn par_iter(&self) -> ParRawIter {
+        self.iter().into_par()
+    }
 
     /// # Safety
     ///
     /// Given container must contain type `T` data.
     #[inline]
-    unsafe fn iter_of<T>(&self) -> Iter<'_, T>
-    where
-        Self: Sized,
-    {
+    unsafe fn iter_of<T>(&self) -> Iter<'_, T> {
         Iter::new(self)
     }
 
@@ -25,10 +29,7 @@ pub trait AsRawIter {
     ///
     /// Given container must contain type `T` data.
     #[inline]
-    unsafe fn iter_mut_of<T>(&mut self) -> IterMut<'_, T>
-    where
-        Self: Sized,
-    {
+    unsafe fn iter_mut_of<T>(&mut self) -> IterMut<'_, T> {
         IterMut::new(self)
     }
 
@@ -36,10 +37,7 @@ pub trait AsRawIter {
     ///
     /// Given container must contain type `T` data.
     #[inline]
-    unsafe fn par_iter_of<T>(&self) -> ParIter<'_, T>
-    where
-        Self: Sized,
-    {
+    unsafe fn par_iter_of<T>(&self) -> ParIter<'_, T> {
         ParIter::new(self)
     }
 
@@ -47,11 +45,23 @@ pub trait AsRawIter {
     ///
     /// Given container must contain type `T` data.
     #[inline]
-    unsafe fn par_iter_mut_of<T>(&mut self) -> ParIterMut<'_, T>
-    where
-        Self: Sized,
-    {
+    unsafe fn par_iter_mut_of<T>(&mut self) -> ParIterMut<'_, T> {
         ParIterMut::new(self)
+    }
+}
+
+impl<T> AsRawIter for [T] {
+    fn iter(&self) -> RawIter {
+        let Range { start, end } = self.as_ptr_range();
+        unsafe {
+            // Safety: Infallible.
+            let start = NonNull::new(start.cast_mut()).unwrap_unchecked();
+            let end = NonNull::new(end.cast_mut()).unwrap_unchecked();
+            let stride = mem::size_of::<T>().max(mem::align_of::<T>());
+
+            // Safety: slice guarantees.
+            RawIter::new(start.cast(), end.cast(), stride)
+        }
     }
 }
 
@@ -74,10 +84,7 @@ pub trait AsFlatRawIter {
     ///
     /// Given container must contain type `T` data.
     #[inline]
-    unsafe fn iter_of<T>(&self) -> FlatIter<'_, T>
-    where
-        Self: Sized,
-    {
+    unsafe fn iter_of<T>(&self) -> FlatIter<'_, T> {
         FlatIter::new(self)
     }
 
@@ -85,10 +92,7 @@ pub trait AsFlatRawIter {
     ///
     /// Given container must contain type `T` data.
     #[inline]
-    unsafe fn iter_mut_of<T>(&mut self) -> FlatIterMut<'_, T>
-    where
-        Self: Sized,
-    {
+    unsafe fn iter_mut_of<T>(&mut self) -> FlatIterMut<'_, T> {
         FlatIterMut::new(self)
     }
 
@@ -96,10 +100,7 @@ pub trait AsFlatRawIter {
     ///
     /// Given container must contain type `T` data.
     #[inline]
-    unsafe fn par_iter_of<T>(&self) -> ParFlatIter<'_, T>
-    where
-        Self: Sized,
-    {
+    unsafe fn par_iter_of<T>(&self) -> ParFlatIter<'_, T> {
         ParFlatIter::new(self)
     }
 
@@ -107,10 +108,7 @@ pub trait AsFlatRawIter {
     ///
     /// Given container must contain type `T` data.
     #[inline]
-    unsafe fn par_iter_mut_of<T>(&mut self) -> ParFlatIterMut<'_, T>
-    where
-        Self: Sized,
-    {
+    unsafe fn par_iter_mut_of<T>(&mut self) -> ParFlatIterMut<'_, T> {
         ParFlatIterMut::new(self)
     }
 }
@@ -132,7 +130,16 @@ impl RawIter {
     /// - `end` exceeds isize::MAX.
     /// - `stride` is zero.
     /// - Diffrence between `start` and `end` cannot be divided by `stride`.
-    pub const unsafe fn new(start: NonNull<u8>, end: NonNull<u8>, stride: usize) -> Self {
+    #[inline]
+    pub unsafe fn new(start: NonNull<u8>, end: NonNull<u8>, stride: usize) -> Self {
+        debug_assert!(start <= end);
+        debug_assert!(end.as_ptr() as usize <= isize::MAX as usize);
+        debug_assert!(stride > 0);
+        debug_assert_eq!(
+            (end.as_ptr() as usize - start.as_ptr() as usize) % stride,
+            0
+        );
+
         Self {
             cur: SendSyncPtr::new(start),
             end: SendSyncPtr::new(end),
@@ -170,7 +177,6 @@ impl RawIter {
 impl Iterator for RawIter {
     type Item = SendSyncPtr<u8>;
 
-    // `inline` can actually result in better optimization in terms of speed.
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.cur < self.end {
@@ -183,11 +189,14 @@ impl Iterator for RawIter {
         }
     }
 
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         let len = Self::len(self);
         (len, Some(len))
     }
 }
+
+impl iter::FusedIterator for RawIter {}
 
 impl ExactSizeIterator for RawIter {
     #[inline]
@@ -197,7 +206,6 @@ impl ExactSizeIterator for RawIter {
 }
 
 impl DoubleEndedIterator for RawIter {
-    // `inline` can actually result in better optimization in terms of speed.
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.cur < self.end {
@@ -220,6 +228,7 @@ impl DoubleEndedIterator for RawIter {
 pub struct ParRawIter(RawIter);
 
 impl ParRawIter {
+    #[inline]
     pub const fn into_seq(self) -> RawIter {
         self.0
     }
@@ -254,7 +263,7 @@ impl DerefMut for ParRawIter {
 /// [`RawIter`] with concrete type and lifetime.
 #[derive(Debug, Clone)]
 #[repr(transparent)]
-pub struct Iter<'a, T> {
+pub struct Iter<'a, T: 'a> {
     inner: RawIter,
     _marker: PhantomData<&'a T>,
 }
@@ -265,7 +274,11 @@ impl<'a, T> Iter<'a, T> {
     /// # Safety
     ///
     /// Given container must contain type `T` data.
-    pub unsafe fn new(cont: &impl AsRawIter) -> Self {
+    #[inline]
+    pub unsafe fn new<C>(cont: &'a C) -> Self
+    where
+        C: AsRawIter + ?Sized,
+    {
         // We're borrowing container, so lifetime is tied up.
         Self::from_raw(cont.iter())
     }
@@ -275,6 +288,7 @@ impl<'a, T> Iter<'a, T> {
     /// Undefined behavior if any of the conditions described below are not met.
     /// - Given raw iterator must yield pointers to type `T`.
     /// - Lifetime defined by clients must be sufficient about the raw iterator.
+    #[inline]
     pub const unsafe fn from_raw(raw: RawIter) -> Self {
         Self {
             inner: raw,
@@ -307,13 +321,17 @@ impl<'a, T> Iterator for Iter<'a, T> {
         self.inner.next().map(|ptr| unsafe { ptr.cast().as_ref() })
     }
 
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         let len = Self::len(self);
         (len, Some(len))
     }
 }
 
+impl<'a, T> iter::FusedIterator for Iter<'a, T> {}
+
 impl<'a, T> ExactSizeIterator for Iter<'a, T> {
+    #[inline]
     fn len(&self) -> usize {
         Self::len(self)
     }
@@ -330,7 +348,7 @@ impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
 
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct IterMut<'a, T> {
+pub struct IterMut<'a, T: 'a> {
     inner: RawIter,
     _marker: PhantomData<&'a mut T>,
 }
@@ -341,9 +359,13 @@ impl<'a, T> IterMut<'a, T> {
     /// # Safety
     ///
     /// Given container must contain type `T` data.
-    pub unsafe fn new(v: &mut impl AsRawIter) -> Self {
+    #[inline]
+    pub unsafe fn new<C>(cont: &'a mut C) -> Self
+    where
+        C: AsRawIter + ?Sized,
+    {
         // We're borrowing container, so lifetime is tied up.
-        unsafe { Self::from_raw(v.iter()) }
+        unsafe { Self::from_raw(cont.iter()) }
     }
 
     /// # Safety
@@ -351,6 +373,7 @@ impl<'a, T> IterMut<'a, T> {
     /// Undefined behavior if any of the conditions described below are not met.
     /// - Given raw iterator must yield pointers to type `T`.
     /// - Lifetime defined by clients must be sufficient about the raw iterator.
+    #[inline]
     pub unsafe fn from_raw(raw: RawIter) -> Self {
         Self {
             inner: raw,
@@ -384,13 +407,17 @@ impl<'a, T> Iterator for IterMut<'a, T> {
         self.inner.next().map(|ptr| unsafe { ptr.cast().as_mut() })
     }
 
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         let len = Self::len(self);
         (len, Some(len))
     }
 }
 
+impl<'a, T> iter::FusedIterator for IterMut<'a, T> {}
+
 impl<'a, T> ExactSizeIterator for IterMut<'a, T> {
+    #[inline]
     fn len(&self) -> usize {
         Self::len(self)
     }
@@ -413,7 +440,7 @@ impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
 // This new type helps clients avoid it.
 #[derive(Debug, Clone)]
 #[repr(transparent)]
-pub struct ParIter<'a, T> {
+pub struct ParIter<'a, T: 'a> {
     pub(crate) inner: ParRawIter,
     pub(crate) _marker: PhantomData<&'a T>,
 }
@@ -424,9 +451,13 @@ impl<'a, T> ParIter<'a, T> {
     /// # Safety
     ///
     /// Given container must contain type `T` data.
-    pub unsafe fn new(v: &'a impl AsRawIter) -> Self {
+    #[inline]
+    pub unsafe fn new<C>(cont: &'a C) -> Self
+    where
+        C: AsRawIter + ?Sized,
+    {
         // We're borrowing container, so lifetime is tied up.
-        unsafe { Self::from_raw(v.par_iter()) }
+        unsafe { Self::from_raw(cont.par_iter()) }
     }
 
     /// # Safety
@@ -434,6 +465,7 @@ impl<'a, T> ParIter<'a, T> {
     /// Undefined behavior if any of the conditions described below are not met.
     /// - Given raw iterator must yield pointers to type `T`.
     /// - Lifetime defined by clients must be sufficient about the raw iterator.
+    #[inline]
     pub const unsafe fn from_raw(raw: ParRawIter) -> Self {
         Self {
             inner: raw,
@@ -441,6 +473,7 @@ impl<'a, T> ParIter<'a, T> {
         }
     }
 
+    #[inline]
     pub const fn into_seq(self) -> Iter<'a, T> {
         let raw = self.inner.into_seq();
         // Safety: This iterator is borrowing a vector.
@@ -466,7 +499,7 @@ impl<'a, T> ParIter<'a, T> {
 // This new type helps clients avoid it.
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct ParIterMut<'a, T> {
+pub struct ParIterMut<'a, T: 'a> {
     pub(crate) inner: ParRawIter,
     pub(crate) _marker: PhantomData<&'a mut T>,
 }
@@ -477,9 +510,13 @@ impl<'a, T> ParIterMut<'a, T> {
     /// # Safety
     ///
     /// Given container must contain type `T` data.
-    pub fn new(v: &mut impl AsRawIter) -> Self {
+    #[inline]
+    pub fn new<C>(cont: &'a mut C) -> Self
+    where
+        C: AsRawIter + ?Sized,
+    {
         // We're borrowing container, so lifetime is tied up.
-        unsafe { Self::from_raw(v.par_iter()) }
+        unsafe { Self::from_raw(cont.par_iter()) }
     }
 
     /// # Safety
@@ -487,6 +524,7 @@ impl<'a, T> ParIterMut<'a, T> {
     /// Undefined behavior if any of the conditions described below are not met.
     /// - Given raw iterator must yield pointers to type `T`.
     /// - Lifetime defined by clients must be sufficient about the raw iterator.
+    #[inline]
     pub unsafe fn from_raw(raw: ParRawIter) -> Self {
         Self {
             inner: raw,
@@ -494,6 +532,7 @@ impl<'a, T> ParIterMut<'a, T> {
         }
     }
 
+    #[inline]
     pub fn into_seq(self) -> IterMut<'a, T> {
         let raw = self.inner.into_seq();
         // Safety: This iterator is borrowing a vector.
@@ -527,6 +566,7 @@ impl NestedRawIter {
     /// # Safety
     ///
     /// `fn_iter` must operate safely while the iterator lives.
+    #[inline]
     pub const unsafe fn new(
         this: NonNull<u8>,
         fn_iter: unsafe fn(this: NonNull<u8>, index: usize) -> RawIter,
@@ -566,13 +606,17 @@ impl Iterator for NestedRawIter {
         }
     }
 
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         let len = Self::len(self);
         (len, Some(len))
     }
 }
 
+impl iter::FusedIterator for NestedRawIter {}
+
 impl ExactSizeIterator for NestedRawIter {
+    #[inline]
     fn len(&self) -> usize {
         Self::len(self)
     }
@@ -642,6 +686,7 @@ impl FlatRawIter {
     /// # Safety
     ///
     /// `fn_iter` must operate safely while the iterator lives.
+    #[inline]
     pub unsafe fn new(
         this: NonNull<u8>,
         chunks: usize,
@@ -685,7 +730,6 @@ impl FlatRawIter {
 impl Iterator for FlatRawIter {
     type Item = SendSyncPtr<u8>;
 
-    // `inline` can actually result in better optimization in terms of speed.
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
         if self.ll == self.lr {
@@ -712,20 +756,23 @@ impl Iterator for FlatRawIter {
         res
     }
 
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         let len = Self::len(self);
         (len, Some(len))
     }
 }
 
+impl iter::FusedIterator for FlatRawIter {}
+
 impl ExactSizeIterator for FlatRawIter {
+    #[inline]
     fn len(&self) -> usize {
         Self::len(self)
     }
 }
 
 impl DoubleEndedIterator for FlatRawIter {
-    // `inline` can actually result in better optimization in terms of speed.
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.rl == self.rr {
@@ -762,6 +809,7 @@ impl DoubleEndedIterator for FlatRawIter {
 pub struct ParFlatRawIter(FlatRawIter);
 
 impl ParFlatRawIter {
+    #[inline]
     pub const fn into_seq(self) -> FlatRawIter {
         self.0
     }
@@ -807,9 +855,13 @@ impl<'a, T> FlatIter<'a, T> {
     /// # Safety
     ///
     /// Given container must contain type `T` data.
-    pub fn new(v: &impl AsFlatRawIter) -> Self {
+    #[inline]
+    pub fn new<C>(cont: &'a C) -> Self
+    where
+        C: AsFlatRawIter + ?Sized,
+    {
         // We're borrowing container, so lifetime is tied up.
-        unsafe { Self::from_raw(v.iter()) }
+        unsafe { Self::from_raw(cont.iter()) }
     }
 
     /// # Safety
@@ -817,6 +869,7 @@ impl<'a, T> FlatIter<'a, T> {
     /// Undefined behavior if any of the conditions described below are not met.
     /// - Given raw iterator must yield pointers to type `T`.
     /// - Lifetime defined by clients must be sufficient about the raw iterator.
+    #[inline]
     pub const unsafe fn from_raw(raw: FlatRawIter) -> Self {
         Self {
             inner: raw,
@@ -850,13 +903,17 @@ impl<'a, T> Iterator for FlatIter<'a, T> {
         self.inner.next().map(|ptr| unsafe { ptr.cast().as_ref() })
     }
 
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         let len = Self::len(self);
         (len, Some(len))
     }
 }
 
+impl<'a, T> iter::FusedIterator for FlatIter<'a, T> {}
+
 impl<'a, T> ExactSizeIterator for FlatIter<'a, T> {
+    #[inline]
     fn len(&self) -> usize {
         Self::len(self)
     }
@@ -884,9 +941,13 @@ impl<'a, T> FlatIterMut<'a, T> {
     /// # Safety
     ///
     /// Given container must contain type `T` data.
-    pub fn new(v: &mut impl AsFlatRawIter) -> Self {
+    #[inline]
+    pub fn new<C>(cont: &'a mut C) -> Self
+    where
+        C: AsFlatRawIter + ?Sized,
+    {
         // We're borrowing container, so lifetime is tied up.
-        unsafe { Self::from_raw(v.iter()) }
+        unsafe { Self::from_raw(cont.iter()) }
     }
 
     /// # Safety
@@ -894,6 +955,7 @@ impl<'a, T> FlatIterMut<'a, T> {
     /// Undefined behavior if any of the conditions described below are not met.
     /// - Given raw iterator must yield pointers to type `T`.
     /// - Lifetime defined by clients must be sufficient about the raw iterator.
+    #[inline]
     pub unsafe fn from_raw(raw: FlatRawIter) -> Self {
         Self {
             inner: raw,
@@ -927,13 +989,17 @@ impl<'a, T> Iterator for FlatIterMut<'a, T> {
         self.inner.next().map(|ptr| unsafe { ptr.cast().as_mut() })
     }
 
+    #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         let len = Self::len(self);
         (len, Some(len))
     }
 }
 
+impl<'a, T> iter::FusedIterator for FlatIterMut<'a, T> {}
+
 impl<'a, T> ExactSizeIterator for FlatIterMut<'a, T> {
+    #[inline]
     fn len(&self) -> usize {
         Self::len(self)
     }
@@ -967,9 +1033,13 @@ impl<'a, T> ParFlatIter<'a, T> {
     /// # Safety
     ///
     /// Given container must contain type `T` data.
-    pub fn new(v: &impl AsFlatRawIter) -> Self {
+    #[inline]
+    pub fn new<C>(cont: &'a C) -> Self
+    where
+        C: AsFlatRawIter + ?Sized,
+    {
         // We're borrowing container, so lifetime is tied up.
-        unsafe { Self::from_raw(v.par_iter()) }
+        unsafe { Self::from_raw(cont.par_iter()) }
     }
 
     /// # Safety
@@ -977,6 +1047,7 @@ impl<'a, T> ParFlatIter<'a, T> {
     /// Undefined behavior if any of the conditions described below are not met.
     /// - Given raw iterator must yield pointers to type `T`.
     /// - Lifetime defined by clients must be sufficient about the raw iterator.
+    #[inline]
     pub const unsafe fn from_raw(raw: ParFlatRawIter) -> Self {
         Self {
             inner: raw,
@@ -984,6 +1055,7 @@ impl<'a, T> ParFlatIter<'a, T> {
         }
     }
 
+    #[inline]
     pub const fn into_seq(self) -> FlatIter<'a, T> {
         let raw = self.inner.into_seq();
         // Safety: By owners, type `T` matches and lifetime `a is sufficient.
@@ -1020,9 +1092,13 @@ impl<'a, T> ParFlatIterMut<'a, T> {
     /// # Safety
     ///
     /// Given container must contain type `T` data.
-    pub fn new(v: &mut impl AsFlatRawIter) -> Self {
+    #[inline]
+    pub fn new<C>(cont: &'a mut C) -> Self
+    where
+        C: AsFlatRawIter + ?Sized,
+    {
         // We're borrowing container, so lifetime is tied up.
-        unsafe { Self::from_raw(v.par_iter()) }
+        unsafe { Self::from_raw(cont.par_iter()) }
     }
 
     /// # Safety
@@ -1030,6 +1106,7 @@ impl<'a, T> ParFlatIterMut<'a, T> {
     /// Undefined behavior if any of the conditions described below are not met.
     /// - Given raw iterator must yield pointers to type `T`.
     /// - Lifetime defined by clients must be sufficient about the raw iterator.
+    #[inline]
     pub unsafe fn from_raw(raw: ParFlatRawIter) -> Self {
         Self {
             inner: raw,
@@ -1037,6 +1114,7 @@ impl<'a, T> ParFlatIterMut<'a, T> {
         }
     }
 
+    #[inline]
     pub fn into_seq(self) -> FlatIterMut<'a, T> {
         let raw = self.inner.into_seq();
         // Safety: By owners, type `T` matches and lifetime `a is sufficient.

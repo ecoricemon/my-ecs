@@ -17,3 +17,5 @@ target/
 /node_modules/
 /dist/
 /test-results/
+/style.css
+/package-lock.json

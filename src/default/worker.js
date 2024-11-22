@@ -13,7 +13,10 @@ onmessage = async ev => {
     if (wasmGlue[wasmInit] === undefined) {
       throw new Error('failed to find "' + wasmInit + '" from ' + url);
     }
-    await wasmGlue[wasmInit](module, memory);
+    // `thread_stack_size` will be applied as default.
+    // If we need `thread_stack_size` in the future, it must be divided by
+    // '65536'. See generated glue JS file.
+    await wasmGlue[wasmInit]({module_or_path: module, memory});
 
     // Initialize.
     if (wasmGlue[init] === undefined) {

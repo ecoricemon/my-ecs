@@ -39,6 +39,7 @@ export default defineConfig({
     port: 8080,
   },
   preview: {
+    host: '0.0.0.0',
     port: 8080,
     // In multi-threaded environment, we need to share wasm memory.
     // These headers are required to share the memory.

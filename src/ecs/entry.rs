@@ -96,6 +96,9 @@ struct EcsVTable {
     
     get_entity_container_mut: 
         unsafe fn(NonNull<u8>, &EntityKey) -> Option<&mut EntityContainer>,
+    
+    schedule_all:
+        unsafe fn(NonNull<u8>),
 }
 
 impl EcsVTable {
@@ -219,6 +222,15 @@ impl EcsVTable {
             this.get_entity_container_mut(ekey)
         }
 
+        unsafe fn schedule_all<W, S, const N: usize>(this: NonNull<u8>)
+        where
+            W: Work + 'static,
+            S: BuildHasher + Default + 'static,
+        {
+            let this: &mut EcsApp<W, S, N> = this.cast().as_mut();
+            this.run().schedule_all();
+        }
+
         Self {
             register_system_inner: register_system_inner::<W, S, N>,
             unregister_system_inner: unregister_system_inner::<W, S, N>,
@@ -229,11 +241,13 @@ impl EcsVTable {
             register_resource_inner: register_resource_inner::<W, S, N>,
             unregister_resource_inner: unregister_resource_inner::<W, S, N>,
             get_entity_container_mut: get_entity_container_mut::<W, S, N>,
+            schedule_all: schedule_all::<W, S, N>,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+// Do not implement Clone. This must be carefully copied.
+#[derive(Debug)]
 pub struct Ecs<'ecs> {
     this: NonNull<u8>,
     vtable: NonNull<EcsVTable>,
@@ -270,6 +284,26 @@ impl<'ecs> Ecs<'ecs> {
                 vtable,
                 _marker: PhantomData,
             }
+        }
+    }
+
+    /// # Safety
+    ///
+    /// Caller must guarantee that the returned replica will not violate pointer
+    /// rules. In other words, callers must comply pointer aliasing and must not
+    /// use it after free.
+    pub(crate) unsafe fn copy(&self) -> Self {
+        Self {
+            this: self.this,
+            vtable: self.vtable,
+            _marker: self._marker,
+        }
+    }
+
+    pub fn schedule_all(&mut self) {
+        unsafe {
+            let vtable = self.vtable.as_ref();
+            (vtable.schedule_all)(self.this);
         }
     }
 }
@@ -427,6 +461,10 @@ where
     pub fn set_workers(&mut self, workers: Vec<W>, nums: [usize; N]) -> Vec<W> {
         let old = mem::replace(&mut self.sched, Scheduler::new(workers, nums));
         old.take_workers()
+    }
+
+    pub fn into_raw(self) -> RawEcsApp {
+        RawEcsApp::new(self)
     }
 
     pub fn collect_poisoned_systems(&mut self) -> Vec<(SystemData, Box<dyn Any + Send>)> {
@@ -662,16 +700,17 @@ where
     }
 
     fn process_buffered_commands(&mut self) {
-        // `raw` borrows `Self` mutably, so we cannot access `sched` in it.
+        // `ecs` borrows `Self` mutably, so we cannot access `sched` in it.
         // So captures its address first.
         let sched_ptr: *const Scheduler<W, S, N> = &self.sched as *const _;
-        let raw = Ecs::new(self);
+        let ecs = Ecs::new(self);
 
         // TODO: Removes unsafefy. Should I flip call hierarchy.
         unsafe {
             let sched = sched_ptr.as_ref().unwrap_unchecked();
-            sched.consume_commands(|cmd| {
-                cmd.command(raw);
+            sched.consume_commands(move |cmd| {
+                let c_ecs = ecs.copy();
+                cmd.command(c_ecs);
             });
         }
     }
@@ -746,6 +785,47 @@ where
 }
 
 impl<W, S, const N: usize> Resource for EcsApp<W, S, N> where EcsApp<W, S, N>: Send + 'static {}
+
+pub struct RawEcsApp {
+    this: Ecs<'static>,
+    drop: unsafe fn(Ecs<'static>),
+}
+
+impl RawEcsApp {
+    fn new<W, S, const N: usize>(app: EcsApp<W, S, N>) -> Self
+    where
+        W: Work + 'static,
+        S: BuildHasher + Default + 'static,
+    {
+        unsafe fn _drop<W, S, const N: usize>(ecs: Ecs<'static>) {
+            let mut ptr = ecs.this.cast::<EcsApp<W, S, N>>();
+            drop(Box::from_raw(ptr.as_mut()));
+        }
+
+        Self {
+            this: Ecs::new(Box::leak(Box::new(app))),
+            drop: _drop::<W, S, N>,
+        }
+    }
+
+    /// # Safety
+    ///
+    /// See [`Ecs::copy`].
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) unsafe fn get(&self) -> Ecs<'static> {
+        self.this.copy()
+    }
+}
+
+impl Drop for RawEcsApp {
+    fn drop(&mut self) {
+        // Safety:
+        // - `self.drop` holds proper drop method for `self.this`
+        // - It cannot be double free because we release `self.this` here only.
+        // See `Self::new()` for more details.
+        unsafe { (self.drop)(self.this.copy()) };
+    }
+}
 
 #[repr(transparent)]
 pub struct RunningEcs<'ecs, W, S, const N: usize> {

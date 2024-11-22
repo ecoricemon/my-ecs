@@ -16,7 +16,7 @@ test() {
     is_release=$2
 
     if [ $is_debug -eq 1 ]; then
-        cargo test
+        cargo test -F borrow_check
         if [ $? -ne 0 ]; then
             exit $?
         fi

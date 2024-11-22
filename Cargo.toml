@@ -32,9 +32,9 @@ bitflags = { version = "2.6.0" }
 dashmap = { version = "6.0.1" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = { version = "=0.2.92" } # Breaking change since 93
-js-sys = { version = "=0.3.69" }
-web-sys = { version = "=0.3.69", features = [
+wasm-bindgen = { version = "0.2.95" }
+js-sys = { version = "0.3.72" }
+web-sys = { version = "0.3.72", features = [
   "Blob",
   "BlobPropertyBag",
   "console",
@@ -61,7 +61,7 @@ surf = { version = "2.3.2" }
 futures = { version = "0.3.31" }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = { version = "=0.3.42" }
+wasm-bindgen-test = { version = "0.3.45" }
 console_error_panic_hook = { version = "0.1.7" }
 
 # =================
@@ -98,7 +98,7 @@ name = "parallel"
 path = "examples/parallel.rs"
 crate-type = ["bin"]
 
-# [[example]]
-# name = "debug"
-# path = "examples/debug.rs"
-# crate-type = ["bin"]
+[[example]]
+name = "debug"
+path = "examples/debug.rs"
+crate-type = ["bin"]

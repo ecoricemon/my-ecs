@@ -1,14 +1,55 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta http-equiv="X-UA-Compatible" content="IE=edge">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Document</title>
-  <script type="module">
-    import * as wasm from "./pkg/wasm-index.js";
-    await wasm.default();
-    const app = new wasm.App();
-  </script>
-</head>
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>my-ecs web example</title>
+    <script src="index.js" type="module"></script>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body
+    class="flex flex-col h-dvh bg-stone-100 dark:bg-stone-900 text-stone-900 dark:text-stone-100"
+  >
+    <h1 class="mt-4 ml-4 text-5xl font-medium">Demo for my-ecs</h1>
+
+    <p class="mt-4 ml-4 mb-4 font-light leading-relaxed">
+      This demo shows drawing
+      <a href="https://en.wikipedia.org/wiki/Mandelbrot_set"
+        >Mandelbrot fractal</a
+      >
+      structure using <a href="https://crates.io/crates/my-ecs">my-ecs</a> rust
+      crate.<br />
+      You can draw the image using single or multiple workers on your choice.
+    </p>
+
+    <button
+      type="button"
+      id="btnSingle"
+      class="bg-indigo-500 disabled:bg-gray-700 text-white font-bold py-2"
+    >
+      Draw using single worker
+    </button>
+    <button
+      type="button"
+      id="btnMulti"
+      class="bg-indigo-500 disabled:bg-gray-700 text-white font-bold py-2"
+    >
+      Draw using multiple workers
+    </button>
+    <button
+      type="button"
+      id="btnStop"
+      class="bg-indigo-500 disabled:bg-gray-700 text-white font-bold py-2"
+    >
+      Stop
+    </button>
+
+    <div
+      class="flex justify-center relative mt-4 h-full max-h-[70dvh] bg-gradient-to-t from-gray-950 via-gray-900 to-gray-950"
+    >
+      <text id="fps" class="absolute text-xl text-white font-medium">fps</text>
+      <canvas id="canvas" class="aspect-square h-full"></canvas>
+    </div>
+  </body>
 </html>

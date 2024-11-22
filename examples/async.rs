@@ -60,7 +60,7 @@ impl Map {
             for c in row.iter() {
                 print!("{c}");
             }
-            println!("");
+            println!();
         }
     }
 }

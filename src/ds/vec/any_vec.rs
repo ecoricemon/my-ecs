@@ -579,11 +579,6 @@ impl AsRawIter for AnyVec {
         // because align is not zero.
         unsafe { RawIter::new(start, end, stride) }
     }
-
-    #[inline]
-    fn par_iter(&self) -> ParRawIter {
-        self.iter().into_par()
-    }
 }
 
 impl<'a> IntoIterator for &'a AnyVec {

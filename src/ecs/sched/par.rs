@@ -236,9 +236,75 @@ where
     }
 }
 
+/// Wrapper of rayon's parallel iterator.
+///
+/// rayon's parallel iterator basically uses its own worker registry. It means
+/// that rayon will spawn new workers regardless of living workers in ecs, which
+/// may not be something you wish.  
+/// To use ecs's workers instead, just wrap the iterator in this wrapper.
+/// Then, this wrapper will intercept calls to registry and switch it to ecs's.
+#[repr(transparent)]
+pub struct EcsPar<I>(pub I);
+
 // Implements rayon's traits for iterators.
 mod impl_iter {
     use super::*;
+
+    impl<I> ParallelIterator for EcsPar<I>
+    where
+        I: ParallelIterator + IndexedParallelIterator,
+    {
+        type Item = I::Item;
+
+        #[inline]
+        fn drive_unindexed<C>(self, consumer: C) -> C::Result
+        where
+            C: UnindexedConsumer<Self::Item>,
+        {
+            // Intercepts
+            bridge(self, consumer)
+        }
+    }
+
+    impl<I> IndexedParallelIterator for EcsPar<I>
+    where
+        I: IndexedParallelIterator,
+    {
+        #[inline]
+        fn len(&self) -> usize {
+            self.0.len()
+        }
+
+        #[inline]
+        fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
+            // Intercepts
+            bridge(self, consumer)
+        }
+
+        #[inline]
+        fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
+            self.0.with_producer(callback)
+        }
+    }
+
+    impl<I> Producer for EcsPar<I>
+    where
+        I: Producer,
+    {
+        type Item = I::Item;
+        type IntoIter = I::IntoIter;
+
+        #[inline]
+        fn into_iter(self) -> Self::IntoIter {
+            self.0.into_iter()
+        }
+
+        #[inline]
+        fn split_at(self, index: usize) -> (Self, Self) {
+            let (l, r) = self.0.split_at(index);
+            (Self(l), Self(r))
+        }
+    }
 
     impl ParallelIterator for ds::raw::ParRawIter {
         type Item = ds::ptr::SendSyncPtr<u8>;
@@ -626,5 +692,30 @@ mod impl_iter {
             // Safety: Splitting doesn't affect both type and lifetime.
             unsafe { (Self::from_raw(l), Self::from_raw(r)) }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rayon::prelude::*;
+
+    /// Wraps rayon's parallel iterators in an interceptor.
+    #[test]
+    fn test_ecspar() {
+        // Array
+        let iter: rayon::array::IntoIter<i32, 2> = [0, 1].into_par_iter();
+        EcsPar(iter);
+        // Range
+        let iter: rayon::range::Iter<i32> = (0..2).into_par_iter();
+        EcsPar(iter);
+        // Slice
+        let iter: &rayon::slice::Iter<i32> = &[0, 1][..].into_par_iter();
+        EcsPar(iter);
+        // Zip
+        let range_iter0: rayon::range::Iter<i32> = (0..2).into_par_iter();
+        let range_iter1: rayon::range::Iter<i32> = (0..2).into_par_iter();
+        let zip_iter = range_iter0.zip(range_iter1);
+        EcsPar(zip_iter);
     }
 }

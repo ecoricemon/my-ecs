@@ -817,6 +817,11 @@ impl<W> WorkGroup<W> {
     }
 
     fn inject_task(&self, task: Task) {
+        debug_assert!(
+            !self.workers.is_empty(),
+            "no workers for a non-dedicated task"
+        );
+
         self.injector.push(task);
         self.signal.sub().notify_one();
     }

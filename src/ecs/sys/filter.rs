@@ -301,7 +301,7 @@ impl<'cont, Comp> Filtered<'cont, Comp> {
         FilteredIter::new(self)
     }
 
-    pub fn par_iter(&self) -> ParFilteredIter<'cont, Comp> {
+    pub fn ecs_par_iter(&self) -> ParFilteredIter<'cont, Comp> {
         self.iter().into_par()
     }
 }
@@ -338,11 +338,11 @@ impl<'cont, Comp> FilteredMut<'cont, Comp> {
         FilteredIterMut::new(self.iter())
     }
 
-    pub fn par_iter(&self) -> ParFilteredIter<'cont, Comp> {
-        self.0.par_iter()
+    pub fn ecs_par_iter(&self) -> ParFilteredIter<'cont, Comp> {
+        self.0.ecs_par_iter()
     }
 
-    pub fn par_iter_mut(&mut self) -> ParFilteredIterMut<'cont, Comp> {
+    pub fn ecs_par_iter_mut(&mut self) -> ParFilteredIterMut<'cont, Comp> {
         ParFilteredIterMut::new(self.iter_mut())
     }
 }

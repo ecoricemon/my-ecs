@@ -314,7 +314,7 @@ mod web {
             );
         }
 
-        pub fn with_children(&self, f: fn(&mut [Worker])) {
+        pub fn init_ecs(&self, f: fn(WorkerPool) -> RawEcsApp) {
             let arg = FnCodec::encode_into_array(f);
             self.delegate(
                 |arg| {
@@ -323,8 +323,8 @@ mod web {
                         // Safety: `arg` is `f`.
                         unsafe {
                             let f = FnCodec::decode_from_array(&arg);
-                            let f = mem::transmute::<fn(), fn(&mut [Worker])>(f);
-                            cx.pend_mut_fs.push_back(f);
+                            let f = mem::transmute::<fn(), fn(WorkerPool) -> RawEcsApp>(f);
+                            cx.pend_fn_init_ecs.push_back(f);
                         };
                         cx.ready_run();
                     });
@@ -333,7 +333,7 @@ mod web {
             );
         }
 
-        pub fn with_worker_pool(&self, f: fn(WorkerPool)) {
+        pub fn with_ecs(&self, f: fn(Ecs<'static>)) {
             let arg = FnCodec::encode_into_array(f);
             self.delegate(
                 |arg| {
@@ -342,8 +342,8 @@ mod web {
                         // Safety: `arg` is `f`.
                         unsafe {
                             let f = FnCodec::decode_from_array(&arg);
-                            let f = mem::transmute::<fn(), fn(WorkerPool)>(f);
-                            cx.pend_f = Some(f);
+                            let f = mem::transmute::<fn(), fn(Ecs<'static>)>(f);
+                            cx.pend_fn_with_ecs.push_back(f);
                         };
                         cx.ready_run();
                     });
@@ -415,38 +415,37 @@ mod web {
     pub struct MainWorkerContext {
         /// Worker pool.
         pool: WorkerPool,
-
+        raw_ecs: Option<RawEcsApp>,
         /// Child worker name that will be given to the next spawned child worker.
         child_name: String,
-
-        /// Pending functions receiving mutable reference to the worker pool.
-        pend_mut_fs: VecDeque<fn(&mut [Worker])>,
-
-        /// Pending function receiving worker pool.
-        pend_f: Option<fn(WorkerPool)>,
+        pend_fn_init_ecs: VecDeque<fn(WorkerPool) -> RawEcsApp>,
+        pend_fn_with_ecs: VecDeque<fn(Ecs<'static>)>,
     }
 
     impl MainWorkerContext {
         fn new() -> Self {
             Self {
                 pool: WorkerPool::new(),
+                raw_ecs: None,
                 child_name: "sub-worker0".to_owned(),
-                pend_mut_fs: VecDeque::new(),
-                pend_f: None,
+                pend_fn_init_ecs: VecDeque::new(),
+                pend_fn_with_ecs: VecDeque::new(),
             }
         }
 
         fn ready_run(&mut self) {
             let children = &mut self.pool.workers;
             if children.iter().all(|child| child.is_ready()) {
-                // Runs `pend_mut_fs` first.
-                while let Some(f) = self.pend_mut_fs.pop_front() {
-                    f(children);
+                // Runs `init_ecs`, then `with_ecs`.
+                while let Some(f) = self.pend_fn_init_ecs.pop_front() {
+                    let raw_ecs = f(mem::take(&mut self.pool));
+                    self.raw_ecs = Some(raw_ecs);
                 }
-
-                // Then, runs `pend_f` with giving the worker pool.
-                if let Some(f) = self.pend_f.take() {
-                    f(mem::take(&mut self.pool));
+                if let Some(raw_ecs) = self.raw_ecs.as_ref() {
+                    if let Some(f) = self.pend_fn_with_ecs.pop_front() {
+                        // Safety: We're accessing valid ecs once at a time.
+                        unsafe { f(raw_ecs.get()) };
+                    }
                 }
             } else {
                 READY_RUN.with_borrow(|ready_run| {
@@ -581,7 +580,7 @@ mod web {
             let msg = Object::new();
             Reflect::set(&msg, &"module".into(), &wasm_bindgen::module())?;
             Reflect::set(&msg, &"memory".into(), &wasm_bindgen::memory())?;
-            Reflect::set(&msg, &"url".into(), &IMPORT_META_URL.as_str().into())?;
+            Reflect::set(&msg, &"url".into(), &IMPORT_META_URL.with(JsValue::clone))?;
             Reflect::set(&msg, &"wasmInit".into(), &wasm_init.into())?;
             Reflect::set(&msg, &"init".into(), &builder.init.into())?;
             Reflect::set(&msg, &"listen".into(), &builder.listen.into())?;
@@ -604,7 +603,7 @@ mod web {
             self.ready.load(Ordering::Relaxed)
         }
 
-        pub fn set_onmessage<F>(&mut self, mut cb: F)
+        pub fn set_onmessage<F>(&self, mut cb: F)
         where
             F: FnMut(JsValue) + 'static,
         {
@@ -700,12 +699,10 @@ mod web {
     //       preserveEntrySignatures: 'exports-only',
     //     },
     fn create_worker(name: &str, script: Option<&str>) -> Result<web_sys::Worker, JsValue> {
-        web_sys::Worker::new_with_options(
-            &script_url(script),
-            web_sys::WorkerOptions::new()
-                .name(name)
-                .type_(web_sys::WorkerType::Module),
-        )
+        let opt = web_sys::WorkerOptions::new();
+        opt.set_name(name);
+        opt.set_type(web_sys::WorkerType::Module);
+        web_sys::Worker::new_with_options(&script_url(script), &opt)
     }
 
     #[wasm_bindgen]
@@ -718,8 +715,8 @@ mod web {
         // which is not what we want, we need to evaluate it at runtime.
         // Therefore, you need to configure your bundler not to do it.
         // (e.g. Webpack does it basically, but Vite(v5.1.6) doesn't do it)
-        #[wasm_bindgen(js_namespace = ["import", "meta"], js_name = url)]
-        static IMPORT_META_URL: String;
+        #[wasm_bindgen(thread_local, js_namespace = ["import", "meta"], js_name = url)]
+        static IMPORT_META_URL: JsValue;
     }
 
     fn script_url(script: Option<&str>) -> String {
@@ -727,8 +724,8 @@ mod web {
         let blob_parts = js_sys::Array::new_with_length(1);
         blob_parts.set(0, JsValue::from_str(script));
 
-        let mut options = web_sys::BlobPropertyBag::new();
-        options.type_("application/javascript");
+        let options = web_sys::BlobPropertyBag::new();
+        options.set_type("application/javascript");
 
         let blob = web_sys::Blob::new_with_str_sequence_and_options(&blob_parts, &options).unwrap();
         web_sys::Url::create_object_url_with_blob(&blob).unwrap()

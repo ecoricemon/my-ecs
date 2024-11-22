@@ -132,6 +132,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
                     }
                 )*
 
+                #[allow(clippy::forget_non_drop)]
                 std::mem::forget(self);
 
                 cont.end_add_row()

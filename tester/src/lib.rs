@@ -417,8 +417,10 @@ fn try_parallel_task(pool: WorkerPool) -> WorkerPool {
     // Tests immutable parallel iterator.
     ecs.add_system(SystemDesc::new().with_once(|r: Read<Fa>| {
         // Sum
-        let par_iter = r.take().par_iter().flatten();
-        let sum = par_iter
+        let sum = r
+            .take()
+            .ecs_par_iter()
+            .flatten()
             .fold(|| 0_i32, |sum, ca| sum + ca.0)
             .reduce(|| 0_i32, |sum_a, sum_b| sum_a + sum_b);
         assert_eq!(sum, SUM);
@@ -430,11 +432,11 @@ fn try_parallel_task(pool: WorkerPool) -> WorkerPool {
         let mut w = w.take();
 
         // x 2
-        let par_iter = w.par_iter_mut().flatten();
+        let par_iter = w.ecs_par_iter_mut().flatten();
         par_iter.for_each(|ca| ca.0 *= 2);
 
         // Sum
-        let par_iter = w.par_iter_mut().flatten();
+        let par_iter = w.ecs_par_iter_mut().flatten();
         let sum = par_iter
             .fold(|| 0_i32, |sum, ca| sum + ca.0)
             .reduce(|| 0_i32, |sum_a, sum_b| sum_a + sum_b);
@@ -548,9 +550,10 @@ fn try_recover_from_panic_in_parallel_task(pool: WorkerPool) -> (WorkerPool, i32
         assert_eq!(sum, SUM);
     };
     let fail_sys = |r: Read<Fa>| {
-        let r = r.take();
-        let par_iter = r.par_iter().flatten();
-        let sum = par_iter
+        let sum = r
+            .take()
+            .ecs_par_iter()
+            .flatten()
             .fold(
                 || 0_i32,
                 |sum, ca| {
@@ -650,7 +653,7 @@ mod web_test {
 
     #[wasm_bindgen]
     pub struct Tester {
-        m_worker: Option<MainWorker>,
+        main: Option<MainWorker>,
     }
 
     #[wasm_bindgen]
@@ -664,13 +667,13 @@ mod web_test {
             }));
 
             // Spawns main worker and its children.
-            let mut m_worker = MainWorkerBuilder::new().spawn().unwrap();
+            let main = MainWorkerBuilder::new().spawn().unwrap();
 
             // Sends "complete" event once it recieved response from main worker.
             // Then JS module will destroy this struct and notify end of test
             // to playwright.
             const COMPLETE: &str = "complete";
-            m_worker.set_onmessage(|data: JsValue| {
+            main.set_onmessage(|data: JsValue| {
                 if let Some(s) = data.dyn_ref::<JsString>() {
                     if s == COMPLETE || s == "panic" {
                         let ev = web_sys::CustomEvent::new(COMPLETE).unwrap();
@@ -683,8 +686,8 @@ mod web_test {
             });
 
             // Does all success tests.
-            m_worker.spawn_children(NUM_WORKERS);
-            m_worker.with_worker_pool(|pool| {
+            main.spawn_children(NUM_WORKERS);
+            main.init_ecs(|pool| {
                 let mut total_panics = 0;
 
                 let pool = try_register_system(pool);
@@ -702,7 +705,7 @@ mod web_test {
                 let pool = try_parallel_task(pool);
                 Self::print_ok_with(&try_parallel_task);
 
-                let (_pool, num_panics) = try_recover_from_panic(pool);
+                let (pool, num_panics) = try_recover_from_panic(pool);
                 total_panics += num_panics;
                 Self::print_ok_with(&try_recover_from_panic);
 
@@ -713,16 +716,16 @@ mod web_test {
                 // is something like command to playwright.
                 crate::log!("playwright:expectedPanics:{total_panics}");
                 web_util::worker_post_message(&COMPLETE.into()).unwrap();
+
+                Ecs::default(pool, [NUM_WORKERS]).into_raw()
             });
 
-            Self {
-                m_worker: Some(m_worker),
-            }
+            Self { main: Some(main) }
         }
 
         #[wasm_bindgen]
         pub fn destroy(&mut self) {
-            self.m_worker.take();
+            self.main.take();
         }
 
         fn print_ok_with<T: ?Sized>(_t: &T) {

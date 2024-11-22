@@ -14,10 +14,12 @@ unsafe impl<T: ?Sized> Sync for SendSyncPtr<T> {}
 
 impl<T: ?Sized> SendSyncPtr<T> {
     // TODO: Can we detect Send or Sync requirements violation?
+    #[inline]
     pub const fn new(ptr: NonNull<T>) -> Self {
         Self(ptr)
     }
 
+    #[inline]
     pub const fn dangling() -> Self
     where
         T: Sized,
@@ -25,10 +27,12 @@ impl<T: ?Sized> SendSyncPtr<T> {
         Self::new(NonNull::dangling())
     }
 
+    #[inline]
     pub const fn as_nonnull(self) -> NonNull<T> {
         self.0
     }
 
+    #[inline]
     pub const fn as_ptr(self) -> *mut T {
         self.0.as_ptr()
     }
@@ -36,6 +40,7 @@ impl<T: ?Sized> SendSyncPtr<T> {
     /// # Safety
     ///
     /// See [`NonNull::as_ref`].
+    #[inline]
     pub const unsafe fn as_ref<'a>(&self) -> &'a T {
         self.0.as_ref()
     }
@@ -43,6 +48,7 @@ impl<T: ?Sized> SendSyncPtr<T> {
     /// # Safety
     ///
     /// See [`NonNull::as_mut`].
+    #[inline]
     pub unsafe fn as_mut<'a>(&mut self) -> &'a mut T {
         self.0.as_mut()
     }
@@ -50,6 +56,7 @@ impl<T: ?Sized> SendSyncPtr<T> {
     /// # Safety
     ///
     /// See [`NonNull::add`].
+    #[inline]
     pub const unsafe fn add(self, count: usize) -> Self
     where
         T: Sized,
@@ -60,6 +67,7 @@ impl<T: ?Sized> SendSyncPtr<T> {
     /// # Safety
     ///
     /// See [`NonNull::sub`].
+    #[inline]
     pub const unsafe fn sub(self, count: usize) -> Self
     where
         T: Sized,
@@ -67,6 +75,7 @@ impl<T: ?Sized> SendSyncPtr<T> {
         Self::new(self.0.sub(count))
     }
 
+    #[inline]
     pub const fn cast<U>(self) -> SendSyncPtr<U> {
         // Safety: Nothing has changed except `T` -> `U`.
         SendSyncPtr::new(self.0.cast())
@@ -75,6 +84,7 @@ impl<T: ?Sized> SendSyncPtr<T> {
 
 impl<T: ?Sized> PartialEq for SendSyncPtr<T> {
     #[allow(ambiguous_wide_pointer_comparisons)]
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.as_ptr() == other.as_ptr()
     }
@@ -83,6 +93,7 @@ impl<T: ?Sized> PartialEq for SendSyncPtr<T> {
 impl<T: ?Sized> Eq for SendSyncPtr<T> {}
 
 impl<T: ?Sized> PartialOrd for SendSyncPtr<T> {
+    #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         Some(self.cmp(other))
     }
@@ -90,18 +101,21 @@ impl<T: ?Sized> PartialOrd for SendSyncPtr<T> {
 
 impl<T: ?Sized> Ord for SendSyncPtr<T> {
     #[allow(ambiguous_wide_pointer_comparisons)]
+    #[inline]
     fn cmp(&self, other: &Self) -> cmp::Ordering {
         self.as_ptr().cmp(&other.as_ptr())
     }
 }
 
 impl<T: ?Sized> hash::Hash for SendSyncPtr<T> {
+    #[inline]
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.0.hash(state)
     }
 }
 
 impl<T: ?Sized> Clone for SendSyncPtr<T> {
+    #[inline]
     fn clone(&self) -> Self {
         *self
     }
@@ -130,6 +144,7 @@ impl<T: ?Sized> fmt::Debug for NonNullExt<T> {
 }
 
 impl<T: ?Sized> NonNullExt<T> {
+    #[inline]
     pub fn new(ptr: *mut T) -> Option<Self> {
         // clippy yells for adding `unsafe` to function,
         // because input argument `ptr` seems to be dereferenced in unsafe block below.
@@ -145,6 +160,7 @@ impl<T: ?Sized> NonNullExt<T> {
         }
     }
 
+    #[inline]
     pub const fn from_nonnull(ptr: NonNull<T>) -> Self {
         Self {
             inner: ptr,
@@ -156,6 +172,7 @@ impl<T: ?Sized> NonNullExt<T> {
     /// # Safety
     ///
     /// Undefined behavior if the pointer is null.
+    #[inline]
     pub const unsafe fn new_unchecked(ptr: *mut T) -> Self {
         Self {
             inner: NonNull::new_unchecked(ptr),
@@ -164,6 +181,7 @@ impl<T: ?Sized> NonNullExt<T> {
         }
     }
 
+    #[inline]
     pub const fn dangling() -> Self
     where
         T: Sized,
@@ -175,6 +193,7 @@ impl<T: ?Sized> NonNullExt<T> {
         }
     }
 
+    #[inline]
     pub fn is_dangling(&self) -> bool
     where
         T: Sized,
@@ -183,6 +202,7 @@ impl<T: ?Sized> NonNullExt<T> {
     }
 
     /// It's noop in release mode.
+    #[inline]
     pub fn with_type(self, _ty: TypeIdExt) -> Self {
         #[cfg(not(feature = "borrow_check"))]
         {
@@ -198,6 +218,7 @@ impl<T: ?Sized> NonNullExt<T> {
     }
 
     /// It's noop in release mode.
+    #[inline]
     pub fn with_name(self, _name: &'static str) -> Self {
         #[cfg(not(feature = "borrow_check"))]
         {
@@ -212,6 +233,7 @@ impl<T: ?Sized> NonNullExt<T> {
         }
     }
 
+    #[inline]
     pub fn get_type(&self) -> Option<&TypeIdExt> {
         #[cfg(not(feature = "borrow_check"))]
         {
@@ -227,6 +249,7 @@ impl<T: ?Sized> NonNullExt<T> {
         }
     }
 
+    #[inline]
     pub fn get_name(&self) -> Option<&str> {
         #[cfg(not(feature = "borrow_check"))]
         {
@@ -242,6 +265,7 @@ impl<T: ?Sized> NonNullExt<T> {
         }
     }
 
+    #[inline]
     pub fn cast<U>(self) -> NonNullExt<U> {
         let Self {
             inner,
@@ -258,6 +282,7 @@ impl<T: ?Sized> NonNullExt<T> {
     /// # Safety
     ///
     /// See [`NonNull::add`].
+    #[inline]
     pub unsafe fn add(self, count: usize) -> Self
     where
         T: Sized,
@@ -272,6 +297,7 @@ impl<T: ?Sized> NonNullExt<T> {
     /// # Safety
     ///
     /// See [`NonNull::sub`].
+    #[inline]
     pub unsafe fn sub(self, count: usize) -> Self
     where
         T: Sized,
@@ -287,12 +313,14 @@ impl<T: ?Sized> NonNullExt<T> {
 impl<T: ?Sized> Deref for NonNullExt<T> {
     type Target = NonNull<T>;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
 impl<T: ?Sized> DerefMut for NonNullExt<T> {
+    #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
@@ -300,6 +328,7 @@ impl<T: ?Sized> DerefMut for NonNullExt<T> {
 
 impl<T: ?Sized> PartialEq for NonNullExt<T> {
     #[allow(ambiguous_wide_pointer_comparisons)]
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.as_ptr() == other.as_ptr()
     }
@@ -308,6 +337,7 @@ impl<T: ?Sized> PartialEq for NonNullExt<T> {
 impl<T: ?Sized> Eq for NonNullExt<T> {}
 
 impl<T: ?Sized> PartialOrd for NonNullExt<T> {
+    #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         Some(self.cmp(other))
     }
@@ -315,18 +345,21 @@ impl<T: ?Sized> PartialOrd for NonNullExt<T> {
 
 impl<T: ?Sized> Ord for NonNullExt<T> {
     #[allow(ambiguous_wide_pointer_comparisons)]
+    #[inline]
     fn cmp(&self, other: &Self) -> cmp::Ordering {
         self.as_ptr().cmp(&other.as_ptr())
     }
 }
 
 impl<T: ?Sized> hash::Hash for NonNullExt<T> {
+    #[inline]
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.inner.hash(state)
     }
 }
 
 impl<T: ?Sized> Clone for NonNullExt<T> {
+    #[inline]
     fn clone(&self) -> Self {
         *self
     }
@@ -352,6 +385,7 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     /// # Safety
     ///
     /// The pointer must be valid and not aliased mutably while the instance is in use.
+    #[inline]
     pub unsafe fn new(ptr: NonNullExt<T>) -> Self {
         #[cfg(feature = "borrow_check")]
         {
@@ -368,6 +402,7 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     /// # Safety
     ///
     /// The pointer must be valid and not aliased mutably while the instance is in use.
+    #[inline]
     pub const unsafe fn new_nocheck(ptr: NonNullExt<T>) -> Self {
         Self {
             inner: ptr,
@@ -376,6 +411,7 @@ impl<T: ?Sized> ManagedConstPtr<T> {
         }
     }
 
+    #[inline]
     pub const fn dangling() -> Self
     where
         T: Sized,
@@ -384,14 +420,17 @@ impl<T: ?Sized> ManagedConstPtr<T> {
         unsafe { Self::new_nocheck(NonNullExt::dangling()) }
     }
 
+    #[inline]
     pub fn inner(&self) -> NonNullExt<T> {
         self.inner
     }
 
+    #[inline]
     pub fn as_ptr(&self) -> *const T {
         self.inner.as_ptr().cast_const()
     }
 
+    #[inline]
     pub fn into_ref<'a>(self) -> &'a T {
         let inner = self.inner();
 
@@ -402,6 +441,7 @@ impl<T: ?Sized> ManagedConstPtr<T> {
         unsafe { inner.as_ref() }
     }
 
+    #[inline]
     pub fn cast<U>(self) -> ManagedConstPtr<U> {
         let inner = self.inner();
 
@@ -415,6 +455,7 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     /// # Safety
     ///
     /// See [`NonNull::add`].
+    #[inline]
     pub unsafe fn add(self, count: usize) -> Self
     where
         T: Sized,
@@ -438,6 +479,7 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     /// # Safety
     ///
     /// See [`NonNull::sub`].
+    #[inline]
     pub unsafe fn sub(self, count: usize) -> Self
     where
         T: Sized,
@@ -471,6 +513,7 @@ impl<T: ?Sized> Drop for ManagedConstPtr<T> {
 impl<T: ?Sized> Deref for ManagedConstPtr<T> {
     type Target = T;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
         // Safety: We assume that the pointer is valid by the constructor.
         unsafe { self.inner.as_ref() }
@@ -479,6 +522,7 @@ impl<T: ?Sized> Deref for ManagedConstPtr<T> {
 
 impl<T: ?Sized> PartialEq for ManagedConstPtr<T> {
     #[allow(ambiguous_wide_pointer_comparisons)]
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.as_ptr() == other.as_ptr()
     }
@@ -487,6 +531,7 @@ impl<T: ?Sized> PartialEq for ManagedConstPtr<T> {
 impl<T: ?Sized> Eq for ManagedConstPtr<T> {}
 
 impl<T: ?Sized> PartialOrd for ManagedConstPtr<T> {
+    #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         Some(self.cmp(other))
     }
@@ -494,31 +539,32 @@ impl<T: ?Sized> PartialOrd for ManagedConstPtr<T> {
 
 impl<T: ?Sized> Ord for ManagedConstPtr<T> {
     #[allow(ambiguous_wide_pointer_comparisons)]
+    #[inline]
     fn cmp(&self, other: &Self) -> cmp::Ordering {
         self.as_ptr().cmp(&other.as_ptr())
     }
 }
 
 impl<T: ?Sized> hash::Hash for ManagedConstPtr<T> {
+    #[inline]
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.inner.hash(state)
     }
 }
 
 impl<T: ?Sized> Clone for ManagedConstPtr<T> {
-    #[cfg(not(feature = "borrow_check"))]
     #[inline]
     fn clone(&self) -> Self {
-        *self
-    }
-
-    #[cfg(feature = "borrow_check")]
-    #[inline]
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner,
-            debug: self.debug,
+        #[cfg(feature = "borrow_check")]
+        {
+            Self {
+                inner: self.inner,
+                debug: self.debug,
+            }
         }
+
+        #[cfg(not(feature = "borrow_check"))]
+        *self
     }
 }
 
@@ -544,6 +590,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     /// # Safety
     ///
     /// The pointer must be valid and not aliased while the instance is in use.
+    #[inline]
     pub unsafe fn new(ptr: NonNullExt<T>) -> Self {
         #[cfg(feature = "borrow_check")]
         {
@@ -560,6 +607,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     /// # Safety
     ///
     /// The pointer must be valid and not aliased while the instance is in use.
+    #[inline]
     pub const unsafe fn new_nocheck(ptr: NonNullExt<T>) -> Self {
         Self {
             inner: ptr,
@@ -568,6 +616,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
         }
     }
 
+    #[inline]
     pub const fn dangling() -> Self
     where
         T: Sized,
@@ -576,6 +625,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
         unsafe { Self::new_nocheck(NonNullExt::dangling()) }
     }
 
+    #[inline]
     pub fn is_dangling(&self) -> bool
     where
         T: Sized,
@@ -583,14 +633,17 @@ impl<T: ?Sized> ManagedMutPtr<T> {
         self == &Self::dangling()
     }
 
+    #[inline]
     pub fn inner(&self) -> NonNullExt<T> {
         self.inner
     }
 
+    #[inline]
     pub fn as_ptr(&self) -> *mut T {
         self.inner.as_ptr()
     }
 
+    #[inline]
     pub fn into_mut<'a>(self) -> &'a mut T {
         let mut inner = self.inner();
 
@@ -601,6 +654,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
         unsafe { inner.as_mut() }
     }
 
+    #[inline]
     pub fn cast<U>(self) -> ManagedMutPtr<U> {
         let inner = self.inner();
 
@@ -611,6 +665,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
         unsafe { ManagedMutPtr::new(inner.cast()) }
     }
 
+    #[inline]
     pub fn cast_const(self) -> ManagedConstPtr<T> {
         let inner = self.inner();
 
@@ -624,6 +679,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     /// # Safety
     ///
     /// See [`NonNull::add`].
+    #[inline]
     pub unsafe fn add(self, count: usize) -> Self
     where
         T: Sized,
@@ -647,6 +703,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     /// # Safety
     ///
     /// See [`NonNull::sub`].
+    #[inline]
     pub unsafe fn sub(self, count: usize) -> Self
     where
         T: Sized,
@@ -680,6 +737,7 @@ impl<T: ?Sized> Drop for ManagedMutPtr<T> {
 impl<T: ?Sized> Deref for ManagedMutPtr<T> {
     type Target = T;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
         // Safety: We assume that the pointer is valid by the constructor.
         unsafe { self.inner.as_ref() }
@@ -687,6 +745,7 @@ impl<T: ?Sized> Deref for ManagedMutPtr<T> {
 }
 
 impl<T: ?Sized> DerefMut for ManagedMutPtr<T> {
+    #[inline]
     fn deref_mut(&mut self) -> &mut Self::Target {
         // Safety: We assume that the pointer is valid by the constructor.
         unsafe { self.inner.as_mut() }
@@ -695,6 +754,7 @@ impl<T: ?Sized> DerefMut for ManagedMutPtr<T> {
 
 impl<T: ?Sized> PartialEq for ManagedMutPtr<T> {
     #[allow(ambiguous_wide_pointer_comparisons)]
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         self.as_ptr() == other.as_ptr()
     }
@@ -703,6 +763,7 @@ impl<T: ?Sized> PartialEq for ManagedMutPtr<T> {
 impl<T: ?Sized> Eq for ManagedMutPtr<T> {}
 
 impl<T: ?Sized> PartialOrd for ManagedMutPtr<T> {
+    #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
         Some(self.cmp(other))
     }
@@ -710,12 +771,14 @@ impl<T: ?Sized> PartialOrd for ManagedMutPtr<T> {
 
 impl<T: ?Sized> Ord for ManagedMutPtr<T> {
     #[allow(ambiguous_wide_pointer_comparisons)]
+    #[inline]
     fn cmp(&self, other: &Self) -> cmp::Ordering {
         self.as_ptr().cmp(&other.as_ptr())
     }
 }
 
 impl<T: ?Sized> hash::Hash for ManagedMutPtr<T> {
+    #[inline]
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
         self.inner.hash(state)
     }

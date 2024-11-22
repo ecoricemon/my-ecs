@@ -1,94 +1,93 @@
 #![cfg(target_arch = "wasm32")]
+#![allow(static_mut_refs, dead_code)]
+
+mod mandelbrot;
+use mandelbrot::*;
 
 use my_ecs::prelude::*;
-use std::panic;
 use wasm_bindgen::prelude::*;
 
-// Declares Entity, Component, and Filter.
-#[derive(Entity)]
-struct Ea {
-    a: Ca,
-}
-#[derive(Component)]
-struct Ca(i64);
-filter!(Fa, Target = Ca);
+// Currently, it's hard to synchronize b/w JS and Rust using something like
+// Mutex because JS window context cannot stop.
+static mut ARGS: Args = const { Args::new() };
+static mut BUF: Vec<u8> = const { Vec::new() };
 
 #[wasm_bindgen]
 pub struct App {
-    _m_worker: Option<MainWorker>,
+    main: Option<MainWorker>,
+    buf: Vec<u8>,
 }
 
 #[wasm_bindgen]
 impl App {
     #[wasm_bindgen(constructor)]
-    pub fn new() -> Self {
-        // Shows panic messages on browser console.
-        panic::set_hook(Box::new(|info| {
+    pub fn new(num_workers: usize) -> Self {
+        std::panic::set_hook(Box::new(|info| {
             console_error_panic_hook::hook(info);
             web_panic_hook(info);
         }));
 
-        // Spawns main worker and its children.
-        let m_worker = MainWorkerBuilder::new().spawn().unwrap();
-        let num_workers = web_util::available_parallelism();
-        m_worker.spawn_children(num_workers);
-
-        // Tests simple summation with sequential and parallel iterators.
-        m_worker.with_worker_pool(|pool| {
-            const START: i64 = 0;
-            const END: i64 = 2_000_000;
-            const NUM: i64 = END - START + 1;
-            const SUM: i64 = (START + END) * NUM / 2;
-
+        let main = MainWorkerBuilder::new().spawn().unwrap();
+        main.spawn_children(num_workers);
+        main.init_ecs(|pool| {
             let num_workers = pool.len();
-            let mut ecs = Ecs::default(pool);
-
-            // Puts numbers into ecs storage.
-            ecs.register_entity_of::<Ea>();
-            ecs.append_once_system(0, |mut ew: EntWrite<Ea>| {
-                crate::log!("Inserting numbers...");
-                for val in START..=END {
-                    ew.add_entity(Ea { a: Ca(val) });
-                }
-                crate::log!("Completed insertion.");
-            })
+            let mut ecs = Ecs::default(pool, [num_workers]);
+            ecs.add_system(SystemDesc::new().with_system(|| {
+                unsafe { calc(ARGS, &mut BUF) };
+            }))
             .unwrap();
-
-            // Tests simple summation with sequential iterator.
-            ecs.append_once_system(0, |r: Read<Fa>| {
-                let start = web_util::now().unwrap();
-
-                let r = r.take();
-                let seq_iter = r.iter().flatten();
-                let sum: i64 = seq_iter.map(|ca| ca.0).sum();
-                assert_eq!(sum, SUM);
-
-                let elapsed = web_util::now().unwrap() - start;
-                crate::log!("Summation took {elapsed:?} with sequential iterator.");
-            })
-            .unwrap();
-            ecs.run_default();
-
-            // Tests simple summation with parallel iterator.
-            ecs.append_once_system(0, move |r: Read<Fa>| {
-                let start = web_util::now().unwrap();
-
-                let r = r.take();
-                let par_iter = r.par_iter().flatten();
-                let sum: i64 = par_iter.map(|ca| ca.0).sum();
-                assert_eq!(sum, SUM);
-
-                let elapsed = web_util::now().unwrap() - start;
-                crate::log!(
-                    "Summation took {elapsed:?} with parallel iterator on {num_workers} workers."
-                );
-            })
-            .unwrap();
-            ecs.run_default();
+            ecs.into_raw()
         });
 
         Self {
-            _m_worker: Some(m_worker),
+            main: Some(main),
+            buf: Vec::new(),
         }
+    }
+
+    #[wasm_bindgen(js_name = "setOnMessage")]
+    pub fn set_onmessage(&self, f: &js_sys::Function) {
+        let f = f.clone();
+        if let Some(main) = self.main.as_ref() {
+            main.set_onmessage(move |_| {
+                f.call0(&JsValue::null()).unwrap();
+            });
+        }
+    }
+
+    #[wasm_bindgen(js_name = "getResult")]
+    pub fn get_result(&self, dest: &mut [u8]) {
+        let buf = unsafe { &BUF };
+        assert!(dest.len() >= buf.len());
+        dest[..buf.len()].copy_from_slice(&buf[..]);
+    }
+
+    #[wasm_bindgen(js_name = "calcImage")]
+    pub fn calc_image(
+        &mut self,
+        width: u32,
+        height: u32,
+        x_low: f64,
+        x_high: f64,
+        y_low: f64,
+        y_high: f64,
+    ) {
+        let args = unsafe { &mut ARGS };
+        let buf = unsafe { &mut BUF };
+        args.set_size(width, height);
+        args.set_plot_range((x_low, x_high), (y_low, y_high));
+        buf.resize((width * height * 4) as usize, 0);
+
+        if let Some(main) = self.main.as_mut() {
+            main.with_ecs(|mut ecs| {
+                ecs.schedule_all();
+                web_util::worker_post_message(&JsValue::undefined()).unwrap();
+            });
+        }
+    }
+
+    #[wasm_bindgen]
+    pub fn destroy(&mut self) {
+        self.main.take();
     }
 }
