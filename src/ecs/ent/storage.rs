@@ -13,9 +13,8 @@ use std::{
     fmt,
     hash::BuildHasher,
     marker::PhantomData,
-    mem::MaybeUninit,
     ops::{Deref, DerefMut},
-    ptr::{self, NonNull},
+    ptr::NonNull,
 };
 
 pub trait AsEntityReg {
@@ -170,8 +169,8 @@ where
     /// doesn't overwrite component information.
     pub(crate) fn register(&mut self, desc: EntityReg) -> Result<EntityIndex, EcsError> {
         if desc.comps.is_empty() {
-            let errmsg = crate::debug_format!("`{}` doesn't have any components", desc.cont.name);
-            return Err(EcsError::InvalidEntity(errmsg));
+            let reason = crate::debug_format!("`{}` doesn't have any components", desc.cont.name);
+            return Err(EcsError::InvalidEntity(reason, ()));
         }
 
         let name = desc.cont.name.clone();
@@ -180,11 +179,11 @@ where
             Ok(index) => index,
             Err(desc) => {
                 let (_cont, _) = self.data.get_group2(&desc.group_key).unwrap();
-                let errmsg = crate::debug_format!(
+                let reason = crate::debug_format!(
                     "`{name}` and `{}` have the same components, which is not allowed",
                     _cont.name()
                 );
-                return Err(EcsError::InvalidEntity(errmsg));
+                return Err(EcsError::InvalidEntity(reason, ()));
             }
         };
         let ei = EntityIndex::new(GenIndex::new(index as u32, self.gen));
@@ -441,42 +440,22 @@ impl DerefMut for EntityContainer {
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct TypedEntityContainer<'buf, E> {
-    borrowed: Borrowed<NonNull<dyn ContainEntity>>,
+    ptr: NonNull<dyn ContainEntity>,
     _marker: PhantomData<&'buf mut E>,
 }
 
 impl<'buf, E: Entity> TypedEntityContainer<'buf, E> {
     /// # Safety
     ///
-    /// Undefined behavior if
-    /// - pointer is not valid.
-    /// - type is incorrect.
-    ///   The pointer must be valid while this instance lives.
-    pub(crate) unsafe fn new(borrowed: Borrowed<NonNull<dyn ContainEntity>>) -> Self {
+    /// Given pointer must be valid.
+    pub(crate) unsafe fn new(ptr: NonNull<dyn ContainEntity>) -> Self {
         Self {
-            borrowed,
+            ptr,
             _marker: PhantomData,
         }
     }
 
-    /// Constructs instance by copying `borrowed` in bit level.
-    /// Don't forget to not drop `borrowed` because it's copied to this structure.
-    ///
-    /// # Safety
-    ///
-    /// Undefined behavior if
-    /// - pointer is not valid.
-    /// - type is incorrect.
-    /// - `borrowed` is dropped after call to this method.
-    ///   The pointer must be valid while this instance lives.
-    pub(crate) unsafe fn new_copy(borrowed: &Borrowed<NonNull<dyn ContainEntity>>) -> Self {
-        let mut uninit: MaybeUninit<Borrowed<NonNull<dyn ContainEntity>>> = MaybeUninit::uninit();
-        // Safety: Infallible.
-        unsafe { ptr::copy_nonoverlapping(borrowed as *const _, uninit.as_mut_ptr(), 1) };
-        Self::new(uninit.assume_init())
-    }
-
-    /// Returns the number of items.
+    /// Returns number of items.
     pub fn len(&self) -> usize {
         self.as_ref().len()
     }
@@ -499,20 +478,18 @@ impl<'buf, E: Entity> TypedEntityContainer<'buf, E> {
         value.move_to(self.as_mut());
     }
 
-    /// * `index` - Index in a component array.
-    //
-    // Index used in `AddEntity::remove_by_inner_index()`.
-    pub fn remove_entity(&mut self, index: usize) {
-        self.as_mut().remove_row_by_inner_index(index);
+    /// * `vi` - Value index. See [`ContainEntity`].
+    pub fn remove_row_by_value_index(&mut self, vi: usize) {
+        self.as_mut().remove_row_by_value_index(vi);
     }
 
     fn as_ref(&self) -> &dyn ContainEntity {
         // Safety: Warning in the constructor.
-        unsafe { self.borrowed.as_ref() }
+        unsafe { self.ptr.as_ref() }
     }
 
     fn as_mut(&mut self) -> &mut dyn ContainEntity {
         // Safety: Warning in the constructor.
-        unsafe { self.borrowed.as_mut() }
+        unsafe { self.ptr.as_mut() }
     }
 }

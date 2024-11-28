@@ -20,24 +20,24 @@ use std::{
     hash::BuildHasher,
     ops::{Deref, DerefMut},
     rc::Rc,
-    sync::Weak,
+    sync::Arc,
 };
 
 /// The storage is updated by some events as follows.
 ///
 /// | Events                  | Actions                          |
 /// | :---                    | :---                             |
-/// | System registration     | Creates a cache item             |
-/// | System unregistration   | Removes a cache item             |
-/// | Entity registration     | Can update cache items           |
-/// | Entity unregistration   | Can remove or update cache items |
+/// | System activation       | Creates a cache item             |
+/// | System removal          | Removes a cache item             |
+/// | Entity registration     | May update cache items           |
+/// | Entity unregistration   | May remove or update cache items |
 /// | Resource registration   | None                             |
-/// | Resource unregistration | Can remove cache items           |
+/// | Resource unregistration | May remove cache items           |
 ///
 /// Do not forget to call proper methods for events.
 #[derive(Debug)]
 pub(super) struct CacheStorage<S> {
-    items: HashMap<SystemId, (CacheItem, Weak<SystemInfo>), S>,
+    items: HashMap<SystemId, (CacheItem, Arc<SystemInfo>), S>,
     noti: HashMap<CacheNoti, HashSet<SystemId, S>, S>,
 }
 
@@ -57,11 +57,10 @@ impl<S> CacheStorage<S>
 where
     S: BuildHasher + Default,
 {
-    /// Creates a new cache item for the newly registered system as update of
-    /// system registration.
+    /// Creates a new cache item for the newly activated system.
     ///
-    /// You can call this method before or after you register the system.
-    pub(super) fn update_by_system_reg(
+    /// You can call this method before or after you activate the system.
+    pub(super) fn create_item(
         &mut self,
         sdata: &SystemData,
         ent_stor: &mut EntityStorage<S>,
@@ -193,12 +192,20 @@ where
         }
     }
 
-    /// Removes a cache item for the unregistered system as update of system
-    /// unregistration.
+    /// Removes system's cache item.
     ///
-    /// Note that you must call this method before you unregister the system.
-    pub(super) fn update_by_system_unreg(&mut self, sid: &SystemId) {
-        self.remove_cache_item(sid);
+    /// If the cache item was already removed by other events like resource
+    /// unregistration, nothing takes place.
+    ///
+    /// You can call this method before or after you activate the system.
+    pub(crate) fn remove_item(&mut self, sid: &SystemId) {
+        // Removes cache item.
+        if let Some((_item, sinfo)) = self.items.remove(sid) {
+            // Removes notification for the cache item.
+            let rinfo = sinfo.get_request_info();
+            let remove_noti = |key| Self::remove_noti_item(&mut self.noti, &key, sid);
+            Self::update_noti(rinfo, remove_noti);
+        }
     }
 
     /// Updates related cache items for the newly registered entity. In this
@@ -241,7 +248,6 @@ where
             }
             for sid in r_sids {
                 let (item, sinfo) = this.items.get_mut(sid).unwrap();
-                let sinfo = sinfo.upgrade().unwrap();
                 let rinfo = sinfo.get_request_info();
                 let mut item_wait = item.wait.borrow_mut();
 
@@ -256,7 +262,6 @@ where
             }
             for sid in w_sids {
                 let (item, sinfo) = this.items.get_mut(sid).unwrap();
-                let sinfo = sinfo.upgrade().unwrap();
                 let rinfo = sinfo.get_request_info();
                 let mut item_wait = item.wait.borrow_mut();
 
@@ -297,25 +302,29 @@ where
     /// - Read and write queries in cache items can be updated.
     ///
     /// Note that you must call this method before you unregister the entity.
-    pub(super) fn update_by_entity_unreg<Q>(
+    pub(super) fn update_by_entity_unreg<Q, F>(
         &mut self,
         ekey: Q,
         ent_stor: &mut EntityStorage<S>,
         res_stor: &mut ResourceStorage<S>,
+        remove: F,
     ) where
         Q: Into<EntityKey>,
+        F: FnMut(&SystemId),
     {
-        inner(self, ekey.into(), ent_stor, res_stor);
+        inner(self, ekey.into(), ent_stor, res_stor, remove);
 
         // === Internal helper functions ===
 
-        fn inner<S>(
+        fn inner<F, S>(
             this: &mut CacheStorage<S>,
             ekey: EntityKey,
             ent_stor: &mut EntityStorage<S>,
             res_stor: &mut ResourceStorage<S>,
+            mut remove: F,
         ) where
             S: BuildHasher + Default,
+            F: FnMut(&SystemId),
         {
             let ei = *ent_stor
                 .convert_entity_key(&ekey, EntityKeyKind::Index)
@@ -327,7 +336,8 @@ where
             if let Some(inner_set) = this.noti.get(&noti_key) {
                 let sids = inner_set.iter().cloned().collect::<Vec<_>>();
                 for sid in sids.iter() {
-                    this.remove_cache_item(sid);
+                    this.remove_item(sid);
+                    remove(sid);
                 }
             }
 
@@ -347,7 +357,6 @@ where
             }
             for sid in r_sids {
                 let (item, sinfo) = this.items.get_mut(sid).unwrap();
-                let sinfo = sinfo.upgrade().unwrap();
                 let rinfo = sinfo.get_request_info();
                 let mut item_wait = item.wait.borrow_mut();
 
@@ -362,7 +371,6 @@ where
             }
             for sid in w_sids {
                 let (item, sinfo) = this.items.get_mut(sid).unwrap();
-                let sinfo = sinfo.upgrade().unwrap();
                 let rinfo = sinfo.get_request_info();
                 let mut item_wait = item.wait.borrow_mut();
 
@@ -416,7 +424,10 @@ where
     //
     // Resource registration after system is not allowed. Therefore,
     // 'update_by_resource_reg()' doesn't exist.
-    pub(super) fn update_by_resource_unreg(&mut self, rkey: ResourceKey) {
+    pub(super) fn update_by_resource_unreg<F>(&mut self, rkey: ResourceKey, mut remove: F)
+    where
+        F: FnMut(&SystemId),
+    {
         let mut sids = Vec::new();
 
         if let Some(inner_set) = self.noti.get(&CacheNoti::ResRead(rkey)) {
@@ -427,21 +438,8 @@ where
         }
 
         for sid in sids.iter() {
-            self.remove_cache_item(sid);
-        }
-    }
-
-    /// Removes system's cache item if it exists. If the cache item was already
-    /// removed by other events like unregistration resource, nothing takes
-    /// place.
-    fn remove_cache_item(&mut self, sid: &SystemId) {
-        // Removes cache item.
-        if let Some((_item, sinfo)) = self.items.remove(sid) {
-            // Removes notification for the cache item.
-            let sinfo = sinfo.upgrade().unwrap();
-            let rinfo = sinfo.get_request_info();
-            let remove_noti = |key| Self::remove_noti_item(&mut self.noti, &key, sid);
-            Self::update_noti(rinfo, remove_noti);
+            self.remove_item(sid);
+            remove(sid);
         }
     }
 
@@ -613,7 +611,7 @@ impl CacheItem {
     where
         S: BuildHasher + Default,
     {
-        #[cfg(feature = "borrow_check")]
+        #[cfg(feature = "check")]
         self._refresh(_ent_stor, _res_stor);
     }
 
@@ -624,7 +622,7 @@ impl CacheItem {
     ) where
         S: BuildHasher + Default,
     {
-        #[cfg(not(feature = "borrow_check"))]
+        #[cfg(not(feature = "check"))]
         {
             self.buf.clear_force();
             self._refresh(_ent_stor, _res_stor);
@@ -840,7 +838,7 @@ mod tests {
 
         let sys = FnSystem::from(|_: Read<(F0, F1)>| {});
         let sdata = sys.into_data();
-        cache_stor.update_by_system_reg(&sdata, ent_stor, res_stor);
+        cache_stor.create_item(&sdata, ent_stor, res_stor);
 
         validate_entity_reg::<E0_C0, S>(
             &sdata, cache_stor, ent_stor, res_stor, (&[1, 0], &[], 0, 0, 0)
@@ -873,7 +871,7 @@ mod tests {
             &sdata, cache_stor, ent_stor, res_stor, (&[0, 0], &[], 0, 0, 0)
         );
 
-        cache_stor.update_by_system_unreg(&sdata.id());
+        cache_stor.remove_item(&sdata.id());
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
     }
@@ -899,7 +897,7 @@ mod tests {
 
         let sys = FnSystem::from(|_: Write<(F0, F1)>| {});
         let sdata = sys.into_data();
-        cache_stor.update_by_system_reg(&sdata, ent_stor, res_stor);
+        cache_stor.create_item(&sdata, ent_stor, res_stor);
 
         validate_entity_reg::<E0_C0, S>(
             &sdata, cache_stor, ent_stor, res_stor, (&[], &[1, 0], 0, 0, 0)
@@ -932,7 +930,7 @@ mod tests {
             &sdata, cache_stor, ent_stor, res_stor, (&[], &[0, 0], 0, 0, 0)
         );
 
-        cache_stor.update_by_system_unreg(&sdata.id());
+        cache_stor.remove_item(&sdata.id());
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
     }
@@ -957,8 +955,8 @@ mod tests {
         // 1. With R0 and R1, Del R0: Removed item
         // Res: R0, R1 -> R1
         // Cache: None -> Sys -> None
-        cache_stor.update_by_system_reg(&sdata, ent_stor, res_stor);
-        cache_stor.update_by_resource_unreg(R0::resource_key());
+        cache_stor.create_item(&sdata, ent_stor, res_stor);
+        cache_stor.update_by_resource_unreg(R0::resource_key(), |_| {});
         res_stor.unregister(&R0::resource_key()).unwrap();
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
@@ -967,8 +965,8 @@ mod tests {
         // Res: R1 -> R0, R1 -> R0
         // Cache: None -> Sys -> None
         res_stor.register(ResourceDesc::new().with_owned(R0(0))).unwrap();
-        cache_stor.update_by_system_reg(&sdata, ent_stor, res_stor);
-        cache_stor.update_by_resource_unreg(R1::resource_key());
+        cache_stor.create_item(&sdata, ent_stor, res_stor);
+        cache_stor.update_by_resource_unreg(R1::resource_key(), |_| {});
         res_stor.unregister(&R1::resource_key()).unwrap();
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
@@ -976,7 +974,7 @@ mod tests {
         // Clean up
         res_stor.unregister(&R0::resource_key());
         res_stor.unregister(&R1::resource_key());
-        cache_stor.update_by_system_unreg(&sdata.id());
+        cache_stor.remove_item(&sdata.id());
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
     }
@@ -1001,8 +999,8 @@ mod tests {
         // 1. With R0 and R1, Del R0: Removed item
         // Res: R0, R1 -> R1
         // Cache: None -> Sys -> None
-        cache_stor.update_by_system_reg(&sdata, ent_stor, res_stor);
-        cache_stor.update_by_resource_unreg(R0::resource_key());
+        cache_stor.create_item(&sdata, ent_stor, res_stor);
+        cache_stor.update_by_resource_unreg(R0::resource_key(), |_| {});
         res_stor.unregister(&R0::resource_key()).unwrap();
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
@@ -1011,8 +1009,8 @@ mod tests {
         // Res: R1 -> R0, R1 -> R0
         // Cache: None -> Sys -> None
         res_stor.register(ResourceDesc::new().with_owned(R0(0))).unwrap();
-        cache_stor.update_by_system_reg(&sdata, ent_stor, res_stor);
-        cache_stor.update_by_resource_unreg(R1::resource_key());
+        cache_stor.create_item(&sdata, ent_stor, res_stor);
+        cache_stor.update_by_resource_unreg(R1::resource_key(), |_| {});
         res_stor.unregister(&R1::resource_key()).unwrap();
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
@@ -1020,7 +1018,7 @@ mod tests {
         // Clean up
         res_stor.unregister(&R0::resource_key());
         res_stor.unregister(&R1::resource_key());
-        cache_stor.update_by_system_unreg(&sdata.id());
+        cache_stor.remove_item(&sdata.id());
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
     }
@@ -1045,8 +1043,8 @@ mod tests {
         // 1. With E0_C0 and E1_C0, Del E0_C0: Removed item
         // Ent: E0_C0, E1_C0 -> E1_C0
         // Cache: None -> Sys -> None
-        cache_stor.update_by_system_reg(&sdata, ent_stor, res_stor);
-        cache_stor.update_by_entity_unreg(E0_C0::entity_key(), ent_stor, res_stor);
+        cache_stor.create_item(&sdata, ent_stor, res_stor);
+        cache_stor.update_by_entity_unreg(E0_C0::entity_key(), ent_stor, res_stor, |_| {});
         ent_stor.unregister(&E0_C0::entity_key()).unwrap();
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
@@ -1055,8 +1053,8 @@ mod tests {
         // Ent: E1_C0 -> E0_C0, E1_C0 -> E0_C0
         // Cache: None -> Sys -> None
         ent_stor.register(E0_C0::as_entity_descriptor()).unwrap();
-        cache_stor.update_by_system_reg(&sdata, ent_stor, res_stor);
-        cache_stor.update_by_entity_unreg(E1_C0::entity_key(), ent_stor, res_stor);
+        cache_stor.create_item(&sdata, ent_stor, res_stor);
+        cache_stor.update_by_entity_unreg(E1_C0::entity_key(), ent_stor, res_stor, |_| {});
         ent_stor.unregister(&E1_C0::entity_key()).unwrap();
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
@@ -1064,7 +1062,7 @@ mod tests {
         // Clean up
         ent_stor.unregister(&E0_C0::entity_key());
         ent_stor.unregister(&E1_C0::entity_key());
-        cache_stor.update_by_system_unreg(&sdata.id());
+        cache_stor.remove_item(&sdata.id());
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
     }
@@ -1088,7 +1086,7 @@ mod tests {
             _: EntWrite<E5_C2>| {}
         );
         let sdata = sys.into_data();
-        cache_stor.update_by_system_reg(&sdata, ent_stor, res_stor);
+        cache_stor.create_item(&sdata, ent_stor, res_stor);
 
         validate_entity_reg::<E4_C0C1, S>(
             &sdata, cache_stor, ent_stor, res_stor, (&[1], &[1], 1, 1, 1)
@@ -1097,7 +1095,7 @@ mod tests {
             &sdata, cache_stor, ent_stor, res_stor, (&[0], &[0], 1, 1, 1)
         );
 
-        cache_stor.update_by_system_unreg(&sdata.id());
+        cache_stor.remove_item(&sdata.id());
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
     }
@@ -1131,7 +1129,7 @@ mod tests {
         S: BuildHasher + Default + Clone + 'static,
     {
         // Update cache and then register entity.
-        cache_stor.update_by_entity_unreg(E::entity_key(), ent_stor, res_stor);
+        cache_stor.update_by_entity_unreg(E::entity_key(), ent_stor, res_stor, |_| {});
         ent_stor.unregister(&E::entity_key()).unwrap();
 
         // Validates.
@@ -1279,7 +1277,7 @@ mod tests {
                     .iter()
                     .map(|&(ei, ci)| unsafe {
                         let cont = ent_stor.get_ptr(ei).unwrap().as_ref();
-                        cont.get_column_ptr(ci).unwrap()
+                        cont.get_column(ci).unwrap()
                     })
                     .collect::<Vec<_>>();
 

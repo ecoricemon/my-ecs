@@ -4,21 +4,13 @@ use crate::ecs::{
     EcsError,
 };
 use crate::util::prelude::*;
-use std::{any::Any, array, hash::BuildHasher};
+use std::{any::Any, array, fmt, hash::BuildHasher};
 
 /// * `S` - Hasher.
 /// * `N` - Number of [`SystemGroup`], which operates in a different configurable way from each other.
 #[derive(Debug)]
 pub(crate) struct SystemStorage<S, const N: usize> {
     pub(crate) sgroups: Multi<SystemGroup<S>, N>,
-}
-
-impl<S, const N: usize> SystemStorage<S, N> {
-    pub(crate) fn cancel_active(&mut self) {
-        for sg in self.sgroups.iter_mut() {
-            sg.cancel_active();
-        }
-    }
 }
 
 impl<S, const N: usize> SystemStorage<S, N>
@@ -41,18 +33,18 @@ where
         self.sgroups.switch_to(gi)
     }
 
-    pub(crate) fn register(&mut self, sdata: SystemData, group_index: u16, volatile: bool) {
+    pub(crate) fn register(
+        &mut self,
+        sdata: SystemData,
+        volatile: bool,
+    ) -> Result<(), EcsError<SystemData>> {
         // Id and flags of the system must be valid here.
         debug_assert!(!sdata.id().is_dummy());
         debug_assert!(!sdata.flags().is_empty());
 
         self.sgroups
-            .switch_to(group_index as usize)
-            .register(sdata, volatile);
-    }
-
-    pub(crate) fn unregister(&mut self, gi: usize, sid: &SystemId) -> Option<SystemData> {
-        self.sgroups.switch_to(gi).unregister(sid)
+            .switch_to(sdata.id().group_index() as usize)
+            .register(sdata, volatile)
     }
 
     /// Activates the system. If the system is already active, nothing takes place.
@@ -62,22 +54,49 @@ where
         at: InsertPos,
         live: NonZeroTick,
     ) -> Result<(), EcsError> {
-        self.sgroups.activate(target, at, live)
+        // For better error message.
+        #[cfg(debug_assertions)]
+        if let InsertPos::After(at) = &at {
+            if target.group_index() != at.group_index() {
+                let reason = debug_format!(
+                    "tried to activate a system after a system belonging to different group"
+                );
+                return Err(EcsError::UnknownSystem(reason, ()));
+            }
+        }
+
+        self.sgroups
+            .switch_to(target.group_index() as usize)
+            .activate(target, at, live)
     }
 
-    pub(crate) fn inactivate(&mut self, gi: usize, sid: &SystemId) -> Result<(), EcsError> {
-        self.sgroups.switch_to(gi).inactivate(sid)
+    pub(crate) fn unregister(&mut self, sid: &SystemId) -> Result<(), EcsError> {
+        self.sgroups
+            .switch_to(sid.group_index() as usize)
+            .unregister(sid)
     }
 
-    pub(crate) fn collect_poisoned(&mut self) -> Vec<(SystemData, Box<dyn Any + Send>)> {
+    pub(crate) fn inactivate(&mut self, sid: &SystemId) -> Result<(), EcsError> {
+        self.sgroups
+            .switch_to(sid.group_index() as usize)
+            .inactivate(sid)
+    }
+
+    pub(crate) fn drain_dead(&mut self) -> impl Iterator<Item = SystemData> + '_ {
+        self.sgroups
+            .iter_mut()
+            .flat_map(|sgroup| sgroup.drain_dead())
+    }
+
+    pub(crate) fn drain_poisoned(
+        &mut self,
+    ) -> impl Iterator<Item = (SystemData, Box<dyn Any + Send>)> + '_ {
         self.sgroups
             .iter_mut()
             .flat_map(|sgroup| sgroup.drain_poisoned())
-            .collect()
     }
 }
 
-#[derive(Debug)]
 pub struct SystemDesc<Sys> {
     /// System itself. Clients cannot put `SystemData` in, which is only allowed
     /// to the crate.
@@ -106,6 +125,17 @@ pub struct SystemDesc<Sys> {
     ///   position in the order. Of course, client can put the system in the
     ///   middle of the order by [`InsertPos::After`].
     pub activation: Option<(NonZeroTick, InsertPos)>,
+}
+
+impl<Sys> fmt::Debug for SystemDesc<Sys> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SystemDesc")
+            .field("private", &self.private)
+            .field("group_index", &self.group_index)
+            .field("volatile", &self.volatile)
+            .field("activation", &self.activation)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<Sys> SystemDesc<Sys>

@@ -15,7 +15,7 @@ crate-type = ["cdylib", "rlib"]
 # ================
 
 [features]
-borrow_check = []
+check = []
 
 # ====================
 # === Dependencies ===
@@ -69,15 +69,15 @@ console_error_panic_hook = { version = "0.1.7" }
 # =================
 
 [workspace]
-members = ["tester", "examples/web"] # To share output directory 'target'
+members = ["web-test", "examples/web"] # To share output directory 'target'
 
 # =============
 # === Tests ===
 # =============
 
 [[test]]
-name = "integration-test"
-path = "tester/src/lib.rs"
+name = "web-test-on-host"
+path = "web-test/src/lib.rs"
 
 # ================
 # === Examples ===
@@ -96,9 +96,4 @@ crate-type = ["bin"]
 [[example]]
 name = "parallel"
 path = "examples/parallel.rs"
-crate-type = ["bin"]
-
-[[example]]
-name = "debug"
-path = "examples/debug.rs"
 crate-type = ["bin"]

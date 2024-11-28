@@ -375,8 +375,8 @@ fn try_command(pool: WorkerPool) -> WorkerPool {
             ecs.add_system(SystemDesc::new().with_system(move || {
                 let mut c = c_count.lock().unwrap();
                 *c += 1;
-            }))
-            .unwrap();
+            }))?;
+            Ok(())
         };
         schedule_command(CommandObject::Boxed(Box::new(cmd)));
     }))
@@ -505,8 +505,8 @@ fn try_recover_from_panic(pool: WorkerPool) -> (WorkerPool, i32) {
 
     // TODO: check system len.
 
-    assert!(ecs.inactivate_system(0, sid_ok_a).is_ok());
-    assert!(ecs.inactivate_system(0, sid_ok_b).is_ok());
+    assert!(ecs.inactivate_system(sid_ok_a).is_ok());
+    assert!(ecs.inactivate_system(sid_ok_b).is_ok());
 
     ecs.add_system(SystemDesc::new().with_once(|rr: ResRead<Ra>| {
         let rr = rr.take();
@@ -587,8 +587,8 @@ fn try_recover_from_panic_in_parallel_task(pool: WorkerPool) -> (WorkerPool, i32
 
     // TODO: check system len.
 
-    assert!(ecs.inactivate_system(0, sid_ok_a).is_ok());
-    assert!(ecs.inactivate_system(0, sid_ok_b).is_ok());
+    assert!(ecs.inactivate_system(sid_ok_a).is_ok());
+    assert!(ecs.inactivate_system(sid_ok_b).is_ok());
 
     ecs.add_system(SystemDesc::new().with_once(|rr: ResRead<Ra>| {
         let rr = rr.take();

@@ -5,9 +5,13 @@ use super::{
     sys::{
         request::{Request, Response, SystemBuffer},
         storage::SystemDesc,
-        system::{InsertPos, Invoke, NonZeroTick, PrivateSystem, System, SystemData, SystemId},
+        system::{
+            InsertPos, Invoke, NonZeroTick, PrivateSystem, System, SystemData, SystemId,
+            SystemState,
+        },
     },
     worker::Message,
+    EcsResult,
 };
 use crate::ds::prelude::*;
 use std::{
@@ -16,7 +20,7 @@ use std::{
     marker::PhantomData,
     ops::{Deref, DerefMut},
     pin::Pin,
-    ptr::{self, NonNull},
+    ptr::NonNull,
     sync::Mutex,
     task::{Context, Poll, Waker},
     thread,
@@ -31,6 +35,7 @@ where
     RequestLockFuture::new()
 }
 
+// NOTE: This struct references internal fields. Therefore it must not be moved.
 pub struct RequestLockFuture<'buf, Req> {
     cmd: Option<RequestLockCommand<Req>>,
     lock: Mutex<RequestLock>,
@@ -51,7 +56,6 @@ where
 }
 
 impl<'buf, Req: Request> Future for RequestLockFuture<'buf, Req> {
-    // Reason to fail?
     type Output = Result<RequestLockGuard<'buf, Req>, RequestLockError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -65,7 +69,7 @@ impl<'buf, Req: Request> Future for RequestLockFuture<'buf, Req> {
             if lock.state() == RequestLockState::INIT {
                 // Creates command with system.
                 let waker = cx.waker().clone();
-                let lock_ptr = &this.lock as *const _;
+                let lock_ptr = NonNull::new_unchecked(&this.lock as *const _ as *mut _);
                 let group_index = WORKER_ID.get().group_index();
                 let cmd = RequestLockCommand::new(waker, lock_ptr, group_index);
 
@@ -152,22 +156,22 @@ fn cancel_future_or_abort(lock: &Mutex<RequestLock>) {
 
 struct RequestLockCommand<Req> {
     sys: RequestLockSystem<Req>,
-    lock_ptr: *const Mutex<RequestLock>,
+    lock_ptr: Option<NonNull<Mutex<RequestLock>>>,
     group_index: u16,
 }
 
 unsafe impl<Req> Send for RequestLockCommand<Req> {}
 
 impl<Req> RequestLockCommand<Req> {
-    const fn new(waker: Waker, lock_ptr: *const Mutex<RequestLock>, group_index: u16) -> Self {
+    const fn new(waker: Waker, lock_ptr: NonNull<Mutex<RequestLock>>, group_index: u16) -> Self {
         let sys = RequestLockSystem {
             waker,
-            lock_ptr,
+            lock_ptr: Some(lock_ptr),
             _marker: PhantomData,
         };
         Self {
             sys,
-            lock_ptr,
+            lock_ptr: Some(lock_ptr),
             group_index,
         }
     }
@@ -178,13 +182,17 @@ impl<Req> RequestLockCommand<Req> {
 }
 
 impl<Req: Request> Command for RequestLockCommand<Req> {
-    fn command_by_mut(&mut self, mut ecs: Ecs<'_>) {
+    fn command_by_mut(&mut self, mut ecs: Ecs<'_>) -> EcsResult<()> {
+        let Some(lock_ptr) = self.lock_ptr.take() else {
+            return Ok(());
+        };
+
         // Safety: `RequestLockFuture::lock` outlives `RequestLockCommand`.
-        let lock = unsafe { &*self.lock_ptr };
+        let lock = unsafe { lock_ptr.as_ref() };
         let mut lock = lock.lock().unwrap();
         if lock.state().intersects(RequestLockState::CANCEL) {
             lock.set_state_bits(RequestLockState::CANCELLED);
-            return;
+            return Ok(());
         }
 
         // Safety: Command must be executed with a system.
@@ -197,12 +205,17 @@ impl<Req: Request> Command for RequestLockCommand<Req> {
             .with_activation(NonZeroTick::MIN, InsertPos::Front)
             .with_group_index(self.group_index)
             .with_data(sdata);
-        ecs.add_system(desc).unwrap();
+        ecs.add_system(desc)?;
+        Ok(())
     }
 
     fn cancel(&mut self) {
+        let Some(lock_ptr) = self.lock_ptr.take() else {
+            return;
+        };
+
         // Safety: `RequestLockFuture::lock` outlives `RequestLockCommand`.
-        let lock = unsafe { &*self.lock_ptr };
+        let lock = unsafe { lock_ptr.as_ref() };
         let mut lock = lock.lock().unwrap();
         lock.set_state_bits(RequestLockState::CANCELLED);
         drop(lock);
@@ -212,7 +225,7 @@ impl<Req: Request> Command for RequestLockCommand<Req> {
 
 struct RequestLockSystem<Req> {
     waker: Waker,
-    lock_ptr: *const Mutex<RequestLock>,
+    lock_ptr: Option<NonNull<Mutex<RequestLock>>>,
     _marker: PhantomData<Req>,
 }
 
@@ -220,18 +233,33 @@ struct RequestLockSystem<Req> {
 // `RequestLockFuture::lock` outlives `RequestLockSystem`. So it's safe.
 unsafe impl<Req> Send for RequestLockSystem<Req> {}
 
+impl<Req: Request> RequestLockSystem<Req> {
+    fn cancel(&mut self) {
+        let Some(lock_ptr) = self.lock_ptr.take() else {
+            return;
+        };
+
+        // Safety: `RequestLockFuture::lock` outlives `RequestLockCommand`.
+        let lock = unsafe { lock_ptr.as_ref() };
+        let mut lock = lock.lock().unwrap();
+        lock.set_state_bits(RequestLockState::CANCELLED);
+        drop(lock);
+        self.waker.wake_by_ref();
+    }
+}
+
 impl<Req: Request> System for RequestLockSystem<Req> {
     type Request = Req;
 
     fn run(&mut self, _resp: Response<'_, Self::Request>) {}
 
     fn _run_private(&mut self, sid: SystemId, buf: ManagedMutPtr<SystemBuffer>) {
-        if self.lock_ptr.is_null() {
+        let Some(lock_ptr) = self.lock_ptr.take() else {
             return;
-        }
+        };
 
         // Safety: `RequestLockFuture::lock` outlives `RequestLockSystem`.
-        let lock = unsafe { self.lock_ptr.as_ref().unwrap_unchecked() };
+        let lock = unsafe { lock_ptr.as_ref() };
 
         // If cancelled, we need to release system buffer.
         let mut lock = lock.lock().unwrap();
@@ -249,18 +277,14 @@ impl<Req: Request> System for RequestLockSystem<Req> {
         }
         drop(lock);
         self.waker.wake_by_ref();
-
-        // System can be run only once.
-        self.lock_ptr = ptr::null();
     }
 
-    fn cancel(&mut self) {
-        // Safety: `RequestLockFuture::lock` outlives `RequestLockCommand`.
-        let lock = unsafe { &*self.lock_ptr };
-        let mut lock = lock.lock().unwrap();
-        lock.set_state_bits(RequestLockState::CANCELLED);
-        drop(lock);
-        self.waker.wake_by_ref();
+    fn on_transition(&mut self, from: SystemState, to: SystemState) {
+        match (from, to) {
+            (SystemState::Active, SystemState::Inactive)
+            | (SystemState::Active, SystemState::Dead) => self.cancel(),
+            _ => {}
+        }
     }
 }
 

@@ -705,10 +705,7 @@ pub struct Values<'a, V, S> {
     cur: ListPos,
 }
 
-impl<'a, V, S> Iterator for Values<'a, V, S>
-where
-    S: BuildHasher,
-{
+impl<'a, V, S> Iterator for Values<'a, V, S> {
     type Item = &'a V;
 
     fn next(&mut self) -> Option<Self::Item> {

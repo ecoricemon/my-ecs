@@ -20,7 +20,6 @@ pub struct SparseSet<S> {
     cols: Vec<Holder<ChunkAnyVec, RawGetter, RawGetter>>,
     len: usize,
     map: HashMap<TypeId, usize, S>,
-    add_cnt: usize,
 }
 
 impl<S> SparseSet<S>
@@ -37,7 +36,6 @@ where
             cols: Vec::new(),
             len: 0,
             map: HashMap::default(),
-            add_cnt: 0,
         }
     }
 }
@@ -46,7 +44,7 @@ impl<S> ContainEntity for SparseSet<S>
 where
     S: BuildHasher + Default + Clone + 'static,
 {
-    fn new_from_this(&self) -> Box<dyn ContainEntity> {
+    fn create_twin(&self) -> Box<dyn ContainEntity> {
         // Creates new Holders keeping same type information.
         let cols = self
             .cols
@@ -69,7 +67,6 @@ where
             cols,
             len: 0,
             map,
-            add_cnt: 0,
         };
         Box::new(this)
     }
@@ -165,10 +162,6 @@ where
         Some(*tinfo)
     }
 
-    fn contains_column(&self, ty: &TypeId) -> bool {
-        self.map.contains_key(ty)
-    }
-
     fn get_column_index(&self, ty: &TypeId) -> Option<usize> {
         self.map.get(ty).cloned()
     }
@@ -183,6 +176,10 @@ where
     fn get_column_num(&self) -> usize {
         self.cols.len()
     }
+
+    fn contains_column(&self, ty: &TypeId) -> bool {
+        self.map.contains_key(ty)
+    }
 }
 
 impl<S> BorrowComponent for SparseSet<S>
@@ -190,14 +187,14 @@ where
     S: BuildHasher + Default + Clone + 'static,
 {
     fn borrow_column(&self, ci: usize) -> BorrowResult<RawGetter> {
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "check")]
         let this_len = self.len();
 
         if let Some(col) = self.cols.get(ci) {
             let borrowed = col.borrow();
 
             // Validates length.
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "check")]
             {
                 if let Ok(borrowed) = borrowed.as_ref() {
                     assert_eq!(
@@ -215,14 +212,14 @@ where
     }
 
     fn borrow_column_mut(&mut self, ci: usize) -> BorrowResult<RawGetter> {
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "check")]
         let this_len = self.len();
 
         if let Some(col) = self.cols.get_mut(ci) {
             let borrowed = col.borrow_mut();
 
             // Validates length.
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "check")]
             {
                 if let Ok(borrowed) = borrowed.as_ref() {
                     assert_eq!(
@@ -239,7 +236,7 @@ where
         }
     }
 
-    unsafe fn get_column_ptr(&self, ci: usize) -> Option<NonNull<u8>> {
+    unsafe fn get_column(&self, ci: usize) -> Option<NonNull<u8>> {
         self.cols.get(ci).map(|col| {
             let ptr = col.get_unchecked() as *const _ as *const u8;
             NonNull::new_unchecked(ptr.cast_mut())
@@ -251,63 +248,47 @@ impl<S> AddEntity for SparseSet<S>
 where
     S: BuildHasher + Default + Clone + 'static,
 {
-    /// Nothing to do.
     fn begin_add_row(&mut self) {}
 
-    /// # Panics
-    ///
-    /// Panics if other threads borrowed any column.
-    unsafe fn add_value(&mut self, ci: usize, ptr: NonNull<u8>) {
-        let mut col = self.cols[ci].get_mut().unwrap();
-        col.push_raw(ptr);
-        self.add_cnt += 1;
+    unsafe fn add_value(&mut self, ci: usize, val_ptr: NonNull<u8>) {
+        // Panics if holder has beend borrowed in the past.
+        let holder = self.cols.get_unchecked_mut(ci);
+        let mut col = holder.get_mut().unwrap_unchecked();
+        col.push_raw(val_ptr);
     }
 
-    /// # Panics
-    ///
-    /// Panics if you haven't added items to all columns.
-    fn end_add_row(&mut self) -> usize {
-        assert!(
-            self.add_cnt == self.get_column_num(),
-            "entity needs more components"
-        );
-        self.add_cnt = 0;
-
+    unsafe fn end_add_row(&mut self) -> usize {
         self.len += 1;
-
         let len = self.deref.len() + 1;
         let key = self.sparse.add(len - 1);
         self.deref.push(key);
         key
     }
 
-    /// # Panics
-    ///
-    /// Panics if other threads borrowed any column.
-    fn remove_row_by_outer_index(&mut self, ri: usize) -> bool {
+    fn remove_row(&mut self, ri: usize) -> bool {
         let key = ri;
 
         if let Some(index) = self.sparse.take(key) {
-            self.remove_row_by_inner_index(index);
+            self.remove_row_by_value_index(index);
             true
         } else {
             false
         }
     }
 
-    fn remove_row_by_inner_index(&mut self, index: usize) {
+    fn remove_row_by_value_index(&mut self, vi: usize) {
         for col in self.cols.iter_mut() {
             let mut col = col.get_mut().unwrap();
-            col.swap_remove_drop(index);
+            col.swap_remove_drop(vi);
         }
 
-        self.deref.swap_remove(index);
+        self.deref.swap_remove(vi);
 
         self.len -= 1;
 
-        if index < self.deref.len() {
-            let moved_key = self.deref[index];
-            *self.sparse.get_mut(moved_key).unwrap() = index;
+        if vi < self.deref.len() {
+            let moved_key = self.deref[vi];
+            *self.sparse.get_mut(moved_key).unwrap() = vi;
         }
     }
 }

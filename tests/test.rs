@@ -66,38 +66,119 @@ macro_rules! decl_default_ent_comp_res_filter {
 
 #[test]
 fn test_system_with_unknown() {
+    // Here we're going to test adding system for unknown things like
+    // - Unknown read filter
+    // - Unknown write filter
+    // - Unknown resource read
+    // - Unknown resource write
+    // - Unknown entity write
+
     decl_default_ent_comp_res_filter!();
 
     let mut ecs = Ecs::default(WorkerPool::with_len(1), [1]);
 
-    // `Fa` is unknown, but it can be registered later.
+    // Read for unknown `Fa`, but it can be registered later.
     let res = ecs.add_system(SystemDesc::new().with_once(|_: Read<Fa>| {}));
     assert!(res.is_ok());
 
-    // `Fa` is unknown, but it can be registered later.
+    // Write for unknown `Fa`, but it can be registered later.
     let res = ecs.add_system(SystemDesc::new().with_once(|_: Write<Fa>| {}));
     assert!(res.is_ok());
 
-    // `Ra` is unknown. It should be `EcsError::UnknownResource`.
+    // Read for unknown `Ra`. It should be `EcsError::UnknownResource`.
     let res = ecs.add_system(SystemDesc::new().with_once(|_: ResRead<Ra>| {}));
     assert!(
         matches!(res, Err(EcsError::UnknownResource(..))),
         "{res:?} is not a EcsError::UnknownResource"
     );
 
-    // `Ra` is unknown. It should be `EcsError::UnknownResource`.
+    // Write for unknown `Ra`. It should be `EcsError::UnknownResource`.
     let res = ecs.add_system(SystemDesc::new().with_once(|_: ResWrite<Ra>| {}));
     assert!(
         matches!(res, Err(EcsError::UnknownResource(..))),
         "{res:?} is not a EcsError::UnknownResource"
     );
 
-    // `Ea` is unknown. It should be `EcsErrror::UnknownEntity`.
+    // Write for unknown `Ea`. It should be `EcsErrror::UnknownEntity`.
     let res = ecs.add_system(SystemDesc::new().with_once(|_: EntWrite<Ea>| {}));
     assert!(
         matches!(res, Err(EcsError::UnknownEntity(..))),
         "{res:?} is not a EcsError::UnknownEntity"
     );
+}
+
+#[test]
+fn test_unregister() {
+    // Tests if particular systems are correctly inactivated when unregistration
+    // events of relavant resources or entities occured.
+    //
+    // Scenario
+    // 1. We have 5 systems for Read, Write, ResRead, ResWrite, and EntWrite.
+    // 2. Unregisters a resource required by ResRead.
+    //    - ResRead system must be inactivated or dead.
+    // 3. Unregisters a resource required by ResWrite.
+    //    - ResWrite system must be inactivated or dead.
+    // 4. Unregisters a entity required by EntWrite.
+    //    - EntWrite system must be inactivated or dead.
+
+    decl_default_ent_comp_res_filter!();
+
+    // Creates instance.
+    let mut ecs = Ecs::default(WorkerPool::with_len(1), [1]);
+
+    // Execution counters.
+    let state = Arc::new(Mutex::new([0, 0, 0, 0, 0]));
+
+    // 1. Registers required resources, entities, and systems.
+    ecs.register_resource(ResourceDesc::new().with_owned(Ra { val: 0 }))
+        .unwrap();
+    ecs.register_resource(ResourceDesc::new().with_owned(Rb { val: 0 }))
+        .unwrap();
+    ecs.register_entity_of::<Ea>().unwrap();
+    let c_state = Arc::clone(&state);
+    ecs.add_system(SystemDesc::new().with_system(move |_r: Read<Fa>| {
+        c_state.lock().unwrap()[0] += 1;
+    }))
+    .unwrap();
+    let c_state = Arc::clone(&state);
+    ecs.add_system(SystemDesc::new().with_system(move |_w: Read<Fb>| {
+        c_state.lock().unwrap()[1] += 1;
+    }))
+    .unwrap();
+    let c_state = Arc::clone(&state);
+    ecs.add_system(SystemDesc::new().with_system(move |_rr: ResRead<Ra>| {
+        c_state.lock().unwrap()[2] += 1;
+    }))
+    .unwrap();
+    let c_state = Arc::clone(&state);
+    ecs.add_system(SystemDesc::new().with_system(move |_rw: ResRead<Rb>| {
+        c_state.lock().unwrap()[3] += 1;
+    }))
+    .unwrap();
+    let c_state = Arc::clone(&state);
+    ecs.add_system(SystemDesc::new().with_system(move |_ew: EntWrite<Ea>| {
+        c_state.lock().unwrap()[4] += 1;
+    }))
+    .unwrap();
+
+    // All systems are executed?
+    ecs.run().schedule_all();
+    assert_eq!(*state.lock().unwrap(), [1, 1, 1, 1, 1]);
+
+    // 2. Unregisters `Ra`, then related systems are inactivated or dead?
+    ecs.unregister_resource(Ra::resource_key()).unwrap();
+    ecs.run().schedule_all();
+    assert_eq!(*state.lock().unwrap(), [2, 2, 1, 2, 2]);
+
+    // 2. Unregisters `Rb`, then related systems are inactivated or dead?
+    ecs.unregister_resource(Rb::resource_key()).unwrap();
+    ecs.run().schedule_all();
+    assert_eq!(*state.lock().unwrap(), [3, 3, 1, 2, 3]);
+
+    // 3. Unregisters `Ea`, then related systems are inacivated or dead?
+    ecs.unregister_entity(Ea::entity_key()).unwrap();
+    ecs.run().schedule_all();
+    assert_eq!(*state.lock().unwrap(), [4, 4, 1, 2, 3]);
 }
 
 #[test]
@@ -123,6 +204,7 @@ fn test_async_wait() {
             Ok(move |_: Ecs| {
                 // state 3: Executing command that the future generated.
                 *c2_state.lock().unwrap() = 3;
+                Ok(())
             })
         });
     }))
@@ -171,10 +253,18 @@ fn test_async_abort() {
 
 #[test]
 fn test_request_lock() {
+    let pool = WorkerPool::with_len(3);
+    let workers = test_request_lock_normal(pool.into());
+    let workers = test_request_lock_canceled_by_cmd(workers);
+    test_request_lock_canceled_by_sys(workers);
+}
+
+fn test_request_lock_normal(workers: Vec<Worker>) -> Vec<Worker> {
     const COUNT: u64 = 1000;
 
     // Creates instance.
-    let mut ecs = Ecs::default(WorkerPool::with_len(3), [3]);
+    let num_workers = workers.len();
+    let mut ecs = Ecs::default(workers, [num_workers]);
 
     // Registers a shared resource.
     #[derive(Resource)]
@@ -229,4 +319,26 @@ fn test_request_lock() {
     // Sync task has increased the counter by 2 * COUNT.
     // While async task has decreased the counter by COUNT.
     assert_eq!(cnt.0, COUNT as i32);
+
+    ecs.set_workers(Vec::new(), [0])
+}
+
+fn test_request_lock_canceled_by_cmd(workers: Vec<Worker>) -> Vec<Worker> {
+    // Creates instance.
+    let num_workers = workers.len();
+    let mut ecs = Ecs::default(workers, [num_workers]);
+
+    // todo!("@@@ TODO");
+
+    ecs.set_workers(Vec::new(), [0])
+}
+
+fn test_request_lock_canceled_by_sys(workers: Vec<Worker>) -> Vec<Worker> {
+    // Creates instance.
+    let num_workers = workers.len();
+    let mut ecs = Ecs::default(workers, [num_workers]);
+
+    // todo!("@@@ TODO");
+
+    ecs.set_workers(Vec::new(), [0])
 }

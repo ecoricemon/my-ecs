@@ -10,7 +10,7 @@
     "bundle-d": "vite build --mode development",
     "bundle-r": "vite build",
     "clean": "rimraf --glob dist pkg test-results",
-    "clean-all": "rimraf --glob dist pkg test-results target node_modules",
+    "clean-all": "rimraf --glob dist pkg test-results target node_modules package-lock.json",
     "build-d": "run-s clean wasm-d bundle-d",
     "build-r": "run-s clean wasm-r bundle-r",
     "start": "vite preview",

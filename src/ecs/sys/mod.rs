@@ -14,5 +14,5 @@ pub mod prelude {
     };
     pub use request::{Request, Response};
     pub use storage::SystemDesc;
-    pub use system::{FnSystem, InsertPos, NonZeroTick, System, SystemBond, Tick};
+    pub use system::{FnSystem, InsertPos, NonZeroTick, System, SystemBond, SystemState, Tick};
 }

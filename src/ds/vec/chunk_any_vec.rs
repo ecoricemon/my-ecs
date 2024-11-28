@@ -324,7 +324,7 @@ impl ChunkAnyVec {
     ///
     /// # Panics
     ///
-    /// Panics if `index` is out of bound..
+    /// Panics if `index` is out of bounds.
     ///
     /// # Safety
     ///
@@ -337,7 +337,7 @@ impl ChunkAnyVec {
 
     /// # Panics
     ///
-    /// Panics if `index` is out of bound..
+    /// Panics if `index` is out of bounds.
     ///
     /// # Safety
     ///
@@ -348,6 +348,9 @@ impl ChunkAnyVec {
         self.pop().unwrap()
     }
 
+    /// # Panics
+    ///
+    /// Panics if `index` is out of bounds.
     pub fn swap_remove_drop(&mut self, index: usize) {
         // len - 1 can overflow but it causes panic in swap().
         self.swap(index, self.len() - 1);

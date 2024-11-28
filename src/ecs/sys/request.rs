@@ -605,7 +605,7 @@ impl SystemBuffer {
     }
 
     pub(crate) fn clear(&mut self) {
-        #[cfg(feature = "borrow_check")]
+        #[cfg(feature = "check")]
         self.clear_force();
     }
 

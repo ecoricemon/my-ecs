@@ -97,11 +97,15 @@ impl<W, S, const N: usize> Scheduler<W, S, N> {
         &mut self.waits
     }
 
-    pub(crate) fn get_record_mut(&mut self) -> &mut ScheduleRecord<S> {
-        &mut self.record
+    pub(crate) fn clear_command(&self) {
+        // Blocks more commands.
+        self.rx_cmd.close();
+
+        // Cancels out all buffered commands.
+        self.consume_command(|cmd| cmd.cancel());
     }
 
-    pub(crate) fn consume_commands<F>(&self, mut f: F)
+    pub(crate) fn consume_command<F>(&self, mut f: F)
     where
         F: FnMut(CommandObject),
     {
@@ -405,16 +409,6 @@ where
     }
 }
 
-impl<W, S, const N: usize> Drop for Scheduler<W, S, N> {
-    fn drop(&mut self) {
-        // Blocks more commands.
-        self.rx_cmd.close();
-
-        // Cancels out all buffered commands.
-        self.consume_commands(|cmd| cmd.cancel());
-    }
-}
-
 #[derive(Debug)]
 struct ScheduleUnit<'s, W, S, const N: usize> {
     // Own data.
@@ -676,10 +670,12 @@ where
         }
     }
 
+    #[cfg(debug_assertions)]
     pub(crate) fn len(&self) -> usize {
         self.record.len()
     }
 
+    #[cfg(debug_assertions)]
     pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -690,14 +686,6 @@ where
         self.finished = 0;
         self.panicked = 0;
         self.aborted = 0;
-    }
-
-    pub(crate) fn contains<Q>(&self, sid: &Q) -> bool
-    where
-        SystemId: std::borrow::Borrow<Q>,
-        Q: std::hash::Hash + Eq + ?Sized,
-    {
-        self.record.contains_key(sid)
     }
 
     pub(crate) fn num_injected(&self) -> usize {
@@ -934,8 +922,8 @@ where
     fn close(&mut self) {
         for i in 0..self.len() {
             self.sub_cxs[i].guide.push_close();
-            self.signal.sub().notify(i);
         }
+        self.signal.sub().notify_all();
     }
 
     /// Do not call this method unless panic is detected.
@@ -1312,6 +1300,14 @@ impl SubContext {
     }
 }
 
+impl Drop for SubContext {
+    fn drop(&mut self) {
+        // Resets static variables.
+        SUB_CONTEXT.set(NonNullExt::dangling());
+        WORKER_ID.set(WorkerId::dummy());
+    }
+}
+
 // This module helps us not to access fields of structs in this module directly.
 mod sub {
     use super::SubState;
@@ -1506,18 +1502,12 @@ where
     assert!(!ptr.is_dangling());
 
     // Allocates memory for the future.
-    // Safety: Current worker has valid sub context pointer.
-    let comm = unsafe { ptr.as_ref().comm() };
     let waker = UnsafeWaker { ptr: ptr.as_ptr() };
-    let handle = UnsafeFuture::new(future, waker, |res: EcsResult<R>, ecs: Ecs<'_>| match res {
-        Ok(r) => R::command(r, ecs),
-        Err(_e) => {
-            #[cfg(debug_assertions)]
-            crate::log!("[W] {_e:?}");
-        }
-    });
+    let handle = UnsafeFuture::new(future, waker, consume_ready_future::<R>);
 
     // Pushes the future handle onto local future queue.
+    // Safety: Current worker has valid sub context pointer.
+    let comm = unsafe { ptr.as_ref().comm() };
     comm.push_future_task(handle);
 
     // Increases future count.
@@ -1528,5 +1518,12 @@ where
     // do the future task promptly, so wakes another worker to steal it.
     if !comm.is_local_empty() {
         comm.signal().sub().notify_one();
+    }
+}
+
+pub(crate) fn consume_ready_future<R: Command>(res: EcsResult<R>, ecs: Ecs<'_>) -> EcsResult<()> {
+    match res {
+        Ok(r) => R::command(r, ecs),
+        Err(e) => Err(e),
     }
 }

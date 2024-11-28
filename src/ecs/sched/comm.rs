@@ -13,7 +13,7 @@ use std::{
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SendError, Sender, TryRecvError},
-        Arc,
+        Arc, Mutex,
     },
     thread::{self, Thread},
     time::Duration,
@@ -209,7 +209,7 @@ impl SubComm {
                 let steal = sibling.steal_batch_and_pop(&self.local);
                 match &steal {
                     cb::Steal::Success(_task) => {
-                        if !self.local.is_empty() {
+                        if !(self.local.is_empty() && sibling.is_empty()) {
                             self.signal.sub().notify_one();
                         }
                         return steal;
@@ -234,7 +234,7 @@ impl SubComm {
                 let steal = sibling.steal_batch_and_pop(&self.local);
                 match &steal {
                     cb::Steal::Success(_task) => {
-                        if !self.local.is_empty() {
+                        if !(self.local.is_empty() && sibling.is_empty()) {
                             self.signal.sub().notify_one();
                         }
                         return steal;
@@ -439,12 +439,13 @@ impl GlobalSignal {
 #[derive(Debug, Clone)]
 pub(super) struct CommandSender {
     inner: ParkingSender<CommandObject>,
-    open: Arc<AtomicBool>,
+    open: Arc<Mutex<bool>>,
 }
 
 impl CommandSender {
     pub(super) fn send(&self, cmd: CommandObject) -> Result<(), SendError<CommandObject>> {
-        if self.open.load(Ordering::Relaxed) {
+        let guard = self.open.lock().unwrap();
+        if *guard {
             self.inner.send(cmd)
         } else {
             Err(SendError(cmd))
@@ -455,7 +456,7 @@ impl CommandSender {
 #[derive(Debug)]
 pub(super) struct CommandReceiver {
     inner: ParkingReceiver<CommandObject>,
-    open: Arc<AtomicBool>,
+    open: Arc<Mutex<bool>>,
 }
 
 impl CommandReceiver {
@@ -468,13 +469,13 @@ impl CommandReceiver {
     }
 
     pub(super) fn close(&self) {
-        self.open.store(false, Ordering::Relaxed);
+        *self.open.lock().unwrap() = false;
     }
 }
 
 pub(super) fn command_channel(th: Thread) -> (CommandSender, CommandReceiver) {
     let (tx, rx) = parking_channel(th);
-    let open = Arc::new(AtomicBool::new(true));
+    let open = Arc::new(Mutex::new(true));
     let c_open = Arc::clone(&open);
 
     (

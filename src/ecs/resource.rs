@@ -1,4 +1,4 @@
-use crate::{ds::prelude::*, util::prelude::*};
+use crate::{ds::prelude::*, ecs::EcsError, util::prelude::*};
 use std::{
     any::Any,
     collections::HashMap,
@@ -55,9 +55,10 @@ where
     /// If the registration succeeded, returns its resource index.
     /// Otherwise, nothing takes place and returns received value.
     /// In other words, the old resouce data won't be dropped.
-    pub(super) fn register(&mut self, desc: ResourceDesc) -> Result<usize, ResourceDesc> {
+    pub(super) fn register(&mut self, desc: ResourceDesc) -> Result<usize, EcsError<ResourceDesc>> {
         if self.imap.contains_key(&desc.key) {
-            return Err(desc);
+            let reason = debug_format!("detected duplicated resource `{:?}`", desc.key);
+            return Err(EcsError::DupResource(reason, desc));
         }
 
         let ResourceDesc {

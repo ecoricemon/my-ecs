@@ -34,11 +34,11 @@ async fn register_map() -> EcsResult<impl Command> {
         // Registers map resource.
         let map = Map::new(&map_data);
         ecs.register_resource(ResourceDesc::new().with_owned(map))
-            .unwrap();
+            .map_err(EcsError::without_data)?;
 
         // Appends a system that uses the map.
-        ecs.add_system(SystemDesc::new().with_once(show_map))
-            .unwrap();
+        ecs.add_system(SystemDesc::new().with_once(show_map))?;
+        Ok(())
     })
 }
 

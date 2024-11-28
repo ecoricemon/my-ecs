@@ -396,6 +396,7 @@ macro_rules! impl_query {
 
                 fn convert(buf: &mut [RawFiltered]) -> Self::Output<'_> {
                     debug_assert_eq!($n, buf.len());
+
                     #[allow(clippy::unused_unit)]
                     ( $(
                         // Splitting slice via `split_first_mut` is quite tiresome task.
@@ -440,6 +441,7 @@ macro_rules! impl_query {
 
                 fn convert(buf: &mut [RawFiltered]) -> Self::Output<'_> {
                     debug_assert_eq!($n, buf.len());
+
                     #[allow(clippy::unused_unit)]
                     ( $(
                         // Splitting slice via `split_first_mut` is quite tiresome task.
@@ -496,14 +498,13 @@ macro_rules! impl_res_query {
                 }
 
                 fn convert(_buf: &mut Vec<Borrowed<ManagedConstPtr<u8>>>) -> Self::Output<'_> {
-                    #[cfg(feature = "borrow_check")]
-                    {
-                        // Input length must be the same as output length.
-                        assert_eq!($n, _buf.len());
+                    debug_assert_eq!($n, _buf.len());
 
-                        // In debug mode, managed pointer may have type info in it.
-                        // But resource pointer must have the type info.
-                        // So we can check if the pointers are correctly given.
+                    // Managed pointer may have type info in it.
+                    // But resource pointer must have the type info.
+                    // So we can check if the pointers are correctly given.
+                    #[cfg(feature = "check")]
+                    {
                         $(
                             let ptr: NonNullExt<_> = _buf[$i].inner();
                             let lhs: &TypeIdExt = ptr.get_type().unwrap();
@@ -540,14 +541,13 @@ macro_rules! impl_res_query {
                 }
 
                 fn convert(_buf: &mut Vec<Borrowed<ManagedMutPtr<u8>>>) -> Self::Output<'_> {
-                    #[cfg(feature = "borrow_check")]
-                    {
-                        // Input length must be the same as output length.
-                        assert_eq!($n, _buf.len());
+                    debug_assert_eq!($n, _buf.len());
 
-                        // In debug mode, managed pointer may have type info in it.
-                        // But resource pointer must have the type info.
-                        // So we can check if the pointers are correctly given.
+                    // Managed pointer may have type info in it.
+                    // But resource pointer must have the type info.
+                    // So we can check if the pointers are correctly given.
+                    #[cfg(feature = "check")]
+                    {
                         $(
                             let ptr: NonNullExt<_> = _buf[$i].inner();
                             let lhs: &TypeIdExt = ptr.get_type().unwrap();
@@ -624,18 +624,14 @@ macro_rules! impl_ent_query {
                 fn convert(buf: &mut Vec<Borrowed<NonNull<dyn ContainEntity>>>) -> Self::Output<'_> {
                     debug_assert_eq!($n, buf.len());
 
-                    // clippy warns about possibility that
-                    // users of the macro could write unsafe code without
-                    // usafe block due to '$i' which is given by users and is in unsafe block.
-                    // But 'buf[$i]' is safe code.
+                    // clippy warns about possibility that users of the macro
+                    // could write unsafe code without usafe block due to '$i'
+                    // which is given by users and is in unsafe block. But
+                    // 'buf[$i]' is safe code.
                     #[allow(clippy::macro_metavars_in_unsafe)]
                     let res = ( $(
-                        unsafe { TypedEntityContainer::new_copy(&buf[$i]) }
+                        unsafe { TypedEntityContainer::new(*buf[$i]) }
                     ),* );
-
-                    // Safety: All items in `input` moved into `res` by `new_copy()`.
-                    // Therefore we need to forget about them.
-                    unsafe { buf.set_len(0); }
 
                     res
                 }

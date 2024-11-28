@@ -71,7 +71,7 @@ impl SysTask {
 
         #[cfg(target_arch = "wasm32")]
         {
-            #[cfg(not(feature = "borrow_check"))]
+            #[cfg(not(feature = "check"))]
             {
                 let Self {
                     mut invoker,
@@ -83,7 +83,7 @@ impl SysTask {
 
             // In web and debug mode, drops `ManagedMutPtr` first
             // to be recovered when the invoker panics.
-            #[cfg(feature = "borrow_check")]
+            #[cfg(feature = "check")]
             {
                 let Self { invoker, buf, .. } = self;
 

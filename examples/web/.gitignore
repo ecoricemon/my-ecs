@@ -19,3 +19,4 @@ target/
 /test-results/
 /style.css
 /package-lock.json
+/cert

@@ -8,40 +8,41 @@ use super::{
         RINFO_STOR,
     },
 };
-use crate::ds::prelude::*;
 use crate::ecs::EcsError;
+use crate::{debug_format, ds::prelude::*};
 use std::{
     any::{self, Any},
+    borrow,
     collections::{HashMap, HashSet},
     fmt,
-    hash::BuildHasher,
+    hash::{self, BuildHasher},
     marker::PhantomData,
     num::NonZeroU64,
     ops::{Deref, DerefMut},
     ptr::NonNull,
-    sync::{Arc, Weak},
+    sync::Arc,
 };
+
+use SystemState::*;
 
 /// A system group that will be invoked together in a cycle by scheduler.
 ///
-/// Systems can be in one of three states below,  
-/// - Active: Systems that are ready to run.
-/// - Inactive: Registered, but inactive systems.
-/// - Poisoned: Panicked systems.
-/// - (None): Not a state, for description only.
+/// Systems can be in one of states such as [`Active`], [`Inactive`], [`Dead`],
+/// and [`Poisoned`].
 ///
 /// Possible system transitions are as follows,  
 ///
-/// | From     | To       | Methods                                |
-/// | ---      | ---      | ---                                    |
-/// | (None)   | Inactive | [`register`]                           |
-/// | Inactive | Active   | [`activate`]                           |
-/// | Inactive | Poisoned | [`poison`]                             |
-/// | Inactive | (None)   | [`unregister`]                         |
-/// | Active   | Inactive | [`inactivate`], [`tick`], non-volatile |
-/// | Active   | Poisoned | [`poison`]                             |
-/// | Active   | (None)   | [`tick`], volatile                     |
-/// | Poisoned | (None)   | [`drain_poisoned`]                     |
+/// | From         | To           | Methods                                  |
+/// | ---          | ---          | ---                                      |
+/// |              | [`Inactive`] | [`register`]                             |
+/// | [`Inactive`] | [`Active`]   | [`activate`]                             |
+/// | [`Inactive`] | [`Dead`]     | [`unregister`]                           |
+/// | [`Inactive`] | [`Poisoned`] | [`poison`]                               |
+/// | [`Active`]   | [`Inactive`] | [`inactivate`], [`tick`] w\ non-volatile |
+/// | [`Active`]   | [`Dead`]     | [`tick`] w\ volatile                     |
+/// | [`Active`]   | [`Poisoned`] | [`poison`]                               |
+/// | [`Dead`]     |              | [`drain_dead`]                           |
+/// | [`Poisoned`] |              | [`drain_poisoned`]                       |
 ///
 /// [`register`]: Self::register
 /// [`activate`]: Self::activate
@@ -49,20 +50,24 @@ use std::{
 /// [`poison`]: Self::poison
 /// [`unregister`]: Self::unregister
 /// [`tick`]: Self::tick
+/// [`drain_dead`]: Self::drain_dead
 /// [`drain_poisoned`]: Self::drain_poisoned
 #[derive(Debug)]
 pub(crate) struct SystemGroup<S> {
     /// System id that will be given to new registered system.
     cur_id: SystemId,
 
-    /// Currently activated systems.
+    /// Active state systems.
     active: SystemCycle<S>,
 
-    /// Registered, but not activated systems.
-    inactive: HashMap<SystemId, SystemData, S>,
+    /// Inactive state systems.
+    inactive: HashSet<SystemData, S>,
 
-    /// Holds panicked system data and panic payload.
-    poisoned: LimitedQueue<(SystemData, Box<dyn Any + Send>)>,
+    /// Dead state systems.
+    dead: Vec<SystemData>,
+
+    /// Poisoned state systems.
+    poisoned: Vec<(SystemData, Box<dyn Any + Send>)>,
 
     /// Volatile systems will be removed permanently instead of moving to inactive list.
     /// For instance, setup system and FnOnce system are volatile.
@@ -70,14 +75,6 @@ pub(crate) struct SystemGroup<S> {
 
     /// Active system's lifetime.
     lifetime: SystemLifetime<S>,
-}
-
-impl<S> SystemGroup<S> {
-    pub(crate) fn cancel_active(&mut self) {
-        for sdata in self.active.values_mut() {
-            sdata.as_invoker_mut().cancel();
-        }
-    }
 }
 
 impl<S> SystemGroup<S>
@@ -90,23 +87,55 @@ where
         Self {
             cur_id: SystemId::new(gi, 1),
             active: SystemCycle::new(dummy),
-            inactive: HashMap::default(),
-            poisoned: LimitedQueue::new(),
+            inactive: HashSet::default(),
+            dead: Vec::new(),
+            poisoned: Vec::new(),
             volatile: HashSet::default(),
             lifetime: SystemLifetime::new(),
         }
+    }
+
+    /// Clears all stored systems.
+    ///
+    /// Systems will be removed through state transitions.
+    /// - [`Active`] -> [`Inactive`] -> [`Dead`] -> Removed
+    /// - [`Poisoned`] -> Removed
+    ///
+    /// Which means their [`on_transition`] will be called in order.
+    ///
+    /// [`on_transition`]: System::on_transition
+    pub(crate) fn clear(&mut self) {
+        // Active -> Inactive or Dead
+        let mut sids = Vec::with_capacity(self.len_active() + self.len_inactive());
+        for sdata in self.active.values() {
+            sids.push(sdata.id());
+        }
+        while let Some(sid) = sids.pop() {
+            self.inactivate(&sid).unwrap();
+        }
+
+        // Inactive -> Dead
+        for sdata in self.inactive.iter() {
+            sids.push(sdata.id());
+        }
+        while let Some(sid) = sids.pop() {
+            self.unregister(&sid).unwrap();
+        }
+
+        // Clears Dead & Poisoned.
+        self.drain_dead();
+        self.drain_poisoned();
     }
 
     pub(crate) fn len_active(&self) -> usize {
         self.active.len()
     }
 
-    // For future use
-    #[allow(dead_code)]
     pub(crate) fn len_inactive(&self) -> usize {
         self.inactive.len()
     }
 
+    // TODO: rename
     pub(crate) fn get_active_mut(&mut self) -> &mut SystemCycle<S> {
         &mut self.active
     }
@@ -115,50 +144,91 @@ where
         self.active.contains(sid)
     }
 
-    // For future use
-    #[allow(dead_code)]
-    pub(crate) fn is_inactive(&self, sid: &SystemId) -> bool {
-        self.inactive.contains_key(sid)
+    /// Determines whether or not a system for the given id is in [`Active`] or
+    /// [`Inactive`] states.
+    pub(crate) fn contains(&self, sid: &SystemId) -> bool {
+        self.contains_active(sid) || self.contains_inactive(sid)
     }
 
-    // For future use
-    #[allow(dead_code)]
-    pub(crate) fn is_poisoned(&self, sid: &SystemId) -> bool {
-        self.poisoned.iter().any(|(sdata, _)| sdata.id() == *sid)
+    /// Determines whether or not a system for the given id is in [`Active`]
+    /// state.
+    pub(crate) fn contains_active(&self, sid: &SystemId) -> bool {
+        self.active.contains(sid)
     }
 
+    /// Determines whether or not a system for the given id is in [`Inactive`]
+    /// state.
+    pub(crate) fn contains_inactive(&self, sid: &SystemId) -> bool {
+        self.inactive.contains(sid)
+    }
+
+    /// Looks for a system for the given id in [`Active`] systems.
+    pub(crate) fn get_active(&self, sid: &SystemId) -> Option<&SystemData> {
+        self.active.get(sid)
+    }
+
+    /// Returns system id that the next registered system will have.
     pub(crate) fn next_system_id(&self) -> SystemId {
         self.cur_id
     }
 
-    /// It can be possible to set system id here, but then, system data may
-    /// contain invalid system id for a second. That's not what we want, so
-    /// you must set the correct id by calling [`Self::next_system_id`]
-    /// beforehand.
-    pub(crate) fn register(&mut self, sdata: SystemData, volatile: bool) {
-        let sid = sdata.id();
-        assert_eq!(self.cur_id, sid);
+    /// Registers a system.
+    ///
+    /// If there's no error during registration, the system state becomes
+    /// [`Inactive`].
+    ///
+    /// Cases below are considered error.
+    /// - System id is not correct. System id must be the same as the one
+    ///   [`Self::next_system_id`] returns.
+    /// - Found a system that has the same system id in [`Active`] or `Inactive`
+    ///   systems.
+    //
+    // It can be possible to set system id here, but then, system data may
+    // contain invalid system id for a second. That's not what we want, so you
+    // must set the correct id by calling [`Self::next_system_id`] beforehand.
+    pub(crate) fn register(
+        &mut self,
+        sdata: SystemData,
+        volatile: bool,
+    ) -> Result<(), EcsError<SystemData>> {
+        // Validates.
+        if sdata.id() != self.cur_id {
+            let reason = debug_format!("invalid system id");
+            return Err(EcsError::Unknown(reason, sdata));
+        }
+        if self.contains(&sdata.id()) {
+            let reason = debug_format!("duplicated system id");
+            return Err(EcsError::Unknown(reason, sdata));
+        }
 
-        // Increases system id for next ones.
+        // Increases system id for the next one.
+        let sid = sdata.id();
         self.cur_id.add_system_index(1);
 
-        // Registers the system to inactive list.
-        self.inactive.insert(sid, sdata);
+        // Inserts the system into inactive list.
+        let is_new = self.inactive.insert(sdata);
+        debug_assert!(is_new);
 
-        // We need to record whether or not the system is volatile.
+        // We need to record whether the system is volatile or not.
         if volatile {
-            let must_true = self.volatile.insert(sid);
-            debug_assert!(must_true);
+            let is_new = self.volatile.insert(sid);
+            debug_assert!(is_new);
         }
+        Ok(())
     }
 
-    /// Unregisters system if and only if the system is inactive.
-    pub(crate) fn unregister(&mut self, sid: &SystemId) -> Option<SystemData> {
-        self.volatile.remove(sid);
-        self.inactive.remove(sid)
-    }
-
-    /// Activates the system. If the system is already active, nothing takes place.
+    /// Activates a system for the given id.
+    ///
+    /// Cases below are considered ok.
+    /// - If the system was already in [`Active`] state.
+    /// - No error
+    ///
+    /// Then the system state transitions from [`Inactive`] to `Active`.
+    ///
+    /// Whereas cases below are considered error.
+    /// - If the system was not in `Inactive` state.
+    /// - If insert position pointed to a particular system, and the system was
+    ///   not in `Active` states.
     pub(crate) fn activate(
         &mut self,
         target: &SystemId,
@@ -169,92 +239,175 @@ where
         if let InsertPos::After(after) = at {
             if !self.is_active(&after) {
                 // Unknown `after` system.
-                return Err(EcsError::UnknownSystem);
+                let reason =
+                    debug_format!("cannot activate a system due to invalid insert position");
+                return Err(EcsError::UnknownSystem(reason, ()));
             }
         }
         if self.is_active(target) {
             return Ok(());
         }
 
-        if let Some((target, sdata)) = self.inactive.remove_entry(target) {
-            // Inserts system id into lifetime manager.
-            let must_true = self.active.insert(target, sdata, at);
+        if let Some(mut sdata) = self.inactive.take(target) {
+            debug_assert_eq!(sdata.id(), *target);
+
+            sdata.as_invoker_mut().on_transition(Inactive, Active);
+            let must_true = self.active.insert(sdata, at);
             debug_assert!(must_true);
-            self.lifetime.register(target, live);
+
+            // Inserts system id into lifetime manager.
+            self.lifetime.register(*target, live);
             Ok(())
         } else {
             // Unknown `target system.
-            Err(EcsError::UnknownSystem)
+            let reason = debug_format!("tried to activate a not inactive system");
+            Err(EcsError::UnknownSystem(reason, ()))
         }
     }
 
-    pub(crate) fn inactivate(&mut self, sid: &SystemId) -> Result<(), EcsError> {
-        let Self {
-            active,
-            volatile,
-            inactive,
-            ..
-        } = self;
-
-        Self::_inactivate(active, volatile, inactive, sid)
-    }
-
-    fn _inactivate(
-        active: &mut SystemCycle<S>,
-        volatile: &mut HashSet<SystemId, S>,
-        inactive: &mut HashMap<SystemId, SystemData, S>,
-        sid: &SystemId,
-    ) -> Result<(), EcsError> {
-        if let Some(sdata) = active.remove(sid) {
-            if !volatile.remove(sid) {
-                inactive.insert(*sid, sdata);
-            }
-            return Ok(());
+    /// Unregisters a system for the given id.
+    ///
+    /// Cases below are considered ok.
+    /// - If the system was already in [`Dead`] state.
+    /// - No error
+    ///
+    /// Then the system state transitions from [`Inactive`] to `Dead`.
+    ///
+    /// But if the system was not in `Inactive` state, returns error.
+    pub(crate) fn unregister(&mut self, sid: &SystemId) -> Result<(), EcsError> {
+        if let Some(mut sdata) = self.inactive.take(sid) {
+            sdata.as_invoker_mut().on_transition(Inactive, Dead);
+            self.dead.push(sdata);
+            Ok(())
+        } else {
+            let reason = debug_format!("tried to unregister a not inactive system");
+            Err(EcsError::UnknownSystem(reason, ()))
         }
-        Err(EcsError::UnknownSystem)
     }
 
-    /// Poisons a system then move the system data to poisoned area.
-    /// If the system was completely removed by another reason, returns error
-    /// with the given payload.
-    /// If system id is not found, of course, returns error.
+    /// Moves a system for the given id to [`Poisoned`] state.
+    ///
+    /// If the system was in one of [`Active`] or [`Inactive`] states, the
+    /// system state transitions to `Poisoned` state. Otherwise, just returns
+    /// given payload back.
     pub(crate) fn poison(
         &mut self,
         sid: &SystemId,
         payload: Box<dyn Any + Send>,
-    ) -> Result<(), Box<dyn Any + Send>> {
-        let sdata = if let Some(sdata) = self.active.remove(sid) {
+    ) -> Result<(), EcsError<Box<dyn Any + Send>>> {
+        let sdata = if let Some(mut sdata) = self.active.remove(sid) {
+            sdata.as_invoker_mut().on_transition(Active, Poisoned);
             sdata
-        } else if let Some(sdata) = self.inactive.remove(sid) {
+        } else if let Some(mut sdata) = self.inactive.take(sid) {
+            sdata.as_invoker_mut().on_transition(Inactive, Poisoned);
             sdata
         } else {
-            return Err(payload);
+            let reason = debug_format!("tried to poison a not (in)active system");
+            return Err(EcsError::UnknownSystem(reason, payload));
         };
         self.poisoned.push((sdata, payload));
         Ok(())
     }
 
+    /// Inactivates a system for the given id.
+    ///
+    /// If inactivation is successful, system state changes depends on system
+    /// volatility as shown below.
+    /// - If the system is volatile, it changes to [`Dead`] state.
+    /// - Otherwise, it changes to [`Inactive`] state.
+    ///
+    /// Cases below are considered ok.
+    /// - If the system was already in `Inactive` state.
+    /// - No error
+    ///
+    /// Then the system state transitions from `Active` to `Inactive`.
+    ///
+    /// But if the system was not in [`Active`] state, returns error.
+    pub(crate) fn inactivate(&mut self, sid: &SystemId) -> Result<(), EcsError> {
+        let Self {
+            active,
+            inactive,
+            dead,
+            volatile,
+            ..
+        } = self;
+
+        Self::_inactivate(sid, active, inactive, dead, volatile)
+    }
+
+    fn _inactivate(
+        sid: &SystemId,
+        active: &mut SystemCycle<S>,
+        inactive: &mut HashSet<SystemData, S>,
+        dead: &mut Vec<SystemData>,
+        volatile: &mut HashSet<SystemId, S>,
+    ) -> Result<(), EcsError> {
+        if inactive.contains(sid) {
+            Ok(())
+        } else if let Some(mut sdata) = active.remove(sid) {
+            if volatile.contains(sid) {
+                sdata.as_invoker_mut().on_transition(Active, Dead);
+                dead.push(sdata);
+            } else {
+                sdata.as_invoker_mut().on_transition(Active, Inactive);
+                inactive.insert(sdata);
+            }
+            Ok(())
+        } else {
+            let reason = debug_format!("tried to inactivate a not (in)active system");
+            Err(EcsError::UnknownSystem(reason, ()))
+        }
+    }
+
+    /// Removes the whole systems in [`Dead`] state.
+    pub(crate) fn drain_dead(&mut self) -> std::vec::Drain<'_, SystemData> {
+        for sdata in self.dead.iter() {
+            self.volatile.remove(&sdata.id());
+        }
+        self.dead.drain(..)
+    }
+
+    /// Removes the whole systems in [`Poisoned`] state.
     pub(crate) fn drain_poisoned(
         &mut self,
-    ) -> std::collections::vec_deque::Drain<'_, (SystemData, Box<dyn Any + Send>)> {
+    ) -> std::vec::Drain<'_, (SystemData, Box<dyn Any + Send>)> {
+        for (sdata, _) in self.poisoned.iter() {
+            self.volatile.remove(&sdata.id());
+        }
         self.poisoned.drain(..)
     }
 
     pub(crate) fn tick(&mut self) {
         let Self {
-            lifetime,
             active,
-            volatile,
             inactive,
+            dead,
+            volatile,
+            lifetime,
             ..
         } = self;
 
         if let Some(expired_sids) = lifetime.tick() {
             while let Some(sid) = expired_sids.pop() {
-                let _ = Self::_inactivate(active, volatile, inactive, &sid);
+                let _ = Self::_inactivate(&sid, active, inactive, dead, volatile);
             }
         }
     }
+}
+
+#[derive(Debug)]
+pub enum SystemState {
+    /// A system state meaning ready to be run.
+    Active,
+
+    /// A system state meaning not ready to be run.
+    Inactive,
+
+    /// A system state meaning dead. Dead systems cannot be reborn.
+    Dead,
+
+    /// A system state meaning panicked. Poisoned systems cannot be reborn.
+    Poisoned,
 }
 
 /// Currently activated systems.
@@ -279,11 +432,11 @@ where
         self.0.contains_key(sid)
     }
 
-    pub(crate) fn insert(&mut self, sid: SystemId, sdata: SystemData, at: InsertPos) -> bool {
+    pub(crate) fn insert(&mut self, sdata: SystemData, at: InsertPos) -> bool {
         match at {
-            InsertPos::After(after) => self.0.insert(sid, sdata, &after),
-            InsertPos::Back => self.0.push_back(sid, sdata),
-            InsertPos::Front => self.0.push_front(sid, sdata),
+            InsertPos::After(after) => self.0.insert(sdata.id(), sdata, &after),
+            InsertPos::Back => self.0.push_back(sdata.id(), sdata),
+            InsertPos::Front => self.0.push_front(sdata.id(), sdata),
         }
     }
 
@@ -293,10 +446,6 @@ where
 
     pub(crate) fn iter_begin(&mut self) -> SystemCycleIter<'_, S> {
         SystemCycleIter::new(&mut self.0)
-    }
-
-    pub(crate) fn peek_next(&self, sid: &SystemId) -> Option<&SystemData> {
-        self.0.get_next(sid)
     }
 }
 
@@ -421,7 +570,7 @@ impl<S> Clone for RawSystemCycleIter<S> {
 
 impl<S> Copy for RawSystemCycleIter<S> {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum InsertPos {
     Back,
     Front,
@@ -488,8 +637,8 @@ pub trait System: Send + 'static {
     #[allow(unused_variables)]
     fn _run_private(&mut self, sid: SystemId, buf: ManagedMutPtr<SystemBuffer>) {}
 
-    /// System can be cancelled out when it's active before it's dropped.
-    fn cancel(&mut self) {}
+    #[allow(unused_variables)]
+    fn on_transition(&mut self, from: SystemState, to: SystemState) {}
 
     /// Provided.  
     /// This name may change in the future.
@@ -605,8 +754,14 @@ impl fmt::Display for SystemId {
     }
 }
 
+/// # Safety
+///
+/// This struct is commonly managed by scheduler which guarantees valid access
+/// in terms of [`Send`] and [`Sync`] even if it contains raw pointers in it.
+/// But if clients use this struct on their own purposes, they must keep that in
+/// mind.
 pub struct SystemData {
-    /// The other identification for the systems.
+    /// Unique id for a system.
     id: SystemId,
 
     flags: SystemFlags,
@@ -618,16 +773,18 @@ pub struct SystemData {
     //
     // * Why Arc
     // - In order to share `SystemInfo` with others.
-    // But, we don't share onwership, others can have weak references only.
-    // It reduces complexity in terms of self-unregistration from info storage.
-    // - In order to reduce size of the struct.
-    // We move whole `SystemData` when we activate or inactivate systems.
+    // - In order to reduce size of the struct. We move whole `SystemData` when
+    // we activate or inactivate systems.
     info: Arc<SystemInfo>,
 }
 
-// Safety: If the data owns `invoker`, sending is ok. Otherwise, owner of the
-// `invoker` will guarantee that accessing the pointer must be ok.
+// Safety:
+// - Scheduler controls that a system data is accessed by one worker at a time.
+// - Scheduler provides synchronization over workers accessing the system data.
+// - Where the scheduler doesn't work, clients must access it carefully.
+// - Which means system data is looked like Rust primitive types from its users.
 unsafe impl Send for SystemData {}
+unsafe impl Sync for SystemData {}
 
 impl Drop for SystemData {
     fn drop(&mut self) {
@@ -649,6 +806,26 @@ impl fmt::Debug for SystemData {
     }
 }
 
+impl hash::Hash for SystemData {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+impl PartialEq for SystemData {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for SystemData {}
+
+impl borrow::Borrow<SystemId> for SystemData {
+    fn borrow(&self) -> &SystemId {
+        &self.id
+    }
+}
+
 impl SystemData {
     pub const fn id(&self) -> SystemId {
         self.id
@@ -666,8 +843,8 @@ impl SystemData {
         self.flags |= sflags;
     }
 
-    pub(crate) fn info(&self) -> Weak<SystemInfo> {
-        Arc::downgrade(&self.info)
+    pub(crate) fn info(&self) -> Arc<SystemInfo> {
+        Arc::clone(&self.info)
     }
 
     pub(crate) fn get_request_info(&self) -> &Arc<RequestInfo> {
@@ -794,7 +971,7 @@ impl Drop for SystemInfo {
 pub(crate) trait Invoke {
     fn invoke(&mut self, buf: &mut SystemBuffer);
     fn invoke_private(&mut self, sid: SystemId, buf: ManagedMutPtr<SystemBuffer>);
-    fn cancel(&mut self);
+    fn on_transition(&mut self, from: SystemState, to: SystemState);
 }
 
 impl<S: System> Invoke for S {
@@ -806,8 +983,8 @@ impl<S: System> Invoke for S {
         self._run_private(sid, buf);
     }
 
-    fn cancel(&mut self) {
-        self.cancel();
+    fn on_transition(&mut self, from: SystemState, to: SystemState) {
+        self.on_transition(from, to);
     }
 }
 
@@ -826,6 +1003,15 @@ pub struct FnSystem<Req, F> {
 
 unsafe impl<Req, F: Send> Send for FnSystem<Req, F> {}
 
+impl<Req, F> fmt::Debug for FnSystem<Req, F>
+where
+    Self: System,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", Self::system_name())
+    }
+}
+
 /// * Req - Arbitrary length of arguments of F.
 /// * F - Sendable function.
 #[repr(transparent)]
@@ -835,6 +1021,15 @@ pub struct FnOnceSystem<Req, F> {
 }
 
 unsafe impl<Req, F: Send> Send for FnOnceSystem<Req, F> {}
+
+impl<Req, F> fmt::Debug for FnOnceSystem<Req, F>
+where
+    Self: System,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", Self::system_name())
+    }
+}
 
 /// Placeholder for the [`FnSystem`]'s generic parameter.
 /// This helps us avoid impl confliction.
@@ -1093,108 +1288,82 @@ mod tests {
 
     #[test]
     fn test_systemgroup_unregister_volatile() {
-        let (mut len_inactive, mut len_volatile) = (0, 0);
-        let mut sg = SystemGroup::<std::hash::RandomState>::new(0);
+        let mut sgroup = SystemGroup::<std::hash::RandomState>::new(0);
 
         // Registers an inactive & volatile system.
-        let mut sdata: SystemData = ().into_data();
-        let sid = sg.next_system_id();
-        sdata.id = sid;
-        sg.register(sdata, true);
-
         // Active: 0, Inactive: 1, Volatile: 1
-        len_inactive += 1;
-        len_volatile += 1;
-        assert_eq!(sg.len_inactive(), len_inactive);
-        assert_eq!(sg.volatile.len(), len_volatile);
+        let mut sdata: SystemData = ().into_data();
+        let sid = sgroup.next_system_id();
+        sdata.id = sid;
+        sgroup.register(sdata, true).unwrap();
+        validate_len(&sgroup, 0, 1, 1);
 
         // Unregisters the system.
-        sg.unregister(&sid).unwrap();
-
         // Active: 0, Inactive: 0, Volatile: 0
-        len_inactive -= 1;
-        len_volatile -= 1;
-        assert_eq!(sg.len_inactive(), len_inactive);
-        assert_eq!(sg.volatile.len(), len_volatile);
+        sgroup.unregister(&sid).unwrap();
+        sgroup.drain_dead();
+        validate_len(&sgroup, 0, 0, 0);
     }
 
     #[test]
     fn test_systemgroup_mixed_operations() {
-        let (mut len_active, mut len_inactive, mut len_volatile) = (0, 0, 0);
-        let mut sg = SystemGroup::<std::hash::RandomState>::new(0);
+        let mut sgroup = SystemGroup::<std::hash::RandomState>::new(0);
 
         // Registers an inactive & non-volitile system.
-        let mut sdata: SystemData = ().into_data();
-        let sid_a = sg.next_system_id();
-        sdata.id = sid_a;
-        sg.register(sdata, false);
-
         // Active: 0, Inactive: 1, Volatile: 0
-        len_inactive += 1;
-        assert_eq!(sg.len_active(), len_active);
-        assert_eq!(sg.len_inactive(), len_inactive);
-        assert_eq!(sg.volatile.len(), len_volatile);
+        let mut sdata: SystemData = ().into_data();
+        let sid_a = sgroup.next_system_id();
+        sdata.id = sid_a;
+        sgroup.register(sdata, false).unwrap();
+        validate_len(&sgroup, 0, 1, 0);
 
         // Activates the system.
-        sg.activate(&sid_a, InsertPos::Back, NonZeroTick::new(1).unwrap())
-            .unwrap();
-
         // Active: 1, Inactive: 0, Volatile: 0
-        len_active += 1;
-        len_inactive -= 1;
-        assert_eq!(sg.len_active(), len_active);
-        assert_eq!(sg.len_inactive(), len_inactive);
-        assert_eq!(sg.volatile.len(), len_volatile);
+        sgroup
+            .activate(&sid_a, InsertPos::Back, NonZeroTick::new(1).unwrap())
+            .unwrap();
+        validate_len(&sgroup, 1, 0, 0);
 
         // Registers an inactive & volatile system.
-        let mut sdata: SystemData = ().into_data();
-        let sid_b = sg.next_system_id();
-        sdata.id = sid_b;
-        sg.register(sdata, true);
-
         // Active: 1, Inactive: 1, Volatile: 1
-        len_inactive += 1;
-        len_volatile += 1;
-        assert_eq!(sg.len_active(), len_active);
-        assert_eq!(sg.len_inactive(), len_inactive);
-        assert_eq!(sg.volatile.len(), len_volatile);
+        let mut sdata: SystemData = ().into_data();
+        let sid_b = sgroup.next_system_id();
+        sdata.id = sid_b;
+        sgroup.register(sdata, true).unwrap();
+        validate_len(&sgroup, 1, 1, 1);
 
         // Activates the system.
-        sg.activate(&sid_b, InsertPos::Back, NonZeroTick::new(2).unwrap())
-            .unwrap();
-
         // Active: 2, Inactive: 0, Volatile: 1
-        len_active += 1;
-        len_inactive -= 1;
-        assert_eq!(sg.len_active(), len_active);
-        assert_eq!(sg.len_inactive(), len_inactive);
-        assert_eq!(sg.volatile.len(), len_volatile);
+        sgroup
+            .activate(&sid_b, InsertPos::Back, NonZeroTick::new(2).unwrap())
+            .unwrap();
+        validate_len(&sgroup, 2, 0, 1);
 
-        // Non-volatile system will be inactivated.
-        sg.tick();
-
+        // Calls tick. Non-volatile system will be inactivated.
         // Active: 1, Inactive: 1, Volatile: 1
-        len_active -= 1;
-        len_inactive += 1;
-        assert_eq!(sg.len_active(), len_active);
-        assert_eq!(sg.len_inactive(), len_inactive);
-        assert_eq!(sg.volatile.len(), len_volatile);
+        sgroup.tick();
+        sgroup.drain_dead();
+        validate_len(&sgroup, 1, 1, 1);
 
-        // Volatile system will be discarded.
-        sg.tick();
-
+        // Calls tick. Volatile system will be discarded.
         // Active: 0, Inactive: 1, Volatile: 0
-        len_active -= 1;
-        len_volatile -= 1;
-        assert_eq!(sg.len_active(), len_active);
-        assert_eq!(sg.len_inactive(), len_inactive);
-        assert_eq!(sg.volatile.len(), len_volatile);
+        sgroup.tick();
+        sgroup.drain_dead();
+        validate_len(&sgroup, 0, 1, 0);
 
         // Unregisters the remained system.
-        sg.unregister(&sid_a).unwrap();
-        len_inactive -= 1;
-        assert_eq!(sg.len_active(), len_active);
-        assert_eq!(sg.len_inactive(), len_inactive);
-        assert_eq!(sg.volatile.len(), len_volatile);
+        // Active: 0, Inactive: 0, Volatile: 0
+        sgroup.unregister(&sid_a).unwrap();
+        sgroup.drain_dead();
+        validate_len(&sgroup, 0, 0, 0);
+    }
+
+    fn validate_len<S>(sgroup: &SystemGroup<S>, act: usize, inact: usize, vol: usize)
+    where
+        S: BuildHasher + Default,
+    {
+        assert_eq!(sgroup.active.len(), act);
+        assert_eq!(sgroup.inactive.len(), inact);
+        assert_eq!(sgroup.volatile.len(), vol);
     }
 }

@@ -66,7 +66,7 @@ impl<V> DerefMut for SimpleHolder<V> {
 #[derive(Debug)]
 pub struct Holder<V, BI, BM> {
     value: V,
-    #[cfg(feature = "borrow_check")]
+    #[cfg(feature = "check")]
     cnt: std::sync::Arc<std::sync::atomic::AtomicI32>,
     fn_imm: fn(&V) -> BI,
     fn_mut: fn(&mut V) -> BM,
@@ -74,17 +74,17 @@ pub struct Holder<V, BI, BM> {
 }
 
 impl<V, BI, BM> Holder<V, BI, BM> {
-    #[cfg(feature = "borrow_check")]
+    #[cfg(feature = "check")]
     const CNT_INIT: i32 = 0;
-    #[cfg(feature = "borrow_check")]
+    #[cfg(feature = "check")]
     const CNT_EXC: i32 = -1;
-    #[cfg(feature = "borrow_check")]
+    #[cfg(feature = "check")]
     const CNT_MAX: i32 = 1024;
 
     pub fn new(value: V, fn_imm: fn(&V) -> BI, fn_mut: fn(&mut V) -> BM) -> Self {
         Self {
             value,
-            #[cfg(feature = "borrow_check")]
+            #[cfg(feature = "check")]
             cnt: std::sync::Arc::new(std::sync::atomic::AtomicI32::new(Self::CNT_INIT)),
             fn_imm,
             fn_mut,
@@ -96,7 +96,7 @@ impl<V, BI, BM> Holder<V, BI, BM> {
         // Due to the drop impl, we cannot take `value` out. So checking on drop
         // occurs here instead.
 
-        #[cfg(feature = "borrow_check")]
+        #[cfg(feature = "check")]
         assert!(self.cnt.load(std::sync::atomic::Ordering::Relaxed) == 0);
 
         // Safety: Pointer to self.value is valid.
@@ -117,14 +117,14 @@ impl<V, BI, BM> Holder<V, BI, BM> {
         self.count_ref()?;
         let value = (self.fn_imm)(&self.value);
 
-        #[cfg(feature = "borrow_check")]
+        #[cfg(feature = "check")]
         {
             let exclusive = false;
             let cnt = std::sync::Arc::clone(&self.cnt);
             Ok(Borrowed::new(value, exclusive, cnt))
         }
 
-        #[cfg(not(feature = "borrow_check"))]
+        #[cfg(not(feature = "check"))]
         Ok(Borrowed::new(value))
     }
 
@@ -132,14 +132,14 @@ impl<V, BI, BM> Holder<V, BI, BM> {
         self.count_mut()?;
         let value = (self.fn_mut)(&mut self.value);
 
-        #[cfg(feature = "borrow_check")]
+        #[cfg(feature = "check")]
         {
             let exclusive = true;
             let cnt = std::sync::Arc::clone(&self.cnt);
             Ok(Borrowed::new(value, exclusive, cnt))
         }
 
-        #[cfg(not(feature = "borrow_check"))]
+        #[cfg(not(feature = "check"))]
         Ok(Borrowed::new(value))
     }
 
@@ -147,14 +147,14 @@ impl<V, BI, BM> Holder<V, BI, BM> {
         self.count_ref()?;
         let value = &self.value;
 
-        #[cfg(feature = "borrow_check")]
+        #[cfg(feature = "check")]
         {
             let exclusive = false;
             let cnt = std::sync::Arc::clone(&self.cnt);
             Ok(Borrowed::new(value, exclusive, cnt))
         }
 
-        #[cfg(not(feature = "borrow_check"))]
+        #[cfg(not(feature = "check"))]
         Ok(Borrowed::new(value))
     }
 
@@ -162,14 +162,14 @@ impl<V, BI, BM> Holder<V, BI, BM> {
         self.count_mut()?;
         let value = &mut self.value;
 
-        #[cfg(feature = "borrow_check")]
+        #[cfg(feature = "check")]
         {
             let exclusive = true;
             let cnt = std::sync::Arc::clone(&self.cnt);
             Ok(Borrowed::new(value, exclusive, cnt))
         }
 
-        #[cfg(not(feature = "borrow_check"))]
+        #[cfg(not(feature = "check"))]
         Ok(Borrowed::new(value))
     }
 
@@ -196,19 +196,19 @@ impl<V, BI, BM> Holder<V, BI, BM> {
     /// there exist mutable `Borrowed`. Otherwise, in other words, it's zero,
     /// there's no `Borrowed`.
     pub fn borrow_count(&self) -> i32 {
-        #[cfg(feature = "borrow_check")]
+        #[cfg(feature = "check")]
         {
             self.cnt.load(std::sync::atomic::Ordering::Relaxed)
         }
 
-        #[cfg(not(feature = "borrow_check"))]
+        #[cfg(not(feature = "check"))]
         {
             0
         }
     }
 
     fn count_ref(&self) -> Result<(), BorrowError> {
-        #[cfg(feature = "borrow_check")]
+        #[cfg(feature = "check")]
         {
             use std::sync::atomic::Ordering;
 
@@ -224,12 +224,12 @@ impl<V, BI, BM> Holder<V, BI, BM> {
             }
         }
 
-        #[cfg(not(feature = "borrow_check"))]
+        #[cfg(not(feature = "check"))]
         Ok(())
     }
 
     fn count_mut(&mut self) -> Result<(), BorrowError> {
-        #[cfg(feature = "borrow_check")]
+        #[cfg(feature = "check")]
         {
             use std::sync::atomic::Ordering;
 
@@ -244,14 +244,14 @@ impl<V, BI, BM> Holder<V, BI, BM> {
             Ok(())
         }
 
-        #[cfg(not(feature = "borrow_check"))]
+        #[cfg(not(feature = "check"))]
         Ok(())
     }
 }
 
 impl<V, BI, BM> Drop for Holder<V, BI, BM> {
     fn drop(&mut self) {
-        #[cfg(feature = "borrow_check")]
+        #[cfg(feature = "check")]
         {
             let cnt = self.cnt.load(std::sync::atomic::Ordering::Relaxed);
             if cnt != 0 {
@@ -270,14 +270,14 @@ impl<V, BI, BM> Drop for Holder<V, BI, BM> {
 #[derive(Debug)]
 pub struct Borrowed<B> {
     value: B,
-    #[cfg(feature = "borrow_check")]
+    #[cfg(feature = "check")]
     exclusive: bool,
-    #[cfg(feature = "borrow_check")]
+    #[cfg(feature = "check")]
     cnt: std::sync::Arc<std::sync::atomic::AtomicI32>,
 }
 
 impl<B> Borrowed<B> {
-    #[cfg(feature = "borrow_check")]
+    #[cfg(feature = "check")]
     pub const fn new(
         value: B,
         exclusive: bool,
@@ -290,7 +290,7 @@ impl<B> Borrowed<B> {
         }
     }
 
-    #[cfg(not(feature = "borrow_check"))]
+    #[cfg(not(feature = "check"))]
     pub const fn new(value: B) -> Self {
         Self { value }
     }
@@ -313,13 +313,13 @@ impl<B> Borrowed<B> {
     pub unsafe fn map_copy<T>(&mut self, f: impl FnOnce(B) -> T) -> Borrowed<T> {
         let value: B = ptr::read(&self.value as *const _);
 
-        #[cfg(feature = "borrow_check")]
+        #[cfg(feature = "check")]
         {
             let cnt = ptr::read(&self.cnt as *const _);
             Borrowed::new(f(value), self.exclusive, cnt)
         }
 
-        #[cfg(not(feature = "borrow_check"))]
+        #[cfg(not(feature = "check"))]
         Borrowed::new(f(value))
     }
 
@@ -348,7 +348,7 @@ impl<B> DerefMut for Borrowed<B> {
 
 impl<B> Drop for Borrowed<B> {
     fn drop(&mut self) {
-        #[cfg(feature = "borrow_check")]
+        #[cfg(feature = "check")]
         {
             use std::sync::atomic::Ordering;
 

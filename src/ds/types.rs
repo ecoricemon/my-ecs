@@ -12,7 +12,7 @@ use std::{
 pub type FnDropRaw = unsafe fn(*mut u8);
 pub type FnCloneRaw = unsafe fn(*const u8, *mut u8);
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TypeInfo {
     /// Type id.
     pub ty: TypeId,
@@ -239,21 +239,27 @@ macro_rules! tinfo {
     }};
 }
 
+// The macro is exported and will be shown up in crate level. So we can use the
+// macro like 'crate::tinfo!(..)'. In doc comments, however, the link to the
+// macro is generated something like 'crate::ds::types::tinfo'. Re-exporting
+// like this helps us address the issue.
+pub use crate::tinfo;
+
 pub struct TypeIdExt {
     inner: TypeId,
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "check")]
     name: &'static str,
 }
 
-#[cfg(debug_assertions)]
+#[cfg(feature = "check")]
 impl fmt::Debug for TypeIdExt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        #[cfg(not(debug_assertions))]
+        #[cfg(not(feature = "check"))]
         {
             self.inner.fmt(f)
         }
 
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "check")]
         {
             write!(f, "TypeIdExt({})", self.name)
         }
@@ -264,13 +270,13 @@ impl TypeIdExt {
     pub const fn new(ty: TypeId) -> Self {
         Self {
             inner: ty,
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "check")]
             name: "",
         }
     }
 
     pub const fn with(self, _name: &'static str) -> Self {
-        #[cfg(debug_assertions)]
+        #[cfg(feature = "check")]
         {
             let mut this = self;
             this.name = _name;
@@ -281,7 +287,7 @@ impl TypeIdExt {
     pub fn of<T: ?Sized + 'static>() -> Self {
         Self {
             inner: TypeId::of::<T>(),
-            #[cfg(debug_assertions)]
+            #[cfg(feature = "check")]
             name: any::type_name::<T>(),
         }
     }

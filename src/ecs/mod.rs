@@ -28,21 +28,107 @@ pub mod prelude {
     pub use my_ecs_macros::*;
 }
 
-use std::error::Error;
+use std::{error::Error, fmt};
 use thiserror::Error;
 
 pub type EcsResult<T> = Result<T, Box<dyn Error + Send + Sync + 'static>>;
 
-#[derive(Error, Debug)]
-pub enum EcsError {
+#[derive(Error)]
+#[repr(C)]
+pub enum EcsError<Data = ()> {
+    #[error("unknown system `{0}`")]
+    UnknownSystem(String, Data),
+
     #[error("unknown entity `{0}`")]
-    UnknownEntity(String),
-    #[error("unknown system")]
-    UnknownSystem,
-    #[error("unknown resourse `{0}`")]
-    UnknownResource(String),
-    #[error("invalid request `{0}`")]
-    InvalidRequest(String),
+    UnknownEntity(String, Data),
     #[error("invalid entity `{0}`")]
-    InvalidEntity(String),
+    InvalidEntity(String, Data),
+
+    #[error("unknown resourse `{0}`")]
+    UnknownResource(String, Data),
+    #[error("duplicated resource `{0}`")]
+    DupResource(String, Data),
+
+    #[error("invalid request `{0}`")]
+    InvalidRequest(String, Data),
+
+    #[error("unknown error `{0}`")]
+    Unknown(String, Data),
+}
+
+impl<Data> fmt::Debug for EcsError<Data> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownSystem(reason, ..) => {
+                write!(f, "EcsError::UnknownSystem({reason}, ..)")
+            }
+            Self::UnknownEntity(reason, ..) => {
+                write!(f, "EcsError::UnknownEntity({reason}, ..)")
+            }
+            Self::InvalidEntity(reason, ..) => {
+                write!(f, "EcsError::InvalidEntity({reason}, ..)")
+            }
+            Self::UnknownResource(reason, ..) => {
+                write!(f, "EcsError::UnknownResource({reason}, ..)")
+            }
+            Self::DupResource(reason, ..) => {
+                write!(f, "EcsError::DupResource({reason}, ..)")
+            }
+            Self::InvalidRequest(reason, ..) => {
+                write!(f, "EcsError::InvalidRequest({reason}, ..)")
+            }
+            Self::Unknown(reason, ..) => {
+                write!(f, "EcsError::Unknown({reason}, ..)")
+            }
+        }
+    }
+}
+
+impl<Data> EcsError<Data> {
+    pub fn reason(&self) -> &str {
+        match self {
+            Self::UnknownSystem(reason, ..) => reason,
+            Self::UnknownEntity(reason, ..) => reason,
+            Self::InvalidEntity(reason, ..) => reason,
+            Self::UnknownResource(reason, ..) => reason,
+            Self::DupResource(reason, ..) => reason,
+            Self::InvalidRequest(reason, ..) => reason,
+            Self::Unknown(reason, ..) => reason,
+        }
+    }
+
+    pub fn take_data(self) -> Data {
+        match self {
+            Self::UnknownSystem(_, data) => data,
+            Self::UnknownEntity(_, data) => data,
+            Self::InvalidEntity(_, data) => data,
+            Self::UnknownResource(_, data) => data,
+            Self::DupResource(_, data) => data,
+            Self::InvalidRequest(_, data) => data,
+            Self::Unknown(_, data) => data,
+        }
+    }
+
+    pub fn without_data(self) -> EcsError<()> {
+        self.with_data(())
+    }
+
+    pub fn with_data<To>(self, data: To) -> EcsError<To> {
+        self.map_data(|_| data)
+    }
+
+    pub fn map_data<F, To>(self, f: F) -> EcsError<To>
+    where
+        F: FnOnce(Data) -> To,
+    {
+        match self {
+            Self::UnknownSystem(reason, old) => EcsError::UnknownSystem(reason, f(old)),
+            Self::UnknownEntity(reason, old) => EcsError::UnknownEntity(reason, f(old)),
+            Self::InvalidEntity(reason, old) => EcsError::InvalidEntity(reason, f(old)),
+            Self::UnknownResource(reason, old) => EcsError::UnknownResource(reason, f(old)),
+            Self::DupResource(reason, old) => EcsError::DupResource(reason, f(old)),
+            Self::InvalidRequest(reason, old) => EcsError::InvalidRequest(reason, f(old)),
+            Self::Unknown(reason, old) => EcsError::Unknown(reason, f(old)),
+        }
+    }
 }

@@ -625,7 +625,7 @@ mod web {
         fn unpark(&mut self, cx: ManagedConstPtr<SubContext>) -> bool {
             let ptr = cx.inner().as_ptr();
 
-            #[cfg(feature = "borrow_check")]
+            #[cfg(feature = "check")]
             drop(cx);
 
             let res = self.handle.post_message(&JsValue::from(ptr));

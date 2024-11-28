@@ -1,21 +1,26 @@
-use super::{entry::Ecs, sched::ctrl::SUB_CONTEXT};
+use super::{entry::Ecs, sched::ctrl::SUB_CONTEXT, EcsResult};
 use crate::{ds::prelude::*, impl_from_for_enum};
 use std::{fmt, ptr::NonNull};
 
 pub trait Command: Send + 'static {
     #[allow(unused_variables)]
-    fn command(self, ecs: Ecs<'_>)
+    fn command(self, ecs: Ecs<'_>) -> EcsResult<()>
     where
         Self: Sized,
     {
+        Ok(())
     }
 
     #[allow(unused_variables)]
-    fn command_by_boxed(self: Box<Self>, ecs: Ecs<'_>) {}
+    fn command_by_boxed(self: Box<Self>, ecs: Ecs<'_>) -> EcsResult<()> {
+        Ok(())
+    }
 
     /// Guaranteed to be called only once.
     #[allow(unused_variables)]
-    fn command_by_mut(&mut self, ecs: Ecs<'_>) {}
+    fn command_by_mut(&mut self, ecs: Ecs<'_>) -> EcsResult<()> {
+        Ok(())
+    }
 
     /// Command can be cancelled out when it's not executed before it's dropped.
     fn cancel(&mut self) {}
@@ -29,17 +34,17 @@ impl fmt::Debug for dyn Command {
 
 impl<F> Command for F
 where
-    F: FnOnce(Ecs) + Send + 'static,
+    F: FnOnce(Ecs) -> EcsResult<()> + Send + 'static,
 {
-    fn command(self, ecs: Ecs<'_>) {
+    fn command(self, ecs: Ecs<'_>) -> EcsResult<()> {
         (self)(ecs)
     }
 
-    fn command_by_boxed(self: Box<Self>, ecs: Ecs<'_>) {
+    fn command_by_boxed(self: Box<Self>, ecs: Ecs<'_>) -> EcsResult<()> {
         (self)(ecs)
     }
 
-    fn command_by_mut(&mut self, _ecs: Ecs<'_>) {
+    fn command_by_mut(&mut self, _ecs: Ecs<'_>) -> EcsResult<()> {
         panic!("FnOnce command cannot be called by reference")
     }
 }
@@ -63,15 +68,15 @@ impl_from_for_enum!(CommandObject, Future, ReadyFuture);
 impl_from_for_enum!(CommandObject, Raw, RawCommand);
 
 impl CommandObject {
-    pub(crate) fn command(self, ecs: Ecs<'_>) {
+    pub(crate) fn command(self, ecs: Ecs<'_>) -> EcsResult<()> {
         match self {
             Self::Boxed(boxed) => boxed.command_by_boxed(ecs),
             Self::Future(future) => {
-                // We registered `Command::command` as the consuming function
-                // on the future. See `schedule_future`.
-                //
-                // Safety: Type `Arg` is correct.
-                unsafe { future.consume(ecs) }
+                // Safety: consume() requires correct `Arg` and `CR` types.
+                // - `Arg` type is `Ecs<'_>`.
+                // - `CR` type is `EcsResult<()>`.
+                // We matched the types with `consume_ready_future`.
+                unsafe { future.consume::<Ecs<'_>, EcsResult<()>>(ecs) }
             }
             Self::Raw(raw) => raw.command(ecs),
         }
@@ -90,7 +95,7 @@ impl CommandObject {
 #[derive(Debug)]
 pub struct RawCommand {
     data: NonNull<u8>,
-    command_by_mut: unsafe fn(NonNull<u8>, Ecs<'_>),
+    command_by_mut: unsafe fn(NonNull<u8>, Ecs<'_>) -> EcsResult<()>,
     cancel: unsafe fn(NonNull<u8>),
 }
 
@@ -99,9 +104,9 @@ impl RawCommand {
     pub(crate) unsafe fn new<C: Command>(cmd: &C) -> Self {
         let data = NonNull::new_unchecked((cmd as *const _ as *const u8).cast_mut());
 
-        unsafe fn command_by_mut<C: Command>(data: NonNull<u8>, ecs: Ecs<'_>) {
+        unsafe fn command_by_mut<C: Command>(data: NonNull<u8>, ecs: Ecs<'_>) -> EcsResult<()> {
             let data = data.cast::<C>().as_mut();
-            data.command_by_mut(ecs);
+            data.command_by_mut(ecs)
         }
 
         unsafe fn cancel<C: Command>(data: NonNull<u8>) {
@@ -116,10 +121,10 @@ impl RawCommand {
         }
     }
 
-    fn command(self, ecs: Ecs<'_>) {
+    fn command(self, ecs: Ecs<'_>) -> EcsResult<()> {
         // Safety: Calling `self.command_by_mut` is safe because it's guaranteed
         // by owner called new().
-        unsafe { (self.command_by_mut)(self.data, ecs) };
+        unsafe { (self.command_by_mut)(self.data, ecs) }
     }
 
     fn cancel(self) {
