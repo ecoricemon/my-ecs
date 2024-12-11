@@ -182,31 +182,63 @@ impl AnyVec {
 
     /// # Safety
     ///
-    /// - This method assumes the type is not zero sized type.
-    /// - `new_cap` x [`Self::item_size`] must not exceed isize::MAX.
+    /// `new_cap` x [`Self::item_size`] must be greater than zero and lesser or
+    /// equal to [`isize::MAX`].
     unsafe fn _reserve(&mut self, new_cap: usize) {
         let item_size = self.item_size();
-
         let new_size = new_cap * item_size;
-        let ptr = if self.capacity() == 0 {
+
+        debug_assert!((1..=isize::MAX as usize).contains(&new_size));
+
+        if self.capacity() == 0 {
             let layout = Layout::from_size_align(new_size, self.align()).unwrap();
+
+            // Safety:
             let ptr = unsafe { alloc::alloc(layout) };
             if ptr.is_null() {
                 alloc::handle_alloc_error(layout);
             }
-            ptr
+            self.ptr = NonNull::new_unchecked(ptr);
+            self.cap = new_cap;
         } else {
-            let old_size = self.capacity() * item_size;
-            let old_layout = Layout::from_size_align(old_size, self.align()).unwrap();
-            let ptr = unsafe { alloc::realloc(self.ptr.as_mut(), old_layout, new_size) };
-            if ptr.is_null() {
-                let layout = Layout::from_size_align(new_size, self.align()).unwrap();
-                alloc::handle_alloc_error(layout);
-            }
-            ptr
+            self.realloc_unchecked(new_cap);
         };
-        self.ptr = unsafe { NonNull::new_unchecked(ptr) };
-        self.cap = new_cap;
+    }
+
+    /// # Examples
+    ///
+    /// ```
+    /// # use my_ecs::prelude::*;
+    ///
+    /// let mut v = AnyVec::new(tinfo!(i32));
+    /// assert_eq!(v.capacity(), 0);
+    ///
+    /// v.reserve(10);
+    /// assert!(v.capacity() >= 10);
+    ///
+    /// unsafe { v.push(1_i32) };
+    /// v.shrink_to_fit();
+    /// assert!(v.capacity() >= 1);
+    ///
+    /// v.pop_drop();
+    /// v.shrink_to_fit();
+    /// assert_eq!(v.capacity(), 0);
+    /// ```
+    pub fn shrink_to_fit(&mut self) {
+        if self.is_zst() || self.len() == self.capacity() {
+            return;
+        }
+
+        if self.is_empty() {
+            self.dealloc();
+        } else {
+            // Safety:
+            // - Extra capacity, so current pointer is valid.
+            // - Not ZST and empty, so that new capacity size in bytes is
+            //   greater than zero.
+            // - Size of current items in bytes cannot exceed `isize::MAX`.
+            unsafe { self.realloc_unchecked(self.len()) };
+        }
     }
 
     /// # Safety
@@ -273,11 +305,37 @@ impl AnyVec {
         ptr::copy_nonoverlapping(ptr.as_ptr(), dst, self.item_size());
     }
 
-    /// Don't forget to call destructor.
+    /// Removes the last item from the vector and writes it to the given
+    /// buffer, then returns `Some`.
+    ///
+    /// If removing is successful, caller becomes to own the item in the
+    /// buffer, so that caller must call `drop()` on it correctly.
+    /// Otherwise, returns `None` without change to the buffer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use my_ecs::prelude::*;
+    ///
+    /// let mut v = AnyVec::new(tinfo!(i32));
+    /// unsafe { v.push(42_i32) };
+    /// assert_eq!(v.len(), 1);
+    ///
+    /// let mut buf = 0_i32;
+    /// let res = unsafe { v.pop_raw(&mut buf as *mut i32 as *mut u8) };
+    /// assert!(res.is_some());
+    /// assert!(v.is_empty());
+    /// assert_eq!(buf, 42);
+    /// ```
     ///
     /// # Safety
     ///
-    /// `buf` must valid for writes of [`Self::item_size`] bytes.
+    /// Undefined behavior if conditions below are not met.
+    /// - `buf` must have enough size to be copied an item.
+    /// - When `Some` is returned, `buf` must be correctly handled as an item.
+    ///   For example, if an item should be dropped, caller must call drop() on
+    ///   it.
+    /// - When `None` is returned, `buf` must be correctly handled as it was.
     pub unsafe fn pop_raw(&mut self, buf: *mut u8) -> Option<()> {
         if self.is_empty() {
             None
@@ -315,6 +373,16 @@ impl AnyVec {
         }
     }
 
+    pub fn pop_forget(&mut self) -> Option<()> {
+        if self.is_empty() {
+            None
+        } else {
+            // Safety: Vector is not empty.
+            unsafe { self._pop() };
+            Some(())
+        }
+    }
+
     /// # Safety
     ///
     /// Length of the vector must not be zero.
@@ -326,18 +394,50 @@ impl AnyVec {
         self.get_ptr(self.len())
     }
 
-    /// Don't forget to call destructor.
+    /// Removes an item at the given index from the vector and writes it to the
+    /// given buffer.
+    ///
+    /// Therefore the item is actually moved from the vector to the given
+    /// buffer. So caller must take care of calling drop on it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use my_ecs::prelude::*;
+    ///
+    /// let mut v = AnyVec::new(tinfo!(i32));
+    /// unsafe {
+    ///     v.push(0_i32);
+    ///     v.push(1_i32);
+    ///     v.push(2_i32);
+    /// }
+    /// assert_eq!(v.len(), 3);
+    ///
+    /// let mut buf = 3_i32;
+    /// unsafe { v.swap_remove_raw(0, &mut buf as *mut i32 as *mut u8) };
+    /// assert_eq!(buf, 0);
+    ///
+    /// unsafe {
+    ///     assert_eq!(v.pop::<i32>(), Some(1));
+    ///     assert_eq!(v.pop::<i32>(), Some(2));
+    /// }
+    /// ```
     ///
     /// # Panics
     ///
-    /// Panics if `index` is out of bound..
+    /// Panics if the given index is out of bounds.
     ///
     /// # Safety
     ///
-    /// `buf` must valid for writes of [`Self::item_size`] bytes.
+    /// Undefined behavior if conditions below are not met.
+    /// - `buf` must have enough size to be copied an item.
+    /// - When `Some` is returned, `buf` must be correctly handled as an item.
+    ///   For example, if an item should be dropped, caller must call drop() on
+    ///   it.
+    /// - When `None` is returned, `buf` must be correctly handled as it was.
     pub unsafe fn swap_remove_raw(&mut self, index: usize, buf: *mut u8) {
-        // len - 1 can overflow but it causes panic in swap().
-        self.swap(index, self.len() - 1);
+        // If index is out of bounds or len() - 1 overflows, swap() panics.
+        self.swap(index, self.len().wrapping_sub(1));
         self.pop_raw(buf);
     }
 
@@ -349,15 +449,27 @@ impl AnyVec {
     ///
     /// Type of the value `T` must be the same as the type the vector knows.
     pub unsafe fn swap_remove<T: 'static>(&mut self, index: usize) -> T {
-        // len - 1 can overflow but it causes panic in swap().
-        self.swap(index, self.len() - 1);
+        // If index is out of bounds or len() - 1 overflows, swap() panics.
+        self.swap(index, self.len().wrapping_sub(1));
         self.pop().unwrap()
     }
 
+    /// # Panics
+    ///
+    /// Panics if `index` is out of bounds.
     pub fn swap_remove_drop(&mut self, index: usize) {
-        // len - 1 can overflow but it causes panic in swap().
-        self.swap(index, self.len() - 1);
+        // If index is out of bounds or len() - 1 overflows, swap() panics.
+        self.swap(index, self.len().wrapping_sub(1));
         self.pop_drop();
+    }
+
+    /// # Panics
+    ///
+    /// Panics if `index` is out of bounds.
+    pub fn swap_remove_forget(&mut self, index: usize) {
+        // If index is out of bounds or len() - 1 overflows, swap() panics.
+        self.swap(index, self.len().wrapping_sub(1));
+        self.pop_forget();
     }
 
     pub fn swap(&mut self, index0: usize, index1: usize) {
@@ -418,6 +530,53 @@ impl AnyVec {
             .map(|ptr| unsafe { (ptr.as_ptr() as *mut T).as_mut().unwrap_unchecked() })
     }
 
+    /// # Safety
+    ///
+    /// Type of the value `T` must be the same as the type the vector knows.
+    pub unsafe fn resize<T>(&mut self, new_len: usize, value: T)
+    where
+        T: Clone + 'static,
+    {
+        self.resize_with(new_len, || value.clone());
+    }
+
+    /// # Safety
+    ///
+    /// Conditions below must be met.
+    /// - Type of value pointed by `ptr` must be the same as the type the vector
+    ///   knows.
+    /// - Type must implement [`Clone`].
+    pub unsafe fn resize_raw(&mut self, new_len: usize, val_ptr: NonNull<u8>) {
+        debug_assert!(self.tinfo.is_clone);
+
+        let val_ptr = val_ptr.as_ptr().cast_const();
+
+        if new_len > self.len() {
+            self.reserve(new_len - self.len());
+
+            let (mut offset, stride) = self.get_ptr_offset(self.len());
+
+            let range = self.len()..new_len;
+            for _ in range {
+                unsafe {
+                    let dest = self.ptr.as_ptr().add(offset);
+                    (self.tinfo.fn_clone)(val_ptr, dest);
+                };
+                offset += stride;
+            }
+
+            unsafe {
+                self.set_len(new_len);
+            }
+        } else {
+            self.truncate(new_len);
+        }
+    }
+
+    /// Resizes the vector with values the given function generates.
+    ///
+    /// Generated values will be added in order.
+    ///
     /// # Safety
     ///
     /// Type of the value `T` must be the same as the type the vector knows.
@@ -490,6 +649,50 @@ impl AnyVec {
         unsafe { slice::from_raw_parts_mut(self.ptr.as_ptr() as *mut T, self.len()) }
     }
 
+    /// # Safety
+    ///
+    /// Undefined behavior if conditions below are not met.
+    /// - Current pointer must point to a valid memory location.
+    /// - `new_cap` x [`Self::item_size`] is greater than zero and lesser or
+    ///   equal to [`isize::MAX`].
+    unsafe fn realloc_unchecked(&mut self, new_cap: usize) {
+        let item_size = self.item_size();
+        let old_size = self.capacity() * item_size;
+        let old_layout = Layout::from_size_align(old_size, self.align()).unwrap();
+        let new_size = new_cap * item_size;
+
+        debug_assert_ne!(self.ptr, Self::aligned_dangling(self.align()));
+        debug_assert!((1..=isize::MAX as usize).contains(&new_size));
+
+        // Safety
+        // - `ptr` and `layout` are valid.
+        // - `new_size` doesn't overflow `isize::MAX`.
+        let ptr = unsafe { alloc::realloc(self.ptr.as_ptr(), old_layout, new_size) };
+        if ptr.is_null() {
+            let layout = Layout::from_size_align(new_size, self.align()).unwrap();
+            alloc::handle_alloc_error(layout);
+        }
+
+        self.ptr = NonNull::new_unchecked(ptr);
+        self.cap = new_cap;
+    }
+
+    /// Drops all items in the vector and frees memory.
+    fn dealloc(&mut self) {
+        // Calls every drop method.
+        self.truncate(0);
+
+        // Releases the memory.
+        if !self.is_zst() && self.capacity() > 0 {
+            let size = self.capacity() * self.item_size();
+            let layout = Layout::from_size_align(size, self.align()).unwrap();
+            unsafe { alloc::dealloc(self.ptr.as_ptr(), layout) };
+
+            self.ptr = Self::aligned_dangling(self.align());
+            self.cap = 0;
+        }
+    }
+
     /// Converts start index into start pointer offset from the beginning of the vector and stride in bytes.
     /// If the type is zero sized, it will return all zeros.
     /// So, you must not use offset as loop counter.
@@ -556,15 +759,7 @@ impl Clone for AnyVec {
 
 impl Drop for AnyVec {
     fn drop(&mut self) {
-        // Calls every drop method.
-        self.truncate(0);
-
-        // Releases the memory.
-        if !self.is_zst() && self.capacity() > 0 {
-            let size = self.capacity() * self.item_size();
-            let layout = Layout::from_size_align(size, self.align()).unwrap();
-            unsafe { alloc::dealloc(self.ptr.as_ptr(), layout) };
-        }
+        self.dealloc();
     }
 }
 
@@ -581,7 +776,7 @@ impl AsRawIter for AnyVec {
     }
 }
 
-impl<'a> IntoIterator for &'a AnyVec {
+impl IntoIterator for &AnyVec {
     type Item = SendSyncPtr<u8>;
     type IntoIter = RawIter;
 
@@ -640,6 +835,7 @@ mod tests {
         x: [usize; 2],
     }
 
+    #[cfg(debug_assertions)]
     #[derive(PartialEq, Debug, Clone, Copy, Default)]
     struct SB {
         x: [usize; 2],
@@ -763,6 +959,37 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_anyvec_resize() {
+        unsafe {
+            // Tests resize().
+            let mut v = AnyVec::new(crate::tinfo!(i32));
+            assert!(v.is_empty());
+
+            v.resize(10, 42_i32);
+            assert_eq!(v.len(), 10);
+
+            for val in v.iter_of::<i32>() {
+                assert_eq!(*val, 42);
+            }
+
+            // Tests resize_raw().
+            #[derive(Clone)]
+            struct Val(String);
+
+            let mut v = AnyVec::new(crate::tinfo!(Val));
+
+            let val = Val("42".to_owned());
+            let val_ptr = NonNull::new(&val as *const Val as *mut Val as *mut u8).unwrap();
+            v.resize_raw(10, val_ptr);
+            assert_eq!(v.len(), 10);
+
+            for val in v.iter_of::<Val>() {
+                assert_eq!(val.0.as_str(), "42");
+            }
+        }
+    }
+
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic]
@@ -824,18 +1051,32 @@ mod tests {
         unsafe {
             let mut v = AnyVec::new(crate::tinfo!(()));
             assert!(v.is_empty());
+            assert_eq!(v.capacity(), usize::MAX);
+
+            // Pusing ZST must be possible, and length must be grown by pushing.
             for i in 1..10 {
                 v.push(());
                 assert_eq!(v.len(), i);
             }
 
-            // Not allocated.
+            // We've pushed ZST values, but the vector must not have allocated
+            // memory.
             assert_eq!(v.ptr, AnyVec::aligned_dangling(crate::tinfo!(()).align));
 
+            // Popping ZST must be possible, and length must be shrunk by
+            // popping.
             for i in (1..10).rev() {
                 v.pop_drop();
                 assert_eq!(v.len(), i - 1);
             }
+
+            // Reserving capacity for ZST in the vector must have no effects.
+            v.reserve(100);
+            assert_eq!(v.capacity(), usize::MAX);
+
+            // Shrinknig capacity for ZST in the vector must have no effects.
+            v.shrink_to_fit();
+            assert_eq!(v.capacity(), usize::MAX);
         }
     }
 }

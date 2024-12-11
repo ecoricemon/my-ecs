@@ -3,7 +3,7 @@ services:
     image: ecoricemon/rust-wasm-dev
     container_name: rust-wasm-dev
     volumes:
-      - ..:/workspace:rw
+      - ../..:/workspace:rw
     working_dir: /workspace
     ports:
       - "8080:8080"

@@ -1,3 +1,71 @@
+/// Common interface for worker pool implementations.
+pub trait AsWorkerPool<W>: From<Vec<W>> + Into<Vec<W>> {
+    /// Creates empty worker pool.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use my_ecs::prelude::*;
+    ///
+    /// let pool = WorkerPool::new();
+    /// assert!(pool.is_empty());
+    /// ```
+    fn new() -> Self;
+
+    /// Creates worker pool with workers as many as number of available logical
+    /// cpus.
+    ///
+    /// Number of logical cpus depends on platform which this crate runs on.
+    /// This method guarantees the returned workerpool to have at least one
+    /// worker in it even if it failed to get the number of logical cpus.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use my_ecs::prelude::*;
+    ///
+    /// let pool = WorkerPool::with_num_cpus();
+    /// assert!(!pool.is_empty());
+    /// ```
+    fn with_num_cpus() -> Self;
+
+    /// Creates worker pool with `len` workers.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use my_ecs::prelude::*;
+    ///
+    /// let pool = WorkerPool::with_len(1);
+    /// assert_eq!(pool.len() , 1);
+    /// ```
+    fn with_len(len: usize) -> Self;
+
+    /// Returns number of workers in the worker pool.
+    fn len(&self) -> usize;
+
+    /// Returns true if the worker pool doesn't contain any workers in it.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Appends a worker in the worker pool.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use my_ecs::prelude::*;
+    ///
+    /// let mut pool = WorkerPool::new();
+    /// assert!(pool.is_empty());
+    ///
+    /// let worker = WorkerBuilder::new("name").spawn().unwrap();
+    /// pool.append(worker);
+    /// assert_eq!(pool.len(), 1);
+    /// ```
+    fn append(&mut self, worker: W);
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub use non_web::*;
 
@@ -6,6 +74,7 @@ pub use web::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod non_web {
+    use super::*;
     use crate::{ds::prelude::*, ecs::prelude::*, util};
     use std::{
         fmt,
@@ -20,21 +89,21 @@ mod non_web {
         workers: Vec<Worker>,
     }
 
-    impl WorkerPool {
-        pub const fn new() -> Self {
+    impl AsWorkerPool<Worker> for WorkerPool {
+        fn new() -> Self {
             Self {
                 workers: Vec::new(),
             }
         }
 
-        pub fn with_num_cpus() -> Self {
+        fn with_num_cpus() -> Self {
             let num_cpus = thread::available_parallelism()
                 .unwrap_or(unsafe { NonZeroUsize::new_unchecked(1) })
                 .get();
             Self::with_len(num_cpus)
         }
 
-        pub fn with_len(len: usize) -> Self {
+        fn with_len(len: usize) -> Self {
             let mut this = Self::new();
 
             let mut name = "worker0".to_owned();
@@ -47,15 +116,11 @@ mod non_web {
             this
         }
 
-        pub fn len(&self) -> usize {
+        fn len(&self) -> usize {
             self.workers.len()
         }
 
-        pub fn is_empty(&self) -> bool {
-            self.len() == 0
-        }
-
-        pub fn append(&mut self, worker: Worker) {
+        fn append(&mut self, worker: Worker) {
             self.workers.push(worker);
         }
     }
@@ -158,6 +223,7 @@ mod non_web {
 
 #[cfg(target_arch = "wasm32")]
 mod web {
+    use super::*;
     use crate::{
         ds::prelude::*,
         ecs::prelude::*,
@@ -183,21 +249,23 @@ mod web {
     }
 
     impl WorkerPool {
-        pub const fn new() -> Self {
+        fn clear(&mut self) {
+            self.workers.clear();
+        }
+    }
+
+    impl AsWorkerPool<Worker> for WorkerPool {
+        fn new() -> Self {
             Self {
                 workers: Vec::new(),
             }
         }
 
-        pub fn into_vec(self) -> Vec<Worker> {
-            self.workers
-        }
-
-        pub fn with_num_cpus() -> Self {
+        fn with_num_cpus() -> Self {
             Self::with_len(web_util::available_parallelism())
         }
 
-        pub fn with_len(len: usize) -> Self {
+        fn with_len(len: usize) -> Self {
             let mut this = Self::new();
 
             let mut name = "worker0".to_owned();
@@ -210,20 +278,12 @@ mod web {
             this
         }
 
-        pub fn len(&self) -> usize {
+        fn len(&self) -> usize {
             self.workers.len()
         }
 
-        pub fn is_empty(&self) -> bool {
-            self.len() == 0
-        }
-
-        pub fn append(&mut self, worker: Worker) {
+        fn append(&mut self, worker: Worker) {
             self.workers.push(worker);
-        }
-
-        fn clear(&mut self) {
-            self.workers.clear();
         }
     }
 
@@ -314,7 +374,7 @@ mod web {
             );
         }
 
-        pub fn init_ecs(&self, f: fn(WorkerPool) -> RawEcsApp) {
+        pub fn init_ecs(&self, f: fn(WorkerPool) -> LeakedEcsApp) {
             let arg = FnCodec::encode_into_array(f);
             self.delegate(
                 |arg| {
@@ -323,7 +383,7 @@ mod web {
                         // Safety: `arg` is `f`.
                         unsafe {
                             let f = FnCodec::decode_from_array(&arg);
-                            let f = mem::transmute::<fn(), fn(WorkerPool) -> RawEcsApp>(f);
+                            let f = mem::transmute::<fn(), fn(WorkerPool) -> LeakedEcsApp>(f);
                             cx.pend_fn_init_ecs.push_back(f);
                         };
                         cx.ready_run();
@@ -333,7 +393,7 @@ mod web {
             );
         }
 
-        pub fn with_ecs(&self, f: fn(Ecs<'static>)) {
+        pub fn with_ecs(&self, f: fn(EcsExt<'static>)) {
             let arg = FnCodec::encode_into_array(f);
             self.delegate(
                 |arg| {
@@ -342,7 +402,7 @@ mod web {
                         // Safety: `arg` is `f`.
                         unsafe {
                             let f = FnCodec::decode_from_array(&arg);
-                            let f = mem::transmute::<fn(), fn(Ecs<'static>)>(f);
+                            let f = mem::transmute::<fn(), fn(EcsExt<'static>)>(f);
                             cx.pend_fn_with_ecs.push_back(f);
                         };
                         cx.ready_run();
@@ -400,7 +460,6 @@ mod web {
     }
 
     thread_local! {
-        #[allow(clippy::thread_local_initializer_can_be_made_const)]
         static JS_MAIN_CX: RefCell<MainWorkerContext> = RefCell::new(
             MainWorkerContext::new()
         );
@@ -415,11 +474,11 @@ mod web {
     pub struct MainWorkerContext {
         /// Worker pool.
         pool: WorkerPool,
-        raw_ecs: Option<RawEcsApp>,
+        raw_ecs: Option<LeakedEcsApp>,
         /// Child worker name that will be given to the next spawned child worker.
         child_name: String,
-        pend_fn_init_ecs: VecDeque<fn(WorkerPool) -> RawEcsApp>,
-        pend_fn_with_ecs: VecDeque<fn(Ecs<'static>)>,
+        pend_fn_init_ecs: VecDeque<fn(WorkerPool) -> LeakedEcsApp>,
+        pend_fn_with_ecs: VecDeque<fn(EcsExt<'static>)>,
     }
 
     impl MainWorkerContext {
@@ -715,7 +774,7 @@ mod web {
         // which is not what we want, we need to evaluate it at runtime.
         // Therefore, you need to configure your bundler not to do it.
         // (e.g. Webpack does it basically, but Vite(v5.1.6) doesn't do it)
-        #[wasm_bindgen(thread_local, js_namespace = ["import", "meta"], js_name = url)]
+        #[wasm_bindgen(thread_local_v2, js_namespace = ["import", "meta"], js_name = url)]
         static IMPORT_META_URL: JsValue;
     }
 

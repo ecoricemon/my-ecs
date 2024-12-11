@@ -1,139 +1,140 @@
-use super::filter::{FilterInfo, FilterKey, RawFiltered, StoreFilterInfo};
+use super::select::{SelectInfo, SelectKey, SelectedRaw, StoreSelectInfo};
 use crate::ds::prelude::*;
 use crate::ecs::{
-    ent::entity::{ContainEntity, EntityKey},
+    ent::entity::{ContainEntity, EntityIndex, EntityKey},
     resource::ResourceKey,
 };
+use my_ecs_macros::repeat_macro;
 use std::{
     ops::{Deref, DerefMut},
     ptr::NonNull,
     sync::Arc,
 };
 
-/// A shallow wrapper structure for the [`Query::Output`].
+/// A shallow wrapper struct for the [`Query::Output`].
 #[repr(transparent)]
-pub struct Read<'buf, R: Query>(pub(crate) <R as Query>::Output<'buf>);
+pub struct Read<'buf, R: Query>(pub(crate) R::Output<'buf>);
 
 impl<'buf, R: Query> Read<'buf, R> {
-    pub fn take(self) -> <R as Query>::Output<'buf> {
+    pub fn take(self) -> R::Output<'buf> {
         self.0
     }
 }
 
 impl<'buf, R: Query> Deref for Read<'buf, R> {
-    type Target = <R as Query>::Output<'buf>;
+    type Target = R::Output<'buf>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-/// A shallow wrapper structure for the [`QueryMut::Output`].
+/// A shallow wrapper struct for the [`QueryMut::Output`].
 #[repr(transparent)]
-pub struct Write<'buf, W: QueryMut>(pub(crate) <W as QueryMut>::Output<'buf>);
+pub struct Write<'buf, W: QueryMut>(pub(crate) W::Output<'buf>);
 
 impl<'buf, W: QueryMut> Write<'buf, W> {
-    pub fn take(self) -> <W as QueryMut>::Output<'buf> {
+    pub fn take(self) -> W::Output<'buf> {
         self.0
     }
 }
 
 impl<'buf, W: QueryMut> Deref for Write<'buf, W> {
-    type Target = <W as QueryMut>::Output<'buf>;
+    type Target = W::Output<'buf>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<'buf, W: QueryMut> DerefMut for Write<'buf, W> {
+impl<W: QueryMut> DerefMut for Write<'_, W> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-/// A shallow wrapper structure for the [`ResQuery::Output`].
+/// A shallow wrapper struct for the [`ResQuery::Output`].
 #[repr(transparent)]
-pub struct ResRead<'buf, RR: ResQuery>(pub(crate) <RR as ResQuery>::Output<'buf>);
+pub struct ResRead<'buf, RR: ResQuery>(pub(crate) RR::Output<'buf>);
 
 impl<'buf, RR: ResQuery> ResRead<'buf, RR> {
-    pub fn take(self) -> <RR as ResQuery>::Output<'buf> {
+    pub fn take(self) -> RR::Output<'buf> {
         self.0
     }
 }
 
 impl<'buf, RR: ResQuery> Deref for ResRead<'buf, RR> {
-    type Target = <RR as ResQuery>::Output<'buf>;
+    type Target = RR::Output<'buf>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-/// A shallow wrapper structure for the [`ResQueryMut::Output`].
+/// A shallow wrapper struct for the [`ResQueryMut::Output`].
 #[repr(transparent)]
-pub struct ResWrite<'buf, RW: ResQueryMut>(pub(crate) <RW as ResQueryMut>::Output<'buf>);
+pub struct ResWrite<'buf, RW: ResQueryMut>(pub(crate) RW::Output<'buf>);
 
 impl<'buf, RW: ResQueryMut> ResWrite<'buf, RW> {
-    pub fn take(self) -> <RW as ResQueryMut>::Output<'buf> {
+    pub fn take(self) -> RW::Output<'buf> {
         self.0
     }
 }
 
 impl<'buf, RW: ResQueryMut> Deref for ResWrite<'buf, RW> {
-    type Target = <RW as ResQueryMut>::Output<'buf>;
+    type Target = RW::Output<'buf>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<'buf, RW: ResQueryMut> DerefMut for ResWrite<'buf, RW> {
+impl<RW: ResQueryMut> DerefMut for ResWrite<'_, RW> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-/// A shallow wrapper structure for the [`EntQueryMut::Output`].
+/// A shallow wrapper struct for the [`EntQueryMut::Output`].
 #[repr(transparent)]
-pub struct EntWrite<'buf, EW: EntQueryMut>(pub(crate) <EW as EntQueryMut>::Output<'buf>);
+pub struct EntWrite<'buf, EW: EntQueryMut>(pub(crate) EW::Output<'buf>);
 
 impl<'buf, EW: EntQueryMut> EntWrite<'buf, EW> {
-    pub fn take(self) -> <EW as EntQueryMut>::Output<'buf> {
+    pub fn take(self) -> EW::Output<'buf> {
         self.0
     }
 }
 
 impl<'buf, EW: EntQueryMut> Deref for EntWrite<'buf, EW> {
-    type Target = <EW as EntQueryMut>::Output<'buf>;
+    type Target = EW::Output<'buf>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<'buf, EW: EntQueryMut> DerefMut for EntWrite<'buf, EW> {
+impl<EW: EntQueryMut> DerefMut for EntWrite<'_, EW> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
-/// [`TypeId`] of a [`Query`] or [`QueryMut`].
+/// Unique identifier for a type implementing [`Query`] or [`QueryMut`].
 pub type QueryKey = ATypeId<QueryKey_>;
 pub struct QueryKey_;
 
-/// [`TypeId`] of a [`ResQuery`] or [`ResQueryMut`].
+/// Unique identifier for a type implementing [`ResQuery`] or [`ResQueryMut`].
 pub type ResQueryKey = ATypeId<ResQueryKey_>;
 pub struct ResQueryKey_;
 
-/// [`TypeId`] of a [`EntQueryMut`].
+/// Unique identifier for a type implementing [`EntQueryMut`].
 pub type EntQueryKey = ATypeId<EntQueryKey_>;
 pub struct EntQueryKey_;
 
 #[derive(Debug, Clone)]
 pub struct QueryInfo {
     name: &'static str,
-    filters: Box<[(FilterKey, Arc<FilterInfo>)]>,
+    sels: Box<[(SelectKey, Arc<SelectInfo>)]>,
 }
 
 impl QueryInfo {
@@ -141,8 +142,8 @@ impl QueryInfo {
         self.name
     }
 
-    pub fn filters(&self) -> &[(FilterKey, Arc<FilterInfo>)] {
-        &self.filters
+    pub fn selectors(&self) -> &[(SelectKey, Arc<SelectInfo>)] {
+        &self.sels
     }
 }
 
@@ -178,192 +179,184 @@ impl EntQueryInfo {
     }
 }
 
-pub trait StoreQueryInfo: StoreFilterInfo {
-    fn get(&self, key: &QueryKey) -> Option<Arc<QueryInfo>>;
-    fn insert(&mut self, key: QueryKey, info: &Arc<QueryInfo>);
+pub trait StoreQueryInfo: StoreSelectInfo {
+    fn contains(&self, key: &QueryKey) -> bool;
+    fn get(&self, key: &QueryKey) -> Option<&Arc<QueryInfo>>;
+    fn insert(&mut self, key: QueryKey, info: Arc<QueryInfo>);
 }
 
 pub trait StoreResQueryInfo {
-    fn get(&self, key: &ResQueryKey) -> Option<Arc<ResQueryInfo>>;
-    fn insert(&mut self, key: ResQueryKey, info: &Arc<ResQueryInfo>);
+    fn contains(&self, key: &ResQueryKey) -> bool;
+    fn get(&self, key: &ResQueryKey) -> Option<&Arc<ResQueryInfo>>;
+    fn insert(&mut self, key: ResQueryKey, info: Arc<ResQueryInfo>);
 }
 
 pub trait StoreEntQueryInfo {
-    fn get(&self, key: &EntQueryKey) -> Option<Arc<EntQueryInfo>>;
-    fn insert(&mut self, key: EntQueryKey, info: &Arc<EntQueryInfo>);
+    fn contains(&self, key: &EntQueryKey) -> bool;
+    fn get(&self, key: &EntQueryKey) -> Option<&Arc<EntQueryInfo>>;
+    fn insert(&mut self, key: EntQueryKey, info: Arc<EntQueryInfo>);
 }
 
 /// [`Query`] is a combination of [`Filter`](super::filter::Filter)s for read-only access.
 /// For instance, `()`, `FilterA`, and `(FilterA, FilterB)` are sorts `Query`.
-pub trait Query: Send + 'static {
+pub trait Query: 'static {
     type Output<'buf>;
 
-    /// Provided.
-    fn query_key() -> QueryKey {
+    fn info_from<S>(stor: &mut S) -> QueryInfo
+    where
+        S: StoreQueryInfo + ?Sized;
+
+    fn convert(buf: &mut [SelectedRaw]) -> Self::Output<'_>;
+
+    fn key() -> QueryKey {
         QueryKey::of::<Self>()
     }
 
-    /// Provided.
-    fn as_query_key(&self) -> QueryKey {
-        Self::query_key()
+    fn get_info_from<S>(stor: &mut S) -> &Arc<QueryInfo>
+    where
+        S: StoreQueryInfo + ?Sized,
+    {
+        let key = Self::key();
+
+        if !StoreQueryInfo::contains(stor, &key) {
+            let qinfo = Arc::new(Self::info_from(stor));
+            StoreQueryInfo::insert(stor, key, qinfo);
+        }
+
+        // Safety: Inserted right before.
+        unsafe { StoreQueryInfo::get(stor, &key).unwrap_unchecked() }
     }
-
-    /// Required.
-    fn get_info<S: StoreQueryInfo + ?Sized>(stor: &mut S) -> Arc<QueryInfo>;
-
-    /// Required.
-    fn convert(buf: &mut [RawFiltered]) -> Self::Output<'_>;
 }
 
 /// [`QueryMut`] is a combination of [`Filter`](super::filter::Filter)s for writable access.
 /// For instance, `()`, `FilterA`, and `(FilterA, FilterB)` are sorts of `Query`.
-pub trait QueryMut: Send + 'static {
+pub trait QueryMut: 'static {
     type Output<'buf>;
 
-    /// Provided.
-    fn query_mut_key() -> QueryKey
+    fn info_from<S>(stor: &mut S) -> QueryInfo
     where
-        Self: Sized,
-    {
-        struct QueryMutSalt;
-        QueryKey::of::<(Self, QueryMutSalt)>()
+        S: StoreQueryInfo + ?Sized;
+
+    fn convert(buf: &mut [SelectedRaw]) -> Self::Output<'_>;
+
+    fn key() -> QueryKey {
+        QueryKey::of::<Self>()
     }
 
-    /// Provided.
-    fn as_query_mut_key(&self) -> QueryKey
+    fn get_info_from<S>(stor: &mut S) -> &Arc<QueryInfo>
     where
-        Self: Sized,
+        S: StoreQueryInfo + ?Sized,
     {
-        Self::query_mut_key()
+        let key = Self::key();
+
+        if !StoreQueryInfo::contains(stor, &key) {
+            let qinfo = Arc::new(Self::info_from(stor));
+            StoreQueryInfo::insert(stor, key, qinfo);
+        }
+
+        // Safety: Inserted right before.
+        unsafe { StoreQueryInfo::get(stor, &key).unwrap_unchecked() }
     }
-
-    /// Required.
-    fn get_info<S: StoreQueryInfo + ?Sized>(stor: &mut S) -> Arc<QueryInfo>;
-
-    /// Required.
-    fn convert(buf: &mut [RawFiltered]) -> Self::Output<'_>;
 }
 
 /// [`ResQuery`] is a combination of [`Resource`](super::resource::Resource)s for read-only access.
 /// For instance, `()`, `ResA`, and `(ResA, ResB)` are sorts of `ResQuery`.
-pub trait ResQuery: Send + 'static {
+pub trait ResQuery: 'static {
     type Output<'buf>;
 
-    /// Provided.
-    fn resource_query_key() -> ResQueryKey {
+    fn info() -> ResQueryInfo;
+
+    fn convert(buf: &mut Vec<Borrowed<ManagedConstPtr<u8>>>) -> Self::Output<'_>;
+
+    fn key() -> ResQueryKey {
         ResQueryKey::of::<Self>()
     }
 
-    /// Provided.
-    fn as_resource_query_key(&self) -> ResQueryKey {
-        Self::resource_query_key()
-    }
+    fn get_info_from<S>(stor: &mut S) -> &Arc<ResQueryInfo>
+    where
+        S: StoreResQueryInfo + ?Sized,
+    {
+        let key = Self::key();
 
-    /// Provided.
-    fn get_info<S: StoreResQueryInfo + ?Sized>(stor: &mut S) -> Arc<ResQueryInfo> {
-        let key = Self::resource_query_key();
-        if let Some(info) = StoreResQueryInfo::get(stor, &key) {
-            info
-        } else {
-            let info = Arc::new(Self::info());
-            StoreResQueryInfo::insert(stor, key, &info);
-            info
+        if !stor.contains(&key) {
+            let rqinfo = Arc::new(Self::info());
+            stor.insert(key, rqinfo);
         }
+
+        // Safety: Inserted right before.
+        unsafe { stor.get(&key).unwrap_unchecked() }
     }
-
-    /// Required.
-    fn info() -> ResQueryInfo;
-
-    /// Required.
-    fn convert(buf: &mut Vec<Borrowed<ManagedConstPtr<u8>>>) -> Self::Output<'_>;
 }
 
 /// [`ResQueryMut`] is a combination of [`Resource`](super::resource::Resource)s for writable access.
 /// For instance, `()`, `ResA`, and `(ResA, ResB)` are sorts of `ResQueryMut`.
-pub trait ResQueryMut: Send + 'static {
+pub trait ResQueryMut: 'static {
     type Output<'buf>;
 
-    /// Provided.
-    fn resource_query_mut_key() -> ResQueryKey
-    where
-        Self: Sized,
-    {
-        struct ResQueryMutSalt;
-        ResQueryKey::of::<(Self, ResQueryMutSalt)>()
-    }
-
-    /// Provided.
-    fn as_resource_query_mut_key(&self) -> ResQueryKey
-    where
-        Self: Sized,
-    {
-        Self::resource_query_mut_key()
-    }
-
-    /// Provided.
-    fn get_info<S: StoreResQueryInfo + ?Sized>(stor: &mut S) -> Arc<ResQueryInfo>
-    where
-        Self: Sized,
-    {
-        let key = Self::resource_query_mut_key();
-        if let Some(info) = StoreResQueryInfo::get(stor, &key) {
-            info
-        } else {
-            let info = Arc::new(Self::info());
-            StoreResQueryInfo::insert(stor, key, &info);
-            info
-        }
-    }
-
-    /// Required.
     fn info() -> ResQueryInfo;
 
-    /// Required.
     fn convert(buf: &mut Vec<Borrowed<ManagedMutPtr<u8>>>) -> Self::Output<'_>;
+
+    fn key() -> ResQueryKey {
+        ResQueryKey::of::<Self>()
+    }
+
+    fn get_info_from<S>(stor: &mut S) -> &Arc<ResQueryInfo>
+    where
+        S: StoreResQueryInfo + ?Sized,
+    {
+        let key = Self::key();
+
+        if !stor.contains(&key) {
+            let rqinfo = Arc::new(Self::info());
+            stor.insert(key, rqinfo);
+        }
+
+        // Safety: Inserted right before.
+        unsafe { stor.get(&key).unwrap_unchecked() }
+    }
 }
 
 /// [`EntQueryMut`] is a combination of [`ContainEntity`](super::entity::ContainEntity)s for writable access.
 /// For instance, `()`, `EntA`, and `(EntA, EntB)` are sorts of `EntQueryMut`.
-pub trait EntQueryMut: Send + 'static {
+pub trait EntQueryMut: 'static {
     type Output<'buf>;
 
-    /// Provided.
-    fn entity_query_mut_key() -> EntQueryKey {
+    fn info() -> EntQueryInfo;
+
+    fn convert(
+        buf: &mut Vec<(EntityIndex, Borrowed<NonNull<dyn ContainEntity>>)>,
+    ) -> Self::Output<'_>;
+
+    fn key() -> EntQueryKey {
         EntQueryKey::of::<Self>()
     }
 
-    /// Provided.
-    fn as_entity_query_mut_key(&self) -> EntQueryKey {
-        Self::entity_query_mut_key()
-    }
+    fn get_info_from<S>(stor: &mut S) -> &Arc<EntQueryInfo>
+    where
+        S: StoreEntQueryInfo + ?Sized,
+    {
+        let key = Self::key();
 
-    /// Provided.
-    fn get_info<S: StoreEntQueryInfo + ?Sized>(stor: &mut S) -> Arc<EntQueryInfo> {
-        let key = Self::entity_query_mut_key();
-        if let Some(info) = StoreEntQueryInfo::get(stor, &key) {
-            info
-        } else {
-            let info = Arc::new(Self::info());
-            StoreEntQueryInfo::insert(stor, key, &info);
-            info
+        if !stor.contains(&key) {
+            let eqinfo = Arc::new(Self::info());
+            stor.insert(key, eqinfo);
         }
+
+        // Safety: Inserted right before.
+        unsafe { stor.get(&key).unwrap_unchecked() }
     }
-
-    /// Required.
-    fn info() -> EntQueryInfo;
-
-    /// Required.
-    fn convert(buf: &mut Vec<Borrowed<NonNull<dyn ContainEntity>>>) -> Self::Output<'_>;
 }
 
-/// Implements the trait [`Query`] and [`QueryMut`] for an anonymous tuple of [`Filter`](super::filter::Filter)s.
+/// Implements [`Query`] and [`QueryMut`] for a tuple of
+/// [`Select`](crate::ecs::sys::select::Select).
 #[macro_export]
 macro_rules! impl_query {
     ($n:expr, $($i:expr),*) => {const _: () = {
         #[allow(unused_imports)]
         use $crate::ecs::sys::{
             query::{Query, QueryInfo, StoreQueryInfo},
-            filter::{Filter, RawFiltered, Filtered, FilteredMut},
+            select::{Select, SelectKey, SelectedRaw, Selected, SelectedMut},
         };
         use std::{any::type_name, sync::Arc};
         use paste::paste;
@@ -371,30 +364,25 @@ macro_rules! impl_query {
         // Implements `Query` for (A0, A1, ...).
         paste! {
             #[allow(unused_parens)]
-            impl<$([<A $i>]: Filter),*> Query for ( $([<A $i>]),* ) {
-                type Output<'buf> = ( $(Filtered<'buf, <[<A $i>] as Filter>::Target>),* );
+            impl<$([<A $i>]: Select),*> Query for ( $([<A $i>]),* ) {
+                type Output<'buf> = ( $(Selected<'buf, [<A $i>]::Target>),* );
 
-                fn get_info<S>(stor: &mut S) -> Arc<QueryInfo>
+                fn info_from<S>(_stor: &mut S) -> QueryInfo
                 where
-                    S: StoreQueryInfo + ?Sized,
+                    S: StoreQueryInfo + ?Sized
                 {
-                    let key = Self::query_key();
-                    if let Some(info) = StoreQueryInfo::get(stor, &key) {
-                        info
-                    } else {
-                        let info = Arc::new(QueryInfo {
-                            name: type_name::<Self>(),
-                            filters: [$((
-                                <[<A $i>] as Filter>::key(),
-                                <[<A $i>] as Filter>::info(stor)
-                            )),*].into(),
-                        });
-                        StoreQueryInfo::insert(stor, key, &info);
-                        info
-                    }
+                    let name = type_name::<Self>();
+                    let sels = [ $(
+                        (
+                            [<A $i>]::key(),
+                            Arc::clone([<A $i>]::get_info_from(_stor))
+                        )
+                    ),* ];
+                    let sels: Box<[(SelectKey, Arc<SelectInfo>)]> = sels.into();
+                    QueryInfo { name, sels }
                 }
 
-                fn convert(buf: &mut [RawFiltered]) -> Self::Output<'_> {
+                fn convert(buf: &mut [SelectedRaw]) -> Self::Output<'_> {
                     debug_assert_eq!($n, buf.len());
 
                     #[allow(clippy::unused_unit)]
@@ -404,9 +392,9 @@ macro_rules! impl_query {
                         // so no problem.
                         // Safety: Infallible.
                         {
-                            let x: *mut RawFiltered = &mut buf[$i] as *mut _;
-                            let x: &mut RawFiltered = unsafe { x.as_mut().unwrap_unchecked() };
-                            Filtered::new(x)
+                            let x: *mut SelectedRaw = &mut buf[$i] as *mut _;
+                            let x: &mut SelectedRaw = unsafe { x.as_mut().unwrap_unchecked() };
+                            Selected::new(x)
                         }
                     ),* )
                 }
@@ -416,30 +404,26 @@ macro_rules! impl_query {
         // Implements `QueryMut` for (A0, A1, ...).
         paste! {
             #[allow(unused_parens)]
-            impl<$([<A $i>]: Filter),*> QueryMut for ( $([<A $i>]),* ) {
-                type Output<'buf> = ( $(FilteredMut<'buf, <[<A $i>] as Filter>::Target>),* );
+            impl<$([<A $i>]: Select),*> QueryMut for ( $([<A $i>]),* ) {
+                type Output<'buf> = ( $(SelectedMut<'buf, [<A $i>]::Target>),* );
 
-                fn get_info<S>(stor: &mut S) -> Arc<QueryInfo>
+                fn info_from<S>(_stor: &mut S) -> QueryInfo
                 where
-                    S: StoreQueryInfo + ?Sized,
+                    S: StoreQueryInfo + ?Sized
                 {
-                    let key = Self::query_mut_key();
-                    if let Some(info) = StoreQueryInfo::get(stor, &key) {
-                        info
-                    } else {
-                        let info = Arc::new(QueryInfo {
-                            name: type_name::<Self>(),
-                            filters: [$((
-                                <[<A $i>] as Filter>::key(),
-                                <[<A $i>] as Filter>::info(stor)
-                            )),*].into(),
-                        });
-                        StoreQueryInfo::insert(stor, key, &info);
-                        info
-                    }
+                    let name = type_name::<Self>();
+                    let sels = [ $(
+                        (
+                            [<A $i>]::key(),
+                            Arc::clone([<A $i>]::get_info_from(_stor))
+                        )
+                    ),* ];
+                    let sels: Box<[(SelectKey, Arc<SelectInfo>)]> = sels.into();
+
+                    QueryInfo { name, sels }
                 }
 
-                fn convert(buf: &mut [RawFiltered]) -> Self::Output<'_> {
+                fn convert(buf: &mut [SelectedRaw]) -> Self::Output<'_> {
                     debug_assert_eq!($n, buf.len());
 
                     #[allow(clippy::unused_unit)]
@@ -449,9 +433,9 @@ macro_rules! impl_query {
                         // so no problem.
                         // Safety: Infallible.
                         {
-                            let x: *mut RawFiltered = &mut buf[$i] as *mut _;
-                            let x: &mut RawFiltered = unsafe { x.as_mut().unwrap_unchecked() };
-                            FilteredMut::new(x)
+                            let x: *mut SelectedRaw = &mut buf[$i] as *mut _;
+                            let x: &mut SelectedRaw = unsafe { x.as_mut().unwrap_unchecked() };
+                            SelectedMut::new(x)
                         }
                     ),* )
                 }
@@ -459,15 +443,7 @@ macro_rules! impl_query {
         }
     };};
 }
-impl_query!(0,);
-impl_query!(1, 0);
-impl_query!(2, 0, 1);
-impl_query!(3, 0, 1, 2);
-impl_query!(4, 0, 1, 2, 3);
-impl_query!(5, 0, 1, 2, 3, 4);
-impl_query!(6, 0, 1, 2, 3, 4, 5);
-impl_query!(7, 0, 1, 2, 3, 4, 5, 6);
-impl_query!(8, 0, 1, 2, 3, 4, 5, 6, 7);
+repeat_macro!(impl_query, ..=8);
 
 /// Implements the trait [`ResQuery`] and [`ResQueryMut`] for an anonymous tuple of [`Resource`](super::resource::Resource)s.
 #[macro_export]
@@ -493,7 +469,7 @@ macro_rules! impl_res_query {
                 fn info() -> ResQueryInfo {
                     ResQueryInfo {
                         name: type_name::<Self>(),
-                        rkeys: [$(<[<A $i>] as Resource>::resource_key()),*].into(),
+                        rkeys: [$([<A $i>]::key()),*].into(),
                     }
                 }
 
@@ -509,7 +485,7 @@ macro_rules! impl_res_query {
                             let ptr: NonNullExt<_> = _buf[$i].inner();
                             let lhs: &TypeIdExt = ptr.get_type().unwrap();
 
-                            let rkey: ResourceKey = [<A $i>]::resource_key();
+                            let rkey: ResourceKey = [<A $i>]::key();
                             let rhs: &TypeIdExt = rkey.get_inner();
 
                             assert_eq!(lhs, rhs);
@@ -536,7 +512,7 @@ macro_rules! impl_res_query {
                 fn info() -> ResQueryInfo {
                     ResQueryInfo {
                         name: type_name::<Self>(),
-                        rkeys: [$(<[<A $i>] as Resource>::resource_key()),*].into(),
+                        rkeys: [$([<A $i>]::key()),*].into(),
                     }
                 }
 
@@ -552,7 +528,7 @@ macro_rules! impl_res_query {
                             let ptr: NonNullExt<_> = _buf[$i].inner();
                             let lhs: &TypeIdExt = ptr.get_type().unwrap();
 
-                            let rkey: ResourceKey = [<A $i>]::resource_key();
+                            let rkey: ResourceKey = [<A $i>]::key();
                             let rhs: &TypeIdExt = rkey.get_inner();
 
                             assert_eq!(lhs, rhs);
@@ -581,15 +557,7 @@ macro_rules! impl_res_query {
         }
     };};
 }
-impl_res_query!(0,);
-impl_res_query!(1, 0);
-impl_res_query!(2, 0, 1);
-impl_res_query!(3, 0, 1, 2);
-impl_res_query!(4, 0, 1, 2, 3);
-impl_res_query!(5, 0, 1, 2, 3, 4);
-impl_res_query!(6, 0, 1, 2, 3, 4, 5);
-impl_res_query!(7, 0, 1, 2, 3, 4, 5, 6);
-impl_res_query!(8, 0, 1, 2, 3, 4, 5, 6, 7);
+repeat_macro!(impl_res_query, ..=8);
 
 /// Implements the trait [`EntQueryMut`] for an anonymous tuple of [`ContainEntity`](super::entity::ContainEntity)s.
 #[macro_export]
@@ -617,11 +585,13 @@ macro_rules! impl_ent_query {
                 fn info() -> EntQueryInfo {
                     EntQueryInfo {
                         name: type_name::<Self>(),
-                        ekeys: [$(<[<A $i>] as Entity>::entity_key()),*].into(),
+                        ekeys: [$([<A $i>]::key()),*].into(),
                     }
                 }
 
-                fn convert(buf: &mut Vec<Borrowed<NonNull<dyn ContainEntity>>>) -> Self::Output<'_> {
+                fn convert(
+                    buf: &mut Vec<(EntityIndex, Borrowed<NonNull<dyn ContainEntity>>)>,
+                ) -> Self::Output<'_> {
                     debug_assert_eq!($n, buf.len());
 
                     // clippy warns about possibility that users of the macro
@@ -630,7 +600,10 @@ macro_rules! impl_ent_query {
                     // 'buf[$i]' is safe code.
                     #[allow(clippy::macro_metavars_in_unsafe)]
                     let res = ( $(
-                        unsafe { TypedEntityContainer::new(*buf[$i]) }
+                        unsafe {
+                            let (ei, buf) = &buf[$i];
+                            TypedEntityContainer::new(*ei, **buf)
+                        }
                     ),* );
 
                     res
@@ -639,12 +612,4 @@ macro_rules! impl_ent_query {
         }
     };};
 }
-impl_ent_query!(0,);
-impl_ent_query!(1, 0);
-impl_ent_query!(2, 0, 1);
-impl_ent_query!(3, 0, 1, 2);
-impl_ent_query!(4, 0, 1, 2, 3);
-impl_ent_query!(5, 0, 1, 2, 3, 4);
-impl_ent_query!(6, 0, 1, 2, 3, 4, 5);
-impl_ent_query!(7, 0, 1, 2, 3, 4, 5, 6);
-impl_ent_query!(8, 0, 1, 2, 3, 4, 5, 6, 7);
+repeat_macro!(impl_ent_query, ..=8);

@@ -322,7 +322,7 @@ where
         // will be finished quickly.
         while this
             .sync
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
             std::thread::yield_now();

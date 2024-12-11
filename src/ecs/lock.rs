@@ -42,7 +42,7 @@ pub struct RequestLockFuture<'buf, Req> {
     _marker: PhantomData<&'buf Req>,
 }
 
-impl<'buf, Req> RequestLockFuture<'buf, Req>
+impl<Req> RequestLockFuture<'_, Req>
 where
     Req: Request,
 {
@@ -114,7 +114,7 @@ impl<'buf, Req: Request> Future for RequestLockFuture<'buf, Req> {
     }
 }
 
-impl<'buf, Req> Drop for RequestLockFuture<'buf, Req> {
+impl<Req> Drop for RequestLockFuture<'_, Req> {
     fn drop(&mut self) {
         cancel_future_or_abort(&self.lock);
     }
@@ -302,7 +302,7 @@ impl<'buf, Req: Request> RequestLockGuard<'buf, Req> {
     }
 }
 
-impl<'buf, Req: Request> fmt::Debug for RequestLockGuard<'buf, Req> {
+impl<Req: Request> fmt::Debug for RequestLockGuard<'_, Req> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RequestLockGuard")
             .field("sid", &self.sid)
@@ -319,14 +319,14 @@ impl<'buf, Req: Request> Deref for RequestLockGuard<'buf, Req> {
     }
 }
 
-impl<'buf, Req: Request> DerefMut for RequestLockGuard<'buf, Req> {
+impl<Req: Request> DerefMut for RequestLockGuard<'_, Req> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // Safety: `self.resp` is always occupied before drop.
         unsafe { self.resp.as_mut().unwrap_unchecked() }
     }
 }
 
-impl<'buf, Req: Request> Drop for RequestLockGuard<'buf, Req> {
+impl<Req: Request> Drop for RequestLockGuard<'_, Req> {
     fn drop(&mut self) {
         // Drops `self.resp` first for the next borrow.
         self.resp.take();
@@ -336,9 +336,9 @@ impl<'buf, Req: Request> Drop for RequestLockGuard<'buf, Req> {
         assert!(!cx.is_dangling());
         // Safety: Valid pointer.
         let cx = unsafe { cx.as_ref() };
-        let wid = cx.comm().worker_id();
+        let wid = cx.get_comm().worker_id();
         let msg = Message::Fin(wid, self.sid);
-        cx.comm().send_message(msg);
+        cx.get_comm().send_message(msg);
     }
 }
 

@@ -130,7 +130,7 @@ impl Xorshift {
             new ^= new << 5;
             if let Err(slot) =
                 self.state
-                    .compare_exchange(cur, new, Ordering::Relaxed, Ordering::Relaxed)
+                    .compare_exchange_weak(cur, new, Ordering::Relaxed, Ordering::Relaxed)
             {
                 cur = slot;
             } else {

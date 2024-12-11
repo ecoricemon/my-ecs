@@ -1,8 +1,11 @@
 use super::par::FnContext;
-use crate::ds::prelude::*;
-use crate::ecs::sys::{
-    request::SystemBuffer,
-    system::{Invoke, SystemId},
+use crate::{
+    ds::prelude::*,
+    ecs::sys::{
+        request::SystemBuffer,
+        system::{Invoke, SystemId},
+    },
+    impl_from_for_enum,
 };
 use std::{
     any::Any,
@@ -17,6 +20,10 @@ pub(super) enum Task {
     Parallel(ParTask),
     Future(UnsafeFuture),
 }
+
+impl_from_for_enum!("outer" = Task; "var" = System; "inner" = SysTask);
+impl_from_for_enum!("outer" = Task; "var" = Parallel; "inner" = ParTask);
+impl_from_for_enum!("outer" = Task; "var" = Future; "inner" = UnsafeFuture);
 
 impl Task {
     pub(super) const fn id(&self) -> TaskId {
@@ -34,6 +41,10 @@ pub(super) enum TaskId {
     Parallel(ParTask),
     Future(UnsafeFuture),
 }
+
+impl_from_for_enum!("outer" = TaskId; "var" = System; "inner" = SystemId);
+impl_from_for_enum!("outer" = TaskId; "var" = Parallel; "inner" = ParTask);
+impl_from_for_enum!("outer" = TaskId; "var" = Future; "inner" = UnsafeFuture);
 
 #[derive(Debug)]
 pub(super) struct SysTask {

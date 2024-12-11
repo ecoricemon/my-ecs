@@ -393,9 +393,12 @@ impl GlobalSignal {
             }
 
             // Tries to set target bits. If it succeeds, escapes this loop.
-            if let Err(old) =
-                cnt.compare_exchange(cur, cur | target_bits, Ordering::Relaxed, Ordering::Relaxed)
-            {
+            if let Err(old) = cnt.compare_exchange_weak(
+                cur,
+                cur | target_bits,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
                 cur = old;
             } else {
                 break;
@@ -411,7 +414,7 @@ impl GlobalSignal {
         // Resets target bits.
         let mut cur = target_target;
         while (cur & Self::TARGET_MASK) != 0 {
-            if let Err(old) = cnt.compare_exchange(
+            if let Err(old) = cnt.compare_exchange_weak(
                 cur,
                 cur & (!Self::TARGET_MASK),
                 Ordering::Relaxed,

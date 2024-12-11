@@ -2,12 +2,13 @@ use super::{
     ctrl::SUB_CONTEXT,
     task::{ParTask, ParTaskHolder, TaskId},
 };
-use crate::ds;
+use crate::ecs::stat;
 use rayon::iter::{
-    plumbing::{Consumer, Folder, Producer, ProducerCallback, Reducer, UnindexedConsumer},
+    plumbing::{
+        Consumer, Folder, Producer, ProducerCallback, Reducer, UnindexedConsumer, UnindexedProducer,
+    },
     IndexedParallelIterator, ParallelIterator,
 };
-use std::marker::PhantomData;
 
 // ref: https://github.com/rayon-rs/rayon/blob/7543ed40c9a017dee32b3dc72b3ae819820e8366/rayon-core/src/lib.rs#L851
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +35,7 @@ impl Splitter {
         (!ptr.is_dangling()).then(|| {
             // Safety: `ptr` is a valid pointer.
             Self {
-                splits: unsafe { ptr.as_ref().comm().num_siblings() },
+                splits: unsafe { ptr.as_ref().get_comm().num_siblings() },
             }
         })
     }
@@ -92,11 +93,12 @@ impl LengthSplitter {
 }
 
 // ref: https://github.com/rayon-rs/rayon/blob/7543ed40c9a017dee32b3dc72b3ae819820e8366/src/iter/plumbing/mod.rs#L350
-pub(crate) fn bridge<I, C>(par_iter: I, consumer: C) -> C::Result
+pub fn bridge<I, C>(par_iter: I, consumer: C) -> C::Result
 where
     I: IndexedParallelIterator,
     C: Consumer<I::Item>,
 {
+    stat::exec::increase_parallel_task_count();
     let len = par_iter.len();
     return par_iter.with_producer(Callback { len, consumer });
 
@@ -161,6 +163,49 @@ where
     }
 }
 
+// ref: https://github.com/rayon-rs/rayon/blob/7543ed40c9a017dee32b3dc72b3ae819820e8366/src/iter/plumbing/mod.rs#L445
+pub fn bridge_unindexed<P, C>(producer: P, consumer: C) -> C::Result
+where
+    P: UnindexedProducer,
+    C: UnindexedConsumer<P::Item>,
+{
+    stat::exec::increase_parallel_task_count();
+    let splitter = Splitter::new().unwrap();
+    bridge_unindexed_producer_consumer(false, splitter, producer, consumer)
+}
+
+// ref: https://github.com/rayon-rs/rayon/blob/7543ed40c9a017dee32b3dc72b3ae819820e8366/src/iter/plumbing/mod.rs#L454
+fn bridge_unindexed_producer_consumer<P, C>(
+    migrated: bool,
+    mut splitter: Splitter,
+    producer: P,
+    consumer: C,
+) -> C::Result
+where
+    P: UnindexedProducer,
+    C: UnindexedConsumer<P::Item>,
+{
+    if consumer.full() {
+        consumer.into_folder().complete()
+    } else if splitter.try_split(migrated) {
+        match producer.split() {
+            (l_producer, Some(r_producer)) => {
+                let (reducer, l_consumer, r_consumer) =
+                    (consumer.to_reducer(), consumer.split_off_left(), consumer);
+                let bridge = bridge_unindexed_producer_consumer;
+                let (l_result, r_result) = join_context(
+                    |f_cx: FnContext| bridge(f_cx.migrated, splitter, l_producer, l_consumer),
+                    |f_cx: FnContext| bridge(f_cx.migrated, splitter, r_producer, r_consumer),
+                );
+                reducer.reduce(l_result, r_result)
+            }
+            (producer, None) => producer.fold_with(consumer.into_folder()).complete(),
+        }
+    } else {
+        producer.fold_with(consumer.into_folder()).complete()
+    }
+}
+
 // ref: https://github.com/rayon-rs/rayon/blob/7543ed40c9a017dee32b3dc72b3ae819820e8366/rayon-core/src/join/mod.rs#L115
 fn join_context<L, R, Lr, Rr>(l_f: L, r_f: R) -> (Lr, Rr)
 where
@@ -183,8 +228,8 @@ where
     // I guess this frequent notification is one of the reasons.
     // Anyway, I mitigated it by reducing split count.
     // See `Splitter::try_split`.
-    cx.comm().push_parallel_task(r_task);
-    cx.comm().signal().sub().notify_one();
+    cx.get_comm().push_parallel_task(r_task);
+    cx.get_comm().signal().sub().notify_one();
 
     // Executes 'Left task'.
     #[cfg(not(target_arch = "wasm32"))]
@@ -196,7 +241,7 @@ where
                 // Panicked in `Left task`.
                 // But we need to hold `Right task` until it's finished
                 // if it was stolen by another worker.
-                if let Some(task) = cx.comm().pop_local() {
+                if let Some(task) = cx.get_comm().pop_local() {
                     debug_assert_eq!(task.id(), r_task_id);
                 } else {
                     while !r_holder.is_executed() {
@@ -215,7 +260,7 @@ where
 
     // If we could find a task from the local queue, it must be 'Right task',
     // because the queue is LIFO fashion.
-    if let Some(task) = cx.comm().pop_local() {
+    if let Some(task) = cx.get_comm().pop_local() {
         debug_assert_eq!(task.id(), r_task_id);
         r_task.execute(FnContext::NOT_MIGRATED);
     } else {
@@ -224,7 +269,7 @@ where
         // While we wait for 'Right task' to be finished by the another worker,
         // steals some tasks and executes them.
         while !r_holder.is_executed() {
-            let mut steal = cx.comm().search();
+            let mut steal = cx.get_comm().search();
             cx.work(&mut steal);
             // TODO: Busy waiting if it failed to steal tasks.
         }
@@ -236,6 +281,33 @@ where
     }
 }
 
+// TODO: Implement this trait for types that implement `ParallelIterator` such
+// as `rayon::iter::Flatten`.
+pub trait IntoEcsPar: ParallelIterator {
+    #[inline]
+    fn into_ecs_par(self) -> EcsPar<Self> {
+        EcsPar(self)
+    }
+
+    /// Implementations must call [`bridge`] or [`bridge_unindexed`] instead of
+    /// [`rayon::iter::plumbing::bridge`] or
+    /// [`rayon::iter::plumbing::bridge_unindexed`].
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+    where
+        C: UnindexedConsumer<Self::Item>;
+}
+
+impl<I: IndexedParallelIterator> IntoEcsPar for I {
+    #[inline]
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
+    where
+        C: UnindexedConsumer<Self::Item>,
+    {
+        // Intercepts.
+        bridge(self, consumer)
+    }
+}
+
 /// Wrapper of rayon's parallel iterator.
 ///
 /// rayon's parallel iterator basically uses its own worker registry. It means
@@ -243,479 +315,64 @@ where
 /// may not be something you wish.  
 /// To use ecs's workers instead, just wrap the iterator in this wrapper.
 /// Then, this wrapper will intercept calls to registry and switch it to ecs's.
+#[derive(Clone)]
 #[repr(transparent)]
 pub struct EcsPar<I>(pub I);
 
-// Implements rayon's traits for iterators.
-mod impl_iter {
-    use super::*;
+impl<I: IntoEcsPar> ParallelIterator for EcsPar<I> {
+    type Item = I::Item;
 
-    impl<I> ParallelIterator for EcsPar<I>
+    fn drive_unindexed<C>(self, consumer: C) -> C::Result
     where
-        I: ParallelIterator + IndexedParallelIterator,
+        C: UnindexedConsumer<Self::Item>,
     {
-        type Item = I::Item;
+        // Intercepts
+        IntoEcsPar::drive_unindexed(self.0, consumer)
+    }
+}
 
-        #[inline]
-        fn drive_unindexed<C>(self, consumer: C) -> C::Result
-        where
-            C: UnindexedConsumer<Self::Item>,
-        {
-            // Intercepts
-            bridge(self, consumer)
-        }
+impl<I> IndexedParallelIterator for EcsPar<I>
+where
+    I: IntoEcsPar + IndexedParallelIterator,
+{
+    #[inline]
+    fn len(&self) -> usize {
+        self.0.len()
     }
 
-    impl<I> IndexedParallelIterator for EcsPar<I>
-    where
-        I: IndexedParallelIterator,
-    {
-        #[inline]
-        fn len(&self) -> usize {
-            self.0.len()
-        }
-
-        #[inline]
-        fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-            // Intercepts
-            bridge(self, consumer)
-        }
-
-        #[inline]
-        fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
-            self.0.with_producer(callback)
-        }
+    #[inline]
+    fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
+        // Intercepts
+        bridge(self, consumer)
     }
 
-    impl<I> Producer for EcsPar<I>
-    where
-        I: Producer,
-    {
-        type Item = I::Item;
-        type IntoIter = I::IntoIter;
-
-        #[inline]
-        fn into_iter(self) -> Self::IntoIter {
-            self.0.into_iter()
-        }
-
-        #[inline]
-        fn split_at(self, index: usize) -> (Self, Self) {
-            let (l, r) = self.0.split_at(index);
-            (Self(l), Self(r))
-        }
-    }
-
-    impl ParallelIterator for ds::raw::ParRawIter {
-        type Item = ds::ptr::SendSyncPtr<u8>;
-
-        #[inline]
-        fn drive_unindexed<C>(self, consumer: C) -> C::Result
-        where
-            C: UnindexedConsumer<Self::Item>,
-        {
-            bridge(self, consumer)
-        }
-    }
-
-    impl IndexedParallelIterator for ds::raw::ParRawIter {
-        #[inline]
-        fn len(&self) -> usize {
-            Self::len(self)
-        }
-
-        #[inline]
-        fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-            bridge(self, consumer)
-        }
-
-        #[inline]
-        fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
-            callback.callback(self)
-        }
-    }
-
-    impl Producer for ds::raw::ParRawIter {
-        type Item = ds::ptr::SendSyncPtr<u8>;
-        type IntoIter = ds::raw::RawIter;
-
-        #[inline]
-        fn into_iter(self) -> Self::IntoIter {
-            self.into_seq()
-        }
-
-        #[inline]
-        fn split_at(self, index: usize) -> (Self, Self) {
-            let l_cur = self.cur;
-            let l_end = unsafe { self.cur.add(index * self.stride) };
-            let r_cur = l_end;
-            let r_end = self.end;
-
-            // Safety: Splitting is safe.
-            let (l, r) = unsafe {
-                (
-                    ds::raw::RawIter::new(l_cur.as_nonnull(), l_end.as_nonnull(), self.stride),
-                    ds::raw::RawIter::new(r_cur.as_nonnull(), r_end.as_nonnull(), self.stride),
-                )
-            };
-            (l.into_par(), r.into_par())
-        }
-    }
-
-    impl<'a, T: Send + Sync> ParallelIterator for ds::raw::ParIter<'a, T> {
-        type Item = &'a T;
-
-        #[inline]
-        fn drive_unindexed<C>(self, consumer: C) -> C::Result
-        where
-            C: UnindexedConsumer<Self::Item>,
-        {
-            bridge(self, consumer)
-        }
-    }
-
-    impl<'a, T: Send + Sync> IndexedParallelIterator for ds::raw::ParIter<'a, T> {
-        #[inline]
-        fn len(&self) -> usize {
-            Self::len(self)
-        }
-
-        #[inline]
-        fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-            bridge(self, consumer)
-        }
-
-        #[inline]
-        fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
-            callback.callback(self)
-        }
-    }
-
-    impl<'a, T: Send + Sync> Producer for ds::raw::ParIter<'a, T> {
-        type Item = &'a T;
-        type IntoIter = ds::raw::Iter<'a, T>;
-
-        #[inline]
-        fn into_iter(self) -> Self::IntoIter {
-            self.into_seq()
-        }
-
-        #[inline]
-        fn split_at(self, index: usize) -> (Self, Self) {
-            let (l, r) = self.inner.split_at(index);
-            unsafe { (Self::from_raw(l), Self::from_raw(r)) }
-        }
-    }
-
-    impl<'a, T: Send + Sync> ParallelIterator for ds::raw::ParIterMut<'a, T> {
-        type Item = &'a mut T;
-
-        #[inline]
-        fn drive_unindexed<C>(self, consumer: C) -> C::Result
-        where
-            C: UnindexedConsumer<Self::Item>,
-        {
-            bridge(self, consumer)
-        }
-    }
-
-    impl<'a, T: Send + Sync> IndexedParallelIterator for ds::raw::ParIterMut<'a, T> {
-        #[inline]
-        fn len(&self) -> usize {
-            Self::len(self)
-        }
-
-        #[inline]
-        fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-            bridge(self, consumer)
-        }
-
-        #[inline]
-        fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
-            callback.callback(self)
-        }
-    }
-
-    impl<'a, T: Send + Sync> Producer for ds::raw::ParIterMut<'a, T> {
-        type Item = &'a mut T;
-        type IntoIter = ds::raw::IterMut<'a, T>;
-
-        #[inline]
-        fn into_iter(self) -> Self::IntoIter {
-            self.into_seq()
-        }
-
-        #[inline]
-        fn split_at(self, index: usize) -> (Self, Self) {
-            let (l, r) = self.inner.split_at(index);
-            (
-                Self {
-                    inner: l,
-                    _marker: PhantomData,
-                },
-                Self {
-                    inner: r,
-                    _marker: PhantomData,
-                },
-            )
-        }
-    }
-
-    impl ParallelIterator for ds::raw::ParFlatRawIter {
-        type Item = ds::ptr::SendSyncPtr<u8>;
-
-        #[inline]
-        fn drive_unindexed<C>(self, consumer: C) -> C::Result
-        where
-            C: UnindexedConsumer<Self::Item>,
-        {
-            bridge(self, consumer)
-        }
-    }
-
-    impl IndexedParallelIterator for ds::raw::ParFlatRawIter {
-        #[inline]
-        fn len(&self) -> usize {
-            Self::len(self)
-        }
-
-        #[inline]
-        fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-            bridge(self, consumer)
-        }
-
-        #[inline]
-        fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
-            callback.callback(self)
-        }
-    }
-
-    impl Producer for ds::raw::ParFlatRawIter {
-        type Item = ds::ptr::SendSyncPtr<u8>;
-        type IntoIter = ds::raw::FlatRawIter;
-
-        #[inline]
-        fn into_iter(self) -> Self::IntoIter {
-            self.into_seq()
-        }
-
-        #[inline]
-        fn split_at(self, index: usize) -> (Self, Self) {
-            let (
-                ds::raw::RawIter {
-                    cur: ml, end: mr, ..
-                },
-                mi,
-                off,
-            ) = unsafe { (self.fn_find)(self.this.as_nonnull(), self.off + index) };
-            let mm = unsafe { ml.add(off * self.stride) };
-
-            // Basic idea to split is somthing like so,
-            //
-            // Left chunk      Mid chunk         Right chunk
-            //      li              mi                ri
-            // [**********] .. [**********]  ..  [**********]
-            // ^          ^    ^     ^    ^      ^          ^
-            // ll         lr   ml    mm   mr     rl         rr
-            // |          |    |     ||    \     |          |
-            // [**********] .. [*****][*****] .. [**********]
-            // |---- Left child -----||---- Right child ----|
-            //
-            // But, we must consider something like
-            // - Imagine that mid chunk is left chunk, but not splitted
-            //   as depectied below.
-            //
-            // ml              mm   mr
-            // v               v    v
-            // [********************]
-            //              [****]
-            //              ^    ^
-            //              ll   lr
-
-            let is_left_chunk_cut = mi + 1 == self.li;
-            let lchild = if !is_left_chunk_cut {
-                ds::raw::FlatRawIter {
-                    ll: self.ll,
-                    lr: self.lr,
-                    rl: ml,
-                    rr: mm,
-                    this: self.this,
-                    li: self.li,
-                    ri: mi,
-                    fn_iter: self.fn_iter,
-                    fn_find: self.fn_find,
-                    stride: self.stride,
-                    off: self.off,
-                    len: index,
-                }
-            } else {
-                ds::raw::FlatRawIter {
-                    ll: self.ll,
-                    lr: mm,
-                    rl: self.ll,
-                    rr: mm,
-                    this: self.this,
-                    li: mi + 1,
-                    ri: mi,
-                    fn_iter: self.fn_iter,
-                    fn_find: self.fn_find,
-                    stride: self.stride,
-                    off: self.off,
-                    len: index,
-                }
-            };
-
-            let is_right_chunk_cut = mi == self.ri;
-            let rchild = if !is_right_chunk_cut {
-                ds::raw::FlatRawIter {
-                    ll: mm,
-                    lr: mr,
-                    rl: self.rl,
-                    rr: self.rr,
-                    this: self.this,
-                    li: mi + 1,
-                    ri: self.ri,
-                    fn_iter: self.fn_iter,
-                    fn_find: self.fn_find,
-                    stride: self.stride,
-                    off: self.off + index,
-                    len: self.len - index,
-                }
-            } else {
-                ds::raw::FlatRawIter {
-                    ll: mm,
-                    lr: self.rr,
-                    rl: mm,
-                    rr: self.rr,
-                    this: self.this,
-                    li: mi + 1,
-                    ri: mi,
-                    fn_iter: self.fn_iter,
-                    fn_find: self.fn_find,
-                    stride: self.stride,
-                    off: self.off + index,
-                    len: self.len - index,
-                }
-            };
-
-            (lchild.into_par(), rchild.into_par())
-        }
-    }
-
-    impl<'a, T: Send + Sync> ParallelIterator for ds::raw::ParFlatIter<'a, T> {
-        type Item = &'a T;
-
-        #[inline]
-        fn drive_unindexed<C>(self, consumer: C) -> C::Result
-        where
-            C: UnindexedConsumer<Self::Item>,
-        {
-            bridge(self, consumer)
-        }
-    }
-
-    impl<'a, T: Send + Sync> IndexedParallelIterator for ds::raw::ParFlatIter<'a, T> {
-        #[inline]
-        fn len(&self) -> usize {
-            Self::len(self)
-        }
-
-        #[inline]
-        fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-            bridge(self, consumer)
-        }
-
-        #[inline]
-        fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
-            callback.callback(self)
-        }
-    }
-
-    impl<'a, T: Send + Sync> Producer for ds::raw::ParFlatIter<'a, T> {
-        type Item = &'a T;
-        type IntoIter = ds::raw::FlatIter<'a, T>;
-
-        #[inline]
-        fn into_iter(self) -> Self::IntoIter {
-            self.into_seq()
-        }
-
-        #[inline]
-        fn split_at(self, index: usize) -> (Self, Self) {
-            let (l, r) = self.inner.split_at(index);
-            // Safety: Splitting doesn't affect both type and lifetime.
-            unsafe { (Self::from_raw(l), Self::from_raw(r)) }
-        }
-    }
-
-    impl<'a, T: Send + Sync> ParallelIterator for ds::raw::ParFlatIterMut<'a, T> {
-        type Item = &'a mut T;
-
-        #[inline]
-        fn drive_unindexed<C>(self, consumer: C) -> C::Result
-        where
-            C: UnindexedConsumer<Self::Item>,
-        {
-            bridge(self, consumer)
-        }
-    }
-
-    impl<'a, T: Send + Sync> IndexedParallelIterator for ds::raw::ParFlatIterMut<'a, T> {
-        #[inline]
-        fn len(&self) -> usize {
-            Self::len(self)
-        }
-
-        #[inline]
-        fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-            bridge(self, consumer)
-        }
-
-        #[inline]
-        fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
-            callback.callback(self)
-        }
-    }
-
-    impl<'a, T: Send + Sync> Producer for ds::raw::ParFlatIterMut<'a, T> {
-        type Item = &'a mut T;
-        type IntoIter = ds::raw::FlatIterMut<'a, T>;
-
-        #[inline]
-        fn into_iter(self) -> Self::IntoIter {
-            self.into_seq()
-        }
-
-        #[inline]
-        fn split_at(self, index: usize) -> (Self, Self) {
-            let (l, r) = self.inner.split_at(index);
-            // Safety: Splitting doesn't affect both type and lifetime.
-            unsafe { (Self::from_raw(l), Self::from_raw(r)) }
-        }
+    #[inline]
+    fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
+        self.0.with_producer(callback)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rayon::prelude::*;
-
     /// Wraps rayon's parallel iterators in an interceptor.
     #[test]
-    fn test_ecspar() {
+    fn test_into_ecs_par() {
+        use super::*;
+        use rayon::iter::IntoParallelIterator;
+
         // Array
         let iter: rayon::array::IntoIter<i32, 2> = [0, 1].into_par_iter();
-        EcsPar(iter);
+        let _ecs_iter = iter.into_ecs_par();
         // Range
         let iter: rayon::range::Iter<i32> = (0..2).into_par_iter();
-        EcsPar(iter);
+        let _ecs_iter = iter.into_ecs_par();
         // Slice
-        let iter: &rayon::slice::Iter<i32> = &[0, 1][..].into_par_iter();
-        EcsPar(iter);
+        let iter: rayon::slice::Iter<'_, i32> = [0, 1][..].into_par_iter();
+        let _ecs_iter = iter.into_ecs_par();
         // Zip
         let range_iter0: rayon::range::Iter<i32> = (0..2).into_par_iter();
         let range_iter1: rayon::range::Iter<i32> = (0..2).into_par_iter();
         let zip_iter = range_iter0.zip(range_iter1);
-        EcsPar(zip_iter);
+        let _ecs_iter = zip_iter.into_ecs_par();
     }
 }

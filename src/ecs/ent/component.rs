@@ -1,50 +1,120 @@
+use my_ecs_macros::repeat_macro;
+
 use crate::ds::prelude::*;
 
-/// Granular data such as position, speed, and something like that.
-pub trait Component: Send + 'static {
-    /// Provided.
-    fn component_key() -> ComponentKey {
+/// Ordinary rust types.
+pub trait Component: Send + Sync + Sized + 'static {
+    const IS_CLONE: bool = false; // depends on impl
+    const IS_SEND: bool = true; // by bound
+    const IS_SYNC: bool = true; // by bound
+    const FN_CLONE: FnCloneRaw = unimpl_clone; // depends on impl
+
+    fn key() -> ComponentKey {
         ComponentKey::of::<Self>()
+    }
+
+    fn type_info() -> TypeInfo {
+        let mut tinfo = Self::as_type_info();
+        tinfo.set_additional(
+            Self::IS_SEND,
+            Self::IS_SYNC,
+            Self::IS_CLONE.then_some(Self::FN_CLONE),
+        );
+        tinfo
     }
 }
 
 pub trait Components: 'static {
-    type Output: IntoIterator<Item = ComponentKey>;
+    type Keys: AsRef<[ComponentKey]>;
+    type Infos: AsRef<[TypeInfo]>;
 
-    fn keys() -> Self::Output;
+    const LEN: usize;
+
+    fn keys() -> Self::Keys;
+    fn infos() -> Self::Infos;
 }
 
 #[macro_export]
 macro_rules! impl_components {
     ($n:expr, $($i:expr),*) => {const _: () = {
         #[allow(unused_imports)]
-        use $crate::ecs::ent::component::{Component, Components, ComponentKey};
+        use $crate::{
+            ds::types::TypeInfo,
+            ecs::ent::component::{Component, Components, ComponentKey},
+        };
         use paste::paste;
 
         paste! {
             #[allow(unused_parens)]
             impl<$([<A $i>]: Component),*> Components for ( $([<A $i>]),* ) {
-                type Output = [ComponentKey; $n];
+                type Keys = [ComponentKey; $n];
+                type Infos = [TypeInfo; $n];
 
-                fn keys() -> Self::Output {
+                const LEN: usize = $n;
+
+                fn keys() -> Self::Keys {
                     [
-                        $([<A $i>]::component_key()),*
+                        $( [<A $i>]::key() ),*
+                    ]
+                }
+
+                fn infos() -> Self::Infos {
+                    [
+                        $( [<A $i>]::type_info() ),*
                     ]
                 }
             }
         }
     };};
 }
-impl_components!(0,);
-impl_components!(1, 0);
-impl_components!(2, 0, 1);
-impl_components!(3, 0, 1, 2);
-impl_components!(4, 0, 1, 2, 3);
-impl_components!(5, 0, 1, 2, 3, 4);
-impl_components!(6, 0, 1, 2, 3, 4, 5);
-impl_components!(7, 0, 1, 2, 3, 4, 5, 6);
-impl_components!(8, 0, 1, 2, 3, 4, 5, 6, 7);
+repeat_macro!(impl_components, ..=32);
 
-/// [`TypeId`](std::any::TypeId) of a component.
+/// Unique identifier for a type implementing [`Component`].
 pub type ComponentKey = ATypeId<ComponentKey_>;
 pub struct ComponentKey_;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate as my_ecs;
+    use my_ecs_macros::Component;
+
+    #[test]
+    fn test_component_detect_impls() {
+        #![allow(dead_code)]
+
+        #[derive(Component, Clone)]
+        struct CloneA([u8; 1]);
+        #[derive(Component, Clone)]
+        struct CloneB([u8; 2]);
+
+        #[derive(Component)]
+        struct NonCloneA([u8; 1]);
+        #[derive(Component)]
+        struct NonCloneB([u8; 2]);
+
+        // Non-cloneable components have the same clone function which causes
+        // panic.
+        assert!(is_clone_fn_eq::<NonCloneA, NonCloneB>());
+
+        // But cloneable components have different clone functions to each
+        // other.
+        assert!(is_clone_fn_ne::<CloneA, CloneB>());
+        assert!(is_clone_fn_ne::<CloneA, NonCloneA>());
+        assert!(is_clone_fn_ne::<CloneB, NonCloneA>());
+
+        // === Internal helper functions ===
+
+        fn is_clone_fn_eq<Ca: Component, Cb: Component>() -> bool {
+            let clone_a = Ca::FN_CLONE as usize;
+            let clone_b = Cb::FN_CLONE as usize;
+            clone_a == clone_b
+        }
+
+        fn is_clone_fn_ne<Ca: Component, Cb: Component>() -> bool {
+            let clone_a = Ca::FN_CLONE as usize;
+            let clone_b = Cb::FN_CLONE as usize;
+            clone_a != clone_b
+        }
+    }
+}

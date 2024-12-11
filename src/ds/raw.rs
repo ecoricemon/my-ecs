@@ -1,5 +1,6 @@
 use super::ptr::SendSyncPtr;
-use rayon::iter::IntoParallelIterator;
+use crate::{impl_into_iterator_for_parallel, impl_parallel_iterator, impl_unindexed_producer};
+use rayon::iter::{plumbing::Producer, IntoParallelIterator};
 use std::{
     iter,
     marker::PhantomData,
@@ -14,7 +15,7 @@ pub trait AsRawIter {
     /// Provided.
     #[inline]
     fn par_iter(&self) -> ParRawIter {
-        self.iter().into_par()
+        ParRawIter(self.iter())
     }
 
     /// # Safety
@@ -117,9 +118,9 @@ pub trait AsFlatRawIter {
 /// It's recommended to wrap this iterator with concrete type and liftime.
 #[derive(Debug, Clone, Copy)]
 pub struct RawIter {
-    pub(crate) cur: SendSyncPtr<u8>,
-    pub(crate) end: SendSyncPtr<u8>,
-    pub(crate) stride: usize,
+    cur: SendSyncPtr<u8>,
+    end: SendSyncPtr<u8>,
+    stride: usize,
 }
 
 impl RawIter {
@@ -153,11 +154,6 @@ impl RawIter {
             end: SendSyncPtr::dangling(),
             stride: 1,
         }
-    }
-
-    #[inline]
-    pub const fn into_par(self) -> ParRawIter {
-        ParRawIter(self)
     }
 
     #[inline]
@@ -225,7 +221,7 @@ impl DoubleEndedIterator for RawIter {
 // This new type helps clients avoid it.
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
-pub struct ParRawIter(RawIter);
+pub struct ParRawIter(pub RawIter);
 
 impl ParRawIter {
     #[inline]
@@ -260,22 +256,59 @@ impl DerefMut for ParRawIter {
     }
 }
 
+impl Producer for ParRawIter {
+    type Item = SendSyncPtr<u8>;
+    type IntoIter = RawIter;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.into_seq()
+    }
+
+    #[inline]
+    fn split_at(self, index: usize) -> (Self, Self) {
+        let l_cur = self.cur;
+        let l_end = unsafe { self.cur.add(index * self.stride) };
+        let r_cur = l_end;
+        let r_end = self.end;
+
+        // Safety: Splitting is safe.
+        let (l, r) = unsafe {
+            (
+                RawIter::new(l_cur.as_nonnull(), l_end.as_nonnull(), self.stride),
+                RawIter::new(r_cur.as_nonnull(), r_end.as_nonnull(), self.stride),
+            )
+        };
+        (ParRawIter(l), ParRawIter(r))
+    }
+}
+
+impl_into_iterator_for_parallel!(
+    "for" = ParRawIter; "to" = RawIter; "item" = SendSyncPtr<u8>;
+);
+impl_parallel_iterator!(
+    "for" = ParRawIter; "item" = SendSyncPtr<u8>;
+);
+impl_unindexed_producer!(
+    "for" = ParRawIter; "item" = SendSyncPtr<u8>;
+);
+
 /// [`RawIter`] with concrete type and lifetime.
 #[derive(Debug, Clone)]
 #[repr(transparent)]
-pub struct Iter<'a, T: 'a> {
+pub struct Iter<'cont, T: 'cont> {
     inner: RawIter,
-    _marker: PhantomData<&'a T>,
+    _marker: PhantomData<&'cont T>,
 }
 
-impl<'a, T> Iter<'a, T> {
+impl<'cont, T> Iter<'cont, T> {
     /// Borrows container and returns its iterator.
     ///
     /// # Safety
     ///
     /// Given container must contain type `T` data.
     #[inline]
-    pub unsafe fn new<C>(cont: &'a C) -> Self
+    pub unsafe fn new<C>(cont: &'cont C) -> Self
     where
         C: AsRawIter + ?Sized,
     {
@@ -297,12 +330,6 @@ impl<'a, T> Iter<'a, T> {
     }
 
     #[inline]
-    pub const fn into_par(self) -> ParIter<'a, T> {
-        let raw = self.inner.into_par();
-        unsafe { ParIter::from_raw(raw) }
-    }
-
-    #[inline]
     pub const fn len(&self) -> usize {
         self.inner.len()
     }
@@ -313,8 +340,8 @@ impl<'a, T> Iter<'a, T> {
     }
 }
 
-impl<'a, T> Iterator for Iter<'a, T> {
-    type Item = &'a T;
+impl<'cont, T> Iterator for Iter<'cont, T> {
+    type Item = &'cont T;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -328,16 +355,16 @@ impl<'a, T> Iterator for Iter<'a, T> {
     }
 }
 
-impl<'a, T> iter::FusedIterator for Iter<'a, T> {}
+impl<T> iter::FusedIterator for Iter<'_, T> {}
 
-impl<'a, T> ExactSizeIterator for Iter<'a, T> {
+impl<T> ExactSizeIterator for Iter<'_, T> {
     #[inline]
     fn len(&self) -> usize {
         Self::len(self)
     }
 }
 
-impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
+impl<T> DoubleEndedIterator for Iter<'_, T> {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         self.inner
@@ -348,19 +375,19 @@ impl<'a, T> DoubleEndedIterator for Iter<'a, T> {
 
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct IterMut<'a, T: 'a> {
+pub struct IterMut<'cont, T: 'cont> {
     inner: RawIter,
-    _marker: PhantomData<&'a mut T>,
+    _marker: PhantomData<&'cont mut T>,
 }
 
-impl<'a, T> IterMut<'a, T> {
+impl<'cont, T> IterMut<'cont, T> {
     /// Borrows container and returns its iterator.
     ///
     /// # Safety
     ///
     /// Given container must contain type `T` data.
     #[inline]
-    pub unsafe fn new<C>(cont: &'a mut C) -> Self
+    pub unsafe fn new<C>(cont: &'cont mut C) -> Self
     where
         C: AsRawIter + ?Sized,
     {
@@ -382,13 +409,6 @@ impl<'a, T> IterMut<'a, T> {
     }
 
     #[inline]
-    pub fn into_par(self) -> ParIterMut<'a, T> {
-        let raw = self.inner.into_par();
-        // Safety: By owners, type `T` matches and lifetime `a is sufficient.
-        unsafe { ParIterMut::from_raw(raw) }
-    }
-
-    #[inline]
     pub const fn len(&self) -> usize {
         self.inner.len()
     }
@@ -399,8 +419,8 @@ impl<'a, T> IterMut<'a, T> {
     }
 }
 
-impl<'a, T> Iterator for IterMut<'a, T> {
-    type Item = &'a mut T;
+impl<'cont, T> Iterator for IterMut<'cont, T> {
+    type Item = &'cont mut T;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -414,16 +434,16 @@ impl<'a, T> Iterator for IterMut<'a, T> {
     }
 }
 
-impl<'a, T> iter::FusedIterator for IterMut<'a, T> {}
+impl<T> iter::FusedIterator for IterMut<'_, T> {}
 
-impl<'a, T> ExactSizeIterator for IterMut<'a, T> {
+impl<T> ExactSizeIterator for IterMut<'_, T> {
     #[inline]
     fn len(&self) -> usize {
         Self::len(self)
     }
 }
 
-impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
+impl<T> DoubleEndedIterator for IterMut<'_, T> {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         self.inner
@@ -440,19 +460,19 @@ impl<'a, T> DoubleEndedIterator for IterMut<'a, T> {
 // This new type helps clients avoid it.
 #[derive(Debug, Clone)]
 #[repr(transparent)]
-pub struct ParIter<'a, T: 'a> {
-    pub(crate) inner: ParRawIter,
-    pub(crate) _marker: PhantomData<&'a T>,
+pub struct ParIter<'cont, T: 'cont> {
+    inner: ParRawIter,
+    _marker: PhantomData<&'cont T>,
 }
 
-impl<'a, T> ParIter<'a, T> {
+impl<'cont, T> ParIter<'cont, T> {
     /// Borrows container and returns its iterator.
     ///
     /// # Safety
     ///
     /// Given container must contain type `T` data.
     #[inline]
-    pub unsafe fn new<C>(cont: &'a C) -> Self
+    pub unsafe fn new<C>(cont: &'cont C) -> Self
     where
         C: AsRawIter + ?Sized,
     {
@@ -474,10 +494,9 @@ impl<'a, T> ParIter<'a, T> {
     }
 
     #[inline]
-    pub const fn into_seq(self) -> Iter<'a, T> {
-        let raw = self.inner.into_seq();
-        // Safety: This iterator is borrowing a vector.
-        unsafe { Iter::from_raw(raw) }
+    pub const fn into_seq(self) -> Iter<'cont, T> {
+        // Safety: Correct type and lifetime are given.
+        unsafe { Iter::from_raw(self.inner.into_seq()) }
     }
 
     #[inline]
@@ -491,6 +510,35 @@ impl<'a, T> ParIter<'a, T> {
     }
 }
 
+impl<'cont, T: Send + Sync + 'cont> Producer for ParIter<'cont, T> {
+    type Item = &'cont T;
+    type IntoIter = Iter<'cont, T>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.into_seq()
+    }
+
+    #[inline]
+    fn split_at(self, index: usize) -> (Self, Self) {
+        let (l, r) = self.inner.split_at(index);
+        unsafe { (Self::from_raw(l), Self::from_raw(r)) }
+    }
+}
+
+impl_into_iterator_for_parallel!(
+    "lifetimes" = 'cont; "bounds" = T: {'cont};
+    "for" = ParIter; "to" = Iter<'cont, T>; "item" = &'cont T;
+);
+impl_parallel_iterator!(
+    "lifetimes" = 'cont; "bounds" = T: {Send + Sync + 'cont};
+    "for" = ParIter; "item" = &'cont T;
+);
+impl_unindexed_producer!(
+    "lifetimes" = 'cont; "bounds" = T: {Send + Sync + 'cont};
+    "for" = ParIter; "item" = &'cont T;
+);
+
 /// [`ParRawIter`] with concrete type and lifetime.
 /// This is parallel version of [`IterMut`].
 //
@@ -499,19 +547,19 @@ impl<'a, T> ParIter<'a, T> {
 // This new type helps clients avoid it.
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct ParIterMut<'a, T: 'a> {
-    pub(crate) inner: ParRawIter,
-    pub(crate) _marker: PhantomData<&'a mut T>,
+pub struct ParIterMut<'cont, T: 'cont> {
+    inner: ParRawIter,
+    _marker: PhantomData<&'cont mut T>,
 }
 
-impl<'a, T> ParIterMut<'a, T> {
+impl<'cont, T> ParIterMut<'cont, T> {
     /// Borrows container and returns its iterator.
     ///
     /// # Safety
     ///
     /// Given container must contain type `T` data.
     #[inline]
-    pub fn new<C>(cont: &'a mut C) -> Self
+    pub fn new<C>(cont: &'cont mut C) -> Self
     where
         C: AsRawIter + ?Sized,
     {
@@ -533,10 +581,9 @@ impl<'a, T> ParIterMut<'a, T> {
     }
 
     #[inline]
-    pub fn into_seq(self) -> IterMut<'a, T> {
-        let raw = self.inner.into_seq();
-        // Safety: This iterator is borrowing a vector.
-        unsafe { IterMut::from_raw(raw) }
+    pub fn into_seq(self) -> IterMut<'cont, T> {
+        // Safety: Correct type and lifetime are given.
+        unsafe { IterMut::from_raw(self.inner.into_seq()) }
     }
 
     #[inline]
@@ -549,6 +596,44 @@ impl<'a, T> ParIterMut<'a, T> {
         self.len() == 0
     }
 }
+
+impl<'cont, T: Send + Sync + 'cont> Producer for ParIterMut<'cont, T> {
+    type Item = &'cont mut T;
+    type IntoIter = IterMut<'cont, T>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.into_seq()
+    }
+
+    #[inline]
+    fn split_at(self, index: usize) -> (Self, Self) {
+        let (l, r) = self.inner.split_at(index);
+        (
+            Self {
+                inner: l,
+                _marker: PhantomData,
+            },
+            Self {
+                inner: r,
+                _marker: PhantomData,
+            },
+        )
+    }
+}
+
+impl_into_iterator_for_parallel!(
+    "lifetimes" = 'cont; "bounds" = T: {'cont};
+    "for" = ParIterMut; "to" = IterMut<'cont, T>; "item" = &'cont mut T;
+);
+impl_parallel_iterator!(
+    "lifetimes" = 'cont; "bounds" = T: {Send + Sync + 'cont};
+    "for" = ParIterMut; "item" = &'cont mut T;
+);
+impl_unindexed_producer!(
+    "lifetimes" = 'cont; "bounds" = T: {Send + Sync + 'cont};
+    "for" = ParIterMut; "item" = &'cont mut T;
+);
 
 /// Nested [`RawIter`] which yields `RawIter`.
 /// You can call [`Iterator::flatten`] to access each item,
@@ -712,11 +797,6 @@ impl FlatRawIter {
     }
 
     #[inline]
-    pub const fn into_par(self) -> ParFlatRawIter {
-        ParFlatRawIter(self)
-    }
-
-    #[inline]
     pub const fn len(&self) -> usize {
         self.len
     }
@@ -806,7 +886,7 @@ impl DoubleEndedIterator for FlatRawIter {
 // This new type helps clients avoid it.
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
-pub struct ParFlatRawIter(FlatRawIter);
+pub struct ParFlatRawIter(pub FlatRawIter);
 
 impl ParFlatRawIter {
     #[inline]
@@ -841,22 +921,144 @@ impl DerefMut for ParFlatRawIter {
     }
 }
 
+impl Producer for ParFlatRawIter {
+    type Item = SendSyncPtr<u8>;
+    type IntoIter = FlatRawIter;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.into_seq()
+    }
+
+    #[inline]
+    fn split_at(self, index: usize) -> (Self, Self) {
+        let (
+            RawIter {
+                cur: ml, end: mr, ..
+            },
+            mi,
+            off,
+        ) = unsafe { (self.fn_find)(self.this.as_nonnull(), self.off + index) };
+        let mm = unsafe { ml.add(off * self.stride) };
+
+        // Basic idea to split is somthing like so,
+        //
+        // Left chunk      Mid chunk         Right chunk
+        //      li              mi                ri
+        // [**********] .. [**********]  ..  [**********]
+        // ^          ^    ^     ^    ^      ^          ^
+        // ll         lr   ml    mm   mr     rl         rr
+        // |          |    |     ||    \     |          |
+        // [**********] .. [*****][*****] .. [**********]
+        // |---- Left child -----||---- Right child ----|
+        //
+        // But, we must consider something like
+        // - Imagine that mid chunk is left chunk, but not splitted
+        //   as depectied below.
+        //
+        // ml              mm   mr
+        // v               v    v
+        // [********************]
+        //              [****]
+        //              ^    ^
+        //              ll   lr
+
+        let is_left_chunk_cut = mi + 1 == self.li;
+        let lchild = if !is_left_chunk_cut {
+            FlatRawIter {
+                ll: self.ll,
+                lr: self.lr,
+                rl: ml,
+                rr: mm,
+                this: self.this,
+                li: self.li,
+                ri: mi,
+                fn_iter: self.fn_iter,
+                fn_find: self.fn_find,
+                stride: self.stride,
+                off: self.off,
+                len: index,
+            }
+        } else {
+            FlatRawIter {
+                ll: self.ll,
+                lr: mm,
+                rl: self.ll,
+                rr: mm,
+                this: self.this,
+                li: mi + 1,
+                ri: mi,
+                fn_iter: self.fn_iter,
+                fn_find: self.fn_find,
+                stride: self.stride,
+                off: self.off,
+                len: index,
+            }
+        };
+
+        let is_right_chunk_cut = mi == self.ri;
+        let rchild = if !is_right_chunk_cut {
+            FlatRawIter {
+                ll: mm,
+                lr: mr,
+                rl: self.rl,
+                rr: self.rr,
+                this: self.this,
+                li: mi + 1,
+                ri: self.ri,
+                fn_iter: self.fn_iter,
+                fn_find: self.fn_find,
+                stride: self.stride,
+                off: self.off + index,
+                len: self.len - index,
+            }
+        } else {
+            FlatRawIter {
+                ll: mm,
+                lr: self.rr,
+                rl: mm,
+                rr: self.rr,
+                this: self.this,
+                li: mi + 1,
+                ri: mi,
+                fn_iter: self.fn_iter,
+                fn_find: self.fn_find,
+                stride: self.stride,
+                off: self.off + index,
+                len: self.len - index,
+            }
+        };
+
+        (ParFlatRawIter(lchild), ParFlatRawIter(rchild))
+    }
+}
+
+impl_into_iterator_for_parallel!(
+    "for" = ParFlatRawIter; "to" = FlatRawIter; "item" = SendSyncPtr<u8>;
+);
+impl_parallel_iterator!(
+    "for" = ParFlatRawIter; "item" = SendSyncPtr<u8>;
+);
+impl_unindexed_producer!(
+    "for" = ParFlatRawIter; "item" = SendSyncPtr<u8>;
+);
+
 /// [FlatRawIter] with concrete type and lifetime.
 #[derive(Debug, Clone)]
 #[repr(transparent)]
-pub struct FlatIter<'a, T: 'a> {
+pub struct FlatIter<'cont, T: 'cont> {
     inner: FlatRawIter,
-    _marker: PhantomData<&'a T>,
+    _marker: PhantomData<&'cont T>,
 }
 
-impl<'a, T> FlatIter<'a, T> {
+impl<'cont, T> FlatIter<'cont, T> {
     /// Borrows container and returns its iterator.
     ///
     /// # Safety
     ///
     /// Given container must contain type `T` data.
     #[inline]
-    pub fn new<C>(cont: &'a C) -> Self
+    pub fn new<C>(cont: &'cont C) -> Self
     where
         C: AsFlatRawIter + ?Sized,
     {
@@ -878,13 +1080,6 @@ impl<'a, T> FlatIter<'a, T> {
     }
 
     #[inline]
-    pub const fn into_par(self) -> ParFlatIter<'a, T> {
-        let raw = self.inner.into_par();
-        // Safety: By owners, type `T` matches and lifetime `a is sufficient.
-        unsafe { ParFlatIter::from_raw(raw) }
-    }
-
-    #[inline]
     pub const fn len(&self) -> usize {
         self.inner.len()
     }
@@ -895,8 +1090,8 @@ impl<'a, T> FlatIter<'a, T> {
     }
 }
 
-impl<'a, T> Iterator for FlatIter<'a, T> {
-    type Item = &'a T;
+impl<'cont, T> Iterator for FlatIter<'cont, T> {
+    type Item = &'cont T;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -910,16 +1105,16 @@ impl<'a, T> Iterator for FlatIter<'a, T> {
     }
 }
 
-impl<'a, T> iter::FusedIterator for FlatIter<'a, T> {}
+impl<T> iter::FusedIterator for FlatIter<'_, T> {}
 
-impl<'a, T> ExactSizeIterator for FlatIter<'a, T> {
+impl<T> ExactSizeIterator for FlatIter<'_, T> {
     #[inline]
     fn len(&self) -> usize {
         Self::len(self)
     }
 }
 
-impl<'a, T> DoubleEndedIterator for FlatIter<'a, T> {
+impl<T> DoubleEndedIterator for FlatIter<'_, T> {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         self.inner
@@ -930,19 +1125,19 @@ impl<'a, T> DoubleEndedIterator for FlatIter<'a, T> {
 
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct FlatIterMut<'a, T: 'a> {
+pub struct FlatIterMut<'cont, T: 'cont> {
     inner: FlatRawIter,
-    _marker: PhantomData<&'a mut T>,
+    _marker: PhantomData<&'cont mut T>,
 }
 
-impl<'a, T> FlatIterMut<'a, T> {
+impl<'cont, T> FlatIterMut<'cont, T> {
     /// Borrows container and returns its iterator.
     ///
     /// # Safety
     ///
     /// Given container must contain type `T` data.
     #[inline]
-    pub fn new<C>(cont: &'a mut C) -> Self
+    pub fn new<C>(cont: &'cont mut C) -> Self
     where
         C: AsFlatRawIter + ?Sized,
     {
@@ -964,13 +1159,6 @@ impl<'a, T> FlatIterMut<'a, T> {
     }
 
     #[inline]
-    pub fn into_par(self) -> ParFlatIterMut<'a, T> {
-        let raw = self.inner.into_par();
-        // Safety: By owners, type `T` matches and lifetime `a is sufficient.
-        unsafe { ParFlatIterMut::from_raw(raw) }
-    }
-
-    #[inline]
     pub const fn len(&self) -> usize {
         self.inner.len()
     }
@@ -981,8 +1169,8 @@ impl<'a, T> FlatIterMut<'a, T> {
     }
 }
 
-impl<'a, T> Iterator for FlatIterMut<'a, T> {
-    type Item = &'a mut T;
+impl<'cont, T> Iterator for FlatIterMut<'cont, T> {
+    type Item = &'cont mut T;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -996,16 +1184,16 @@ impl<'a, T> Iterator for FlatIterMut<'a, T> {
     }
 }
 
-impl<'a, T> iter::FusedIterator for FlatIterMut<'a, T> {}
+impl<T> iter::FusedIterator for FlatIterMut<'_, T> {}
 
-impl<'a, T> ExactSizeIterator for FlatIterMut<'a, T> {
+impl<T> ExactSizeIterator for FlatIterMut<'_, T> {
     #[inline]
     fn len(&self) -> usize {
         Self::len(self)
     }
 }
 
-impl<'a, T> DoubleEndedIterator for FlatIterMut<'a, T> {
+impl<T> DoubleEndedIterator for FlatIterMut<'_, T> {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         self.inner
@@ -1022,24 +1210,24 @@ impl<'a, T> DoubleEndedIterator for FlatIterMut<'a, T> {
 // This new type helps clients avoid it.
 #[derive(Debug, Clone)]
 #[repr(transparent)]
-pub struct ParFlatIter<'a, T: 'a> {
-    pub(crate) inner: ParFlatRawIter,
-    _marker: PhantomData<&'a T>,
+pub struct ParFlatIter<'cont, T: 'cont> {
+    inner: FlatRawIter,
+    _marker: PhantomData<&'cont T>,
 }
 
-impl<'a, T> ParFlatIter<'a, T> {
+impl<'cont, T> ParFlatIter<'cont, T> {
     /// Borrows container and returns its iterator.
     ///
     /// # Safety
     ///
     /// Given container must contain type `T` data.
     #[inline]
-    pub fn new<C>(cont: &'a C) -> Self
+    pub fn new<C>(cont: &'cont C) -> Self
     where
         C: AsFlatRawIter + ?Sized,
     {
         // We're borrowing container, so lifetime is tied up.
-        unsafe { Self::from_raw(cont.par_iter()) }
+        unsafe { Self::from_raw(cont.iter()) }
     }
 
     /// # Safety
@@ -1048,7 +1236,7 @@ impl<'a, T> ParFlatIter<'a, T> {
     /// - Given raw iterator must yield pointers to type `T`.
     /// - Lifetime defined by clients must be sufficient about the raw iterator.
     #[inline]
-    pub const unsafe fn from_raw(raw: ParFlatRawIter) -> Self {
+    pub const unsafe fn from_raw(raw: FlatRawIter) -> Self {
         Self {
             inner: raw,
             _marker: PhantomData,
@@ -1056,10 +1244,9 @@ impl<'a, T> ParFlatIter<'a, T> {
     }
 
     #[inline]
-    pub const fn into_seq(self) -> FlatIter<'a, T> {
-        let raw = self.inner.into_seq();
-        // Safety: By owners, type `T` matches and lifetime `a is sufficient.
-        unsafe { FlatIter::from_raw(raw) }
+    pub const fn into_seq(self) -> FlatIter<'cont, T> {
+        // Safety: Correct type and lifetime are given.
+        unsafe { FlatIter::from_raw(self.inner) }
     }
 
     #[inline]
@@ -1072,6 +1259,37 @@ impl<'a, T> ParFlatIter<'a, T> {
         self.len() == 0
     }
 }
+
+impl<'cont, T: Send + Sync + 'cont> Producer for ParFlatIter<'cont, T> {
+    type Item = &'cont T;
+    type IntoIter = FlatIter<'cont, T>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.into_seq()
+    }
+
+    #[inline]
+    fn split_at(self, index: usize) -> (Self, Self) {
+        let par_iter = ParFlatRawIter(self.inner);
+        let (l, r) = par_iter.split_at(index);
+        // Safety: Splitting doesn't affect both type and lifetime.
+        unsafe { (Self::from_raw(l.0), Self::from_raw(r.0)) }
+    }
+}
+
+impl_into_iterator_for_parallel!(
+    "lifetimes" = 'cont; "bounds" = T: {'cont};
+    "for" = ParFlatIter; "to" = FlatIter<'cont, T>; "item" = &'cont T;
+);
+impl_parallel_iterator!(
+    "lifetimes" = 'cont; "bounds" = T: {Send + Sync + 'cont};
+    "for" = ParFlatIter; "item" = &'cont T;
+);
+impl_unindexed_producer!(
+    "lifetimes" = 'cont; "bounds" = T: {Send + Sync + 'cont};
+    "for" = ParFlatIter; "item" = &'cont T;
+);
 
 /// [`ParFlatRawIter`] with concrete type and lifetime.
 /// This is parallel version of [`FlatIterMut`].
@@ -1081,24 +1299,24 @@ impl<'a, T> ParFlatIter<'a, T> {
 // This new type helps clients avoid it.
 #[derive(Debug, Clone)]
 #[repr(transparent)]
-pub struct ParFlatIterMut<'a, T: 'a> {
-    pub(crate) inner: ParFlatRawIter,
-    _marker: PhantomData<&'a mut T>,
+pub struct ParFlatIterMut<'cont, T: 'cont> {
+    inner: FlatRawIter,
+    _marker: PhantomData<&'cont mut T>,
 }
 
-impl<'a, T> ParFlatIterMut<'a, T> {
+impl<'cont, T> ParFlatIterMut<'cont, T> {
     /// Borrows container and returns its iterator.
     ///
     /// # Safety
     ///
     /// Given container must contain type `T` data.
     #[inline]
-    pub fn new<C>(cont: &'a mut C) -> Self
+    pub fn new<C>(cont: &'cont mut C) -> Self
     where
         C: AsFlatRawIter + ?Sized,
     {
         // We're borrowing container, so lifetime is tied up.
-        unsafe { Self::from_raw(cont.par_iter()) }
+        unsafe { Self::from_raw(cont.iter()) }
     }
 
     /// # Safety
@@ -1107,7 +1325,7 @@ impl<'a, T> ParFlatIterMut<'a, T> {
     /// - Given raw iterator must yield pointers to type `T`.
     /// - Lifetime defined by clients must be sufficient about the raw iterator.
     #[inline]
-    pub unsafe fn from_raw(raw: ParFlatRawIter) -> Self {
+    pub unsafe fn from_raw(raw: FlatRawIter) -> Self {
         Self {
             inner: raw,
             _marker: PhantomData,
@@ -1115,10 +1333,9 @@ impl<'a, T> ParFlatIterMut<'a, T> {
     }
 
     #[inline]
-    pub fn into_seq(self) -> FlatIterMut<'a, T> {
-        let raw = self.inner.into_seq();
-        // Safety: By owners, type `T` matches and lifetime `a is sufficient.
-        unsafe { FlatIterMut::from_raw(raw) }
+    pub fn into_seq(self) -> FlatIterMut<'cont, T> {
+        // Safety: Correct type and lifetime are given.
+        unsafe { FlatIterMut::from_raw(self.inner) }
     }
 
     #[inline]
@@ -1131,6 +1348,38 @@ impl<'a, T> ParFlatIterMut<'a, T> {
         self.len() == 0
     }
 }
+
+impl<'cont, T: Send + Sync + 'cont> Producer for ParFlatIterMut<'cont, T> {
+    type Item = &'cont mut T;
+    type IntoIter = FlatIterMut<'cont, T>;
+
+    #[inline]
+    fn into_iter(self) -> Self::IntoIter {
+        self.into_seq()
+    }
+
+    #[inline]
+    fn split_at(self, index: usize) -> (Self, Self) {
+        let par_iter = ParFlatRawIter(self.inner);
+        let (l, r) = par_iter.split_at(index);
+        // Safety: Splitting doesn't affect both type and lifetime.
+        unsafe { (Self::from_raw(l.0), Self::from_raw(r.0)) }
+    }
+}
+
+impl_into_iterator_for_parallel!(
+    "lifetimes" = 'cont; "bounds" = T: {'cont};
+    "for" = ParFlatIterMut; "to" = FlatIterMut<'cont, T>;
+    "item" = &'cont mut T;
+);
+impl_parallel_iterator!(
+    "lifetimes" = 'cont; "bounds" = T: {Send + Sync + 'cont};
+    "for" = ParFlatIterMut; "item" = &'cont mut T;
+);
+impl_unindexed_producer!(
+    "lifetimes" = 'cont; "bounds" = T: {Send + Sync + 'cont};
+    "for" = ParFlatIterMut; "item" = &'cont mut T;
+);
 
 #[derive(Debug, Clone, Copy)]
 pub struct RawGetter {
@@ -1273,13 +1522,14 @@ impl<'cont, T> Getter<'cont, T> {
     }
 
     pub fn iter(&self) -> FlatIter<'cont, T> {
-        // Safety: By owners, type `T` matches and lifetime `a is sufficient.
+        // Safety: Correct type and lifetime are given.
         unsafe { FlatIter::from_raw(self.raw.iter()) }
     }
 
     #[inline]
     pub fn par_iter(&self) -> ParFlatIter<'cont, T> {
-        self.iter().into_par()
+        // Safety: Correct type and lifetime are given.
+        unsafe { ParFlatIter::from_raw(self.raw.iter()) }
     }
 }
 
@@ -1384,23 +1634,25 @@ impl<'cont, T> GetterMut<'cont, T> {
     }
 
     pub fn iter(&self) -> FlatIter<'cont, T> {
-        // Safety: By owners, type `T` matches and lifetime `a is sufficient.
+        // Safety: Correct type and lifetime are given.
         unsafe { FlatIter::from_raw(self.raw.iter()) }
     }
 
     pub fn iter_mut(&mut self) -> FlatIterMut<'cont, T> {
-        // Safety: By owners, type `T` matches and lifetime `a is sufficient.
+        // Safety: Correct type and lifetime are given.
         unsafe { FlatIterMut::from_raw(self.raw.iter()) }
     }
 
     #[inline]
     pub fn par_iter(&self) -> ParFlatIter<'cont, T> {
-        self.iter().into_par()
+        // Safety: Correct type and lifetime are given.
+        unsafe { ParFlatIter::from_raw(self.raw.iter()) }
     }
 
     #[inline]
     pub fn par_iter_mut(&mut self) -> ParFlatIterMut<'cont, T> {
-        self.iter_mut().into_par()
+        // Safety: Correct type and lifetime are given.
+        unsafe { ParFlatIterMut::from_raw(self.raw.iter()) }
     }
 }
 

@@ -471,7 +471,7 @@ pub(crate) struct SystemCycleIter<'a, S> {
     _marker: PhantomData<&'a mut ()>,
 }
 
-impl<'a, S> SystemCycleIter<'a, S> {
+impl<S> SystemCycleIter<'_, S> {
     pub(crate) fn into_raw(self) -> RawSystemCycleIter<S> {
         self.raw
     }
@@ -628,7 +628,6 @@ where
 pub trait System: Send + 'static {
     type Request: Request;
 
-    /// Required.
     fn run(&mut self, resp: Response<'_, Self::Request>);
 
     /// This method is intended for private-use only.
@@ -640,16 +639,15 @@ pub trait System: Send + 'static {
     #[allow(unused_variables)]
     fn on_transition(&mut self, from: SystemState, to: SystemState) {}
 
-    /// Provided.  
     /// This name may change in the future.
     /// Use this name as debugging information only.
-    fn system_name() -> &'static str {
+    fn name() -> &'static str {
         any::type_name::<Self>()
     }
 }
 
 pub(crate) trait PrivateSystem: System {
-    fn system_key() -> SystemKey {
+    fn key() -> SystemKey {
         SystemKey::of::<Self>()
     }
 
@@ -672,7 +670,7 @@ pub(crate) trait PrivateSystem: System {
 
     fn _create_data(invoker: NonNull<dyn Invoke + Send>, flags: SystemFlags) -> SystemData {
         let mut stor = RINFO_STOR.lock().unwrap();
-        let rinfo = <Self::Request as PrivateRequest>::get_info(&mut *stor);
+        let rinfo = Arc::clone(Self::Request::get_info_from(&mut *stor));
         drop(stor);
 
         SystemData {
@@ -680,9 +678,9 @@ pub(crate) trait PrivateSystem: System {
             flags,
             invoker,
             info: Arc::new(SystemInfo::new(
-                Self::system_name(),
-                Self::system_key(),
-                Self::Request::request_key(),
+                Self::name(),
+                Self::key(),
+                Self::Request::key(),
                 rinfo,
             )),
         }
@@ -697,7 +695,7 @@ impl System for () {
     fn run(&mut self, _resp: Response<Self::Request>) {}
 }
 
-/// [`TypeId`] of a [`System`].
+/// Unique identifier for a type implementing [`System`].
 pub type SystemKey = ATypeId<SystemKey_>;
 pub struct SystemKey_;
 
@@ -988,7 +986,7 @@ impl<S: System> Invoke for S {
     }
 }
 
-/// This structure helps a function implements [`System`].
+/// This struct helps a function implements [`System`].
 /// Because we can't use blanket impl for the `System`, due to confliction to other impls,
 /// We put this helper between function and `System`.
 /// That means a function can become `FnSystem` which implements `System`.
@@ -1008,7 +1006,7 @@ where
     Self: System,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", Self::system_name())
+        write!(f, "{}", Self::name())
     }
 }
 
@@ -1027,7 +1025,7 @@ where
     Self: System,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", Self::system_name())
+        write!(f, "{}", Self::name())
     }
 }
 
@@ -1132,7 +1130,7 @@ mod impl_for_fn_system {
                     )
                 }
 
-                fn system_name() -> &'static str {
+                fn name() -> &'static str {
                     std::any::type_name::<F>()
                 }
             }
@@ -1174,7 +1172,7 @@ mod impl_for_fn_system {
                     }
                 }
 
-                fn system_name() -> &'static str {
+                fn name() -> &'static str {
                     std::any::type_name::<F>()
                 }
             }

@@ -10,9 +10,9 @@ crate-type = ["cdylib"]
 my-ecs = { path = "../.." }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = { version = "0.2.95" }
-js-sys = { version = "0.3.72" }
-web-sys = { version = "0.3.72", features = [
+wasm-bindgen = { version = "0.2.97" }
+js-sys = { version = "0.3.74" }
+web-sys = { version = "0.3.74", features = [
     "Window",
     "Document",
     "HtmlCanvasElement",

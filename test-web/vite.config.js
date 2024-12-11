@@ -35,11 +35,8 @@ export default defineConfig({
     wasm(),
     topLevelAwait(),
   ],
-  server: {
-    port: 8080,
-  },
   preview: {
-    port: 8080,
+    port: 48080,
     // In multi-threaded environment, we need to share wasm memory. These
     // headers are required to share the memory.
     headers: {

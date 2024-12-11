@@ -1,15 +1,10 @@
 use crate::ds::prelude::*;
-use crate::ecs::{
-    ent::{
-        component::{Component, ComponentKey, Components},
-        entity::{EntityIndex, EntityTag},
-    },
-    sched::par,
+use crate::ecs::ent::{
+    component::{Component, ComponentKey, Components},
+    entity::{EntityIndex, EntityName, EntityTag},
 };
-use rayon::iter::{
-    plumbing::{Consumer, Producer, ProducerCallback, UnindexedConsumer},
-    IndexedParallelIterator, IntoParallelIterator, ParallelIterator,
-};
+use crate::{impl_into_iterator_for_parallel, impl_parallel_iterator, impl_unindexed_producer};
+use rayon::iter::{plumbing::Producer, IntoParallelIterator};
 use std::{
     any,
     marker::PhantomData,
@@ -38,61 +33,66 @@ use std::{
 ///   any of these `Component`s.
 ///   It's something like *NOR* condition.
 ///   Buf if `None` is empty, then any entities won't be rejected.
-pub trait Filter: Send + 'static {
+pub trait Select: 'static {
     type Target: Component;
     type All: Components;
     type Any: Components;
     type None: Components;
 
-    fn ids() -> [Box<[ComponentKey]>; 3] {
-        let all = <Self::All as Components>::keys().into_iter();
-        let any = <Self::Any as Components>::keys().into_iter();
-        let none = <Self::None as Components>::keys().into_iter();
-        [all.collect(), any.collect(), none.collect()]
+    fn all_any_none() -> [Box<[ComponentKey]>; 3] {
+        let all: Box<[ComponentKey]> = Self::All::keys().as_ref().into();
+        let any: Box<[ComponentKey]> = Self::Any::keys().as_ref().into();
+        let none: Box<[ComponentKey]> = Self::None::keys().as_ref().into();
+        [all, any, none]
     }
 
-    fn key() -> FilterKey {
-        FilterKey::of::<Self>()
+    fn key() -> SelectKey {
+        SelectKey::of::<Self>()
     }
 
-    fn info<S>(info_stor: &mut S) -> Arc<FilterInfo>
+    fn get_info_from<S>(stor: &mut S) -> &Arc<SelectInfo>
     where
-        S: StoreFilterInfo + ?Sized,
+        S: StoreSelectInfo + ?Sized,
     {
         let key = Self::key();
-        if let Some(info) = info_stor.get(&key) {
-            info
-        } else {
-            let [all, any, none] = Self::ids();
-            let info = Arc::new(FilterInfo {
-                name: any::type_name::<Self>(),
-                target: ComponentKey::of::<Self::Target>(),
-                all,
-                any,
-                none,
-            });
-            info_stor.insert(key, &info);
-            info
+
+        if !stor.contains(&key) {
+            let sinfo = Arc::new(Self::info());
+            stor.insert(key, sinfo);
+        }
+
+        // Safety: Inserted right before.
+        unsafe { stor.get(&key).unwrap_unchecked() }
+    }
+
+    fn info() -> SelectInfo {
+        let [all, any, none] = Self::all_any_none();
+        SelectInfo {
+            name: any::type_name::<Self>(),
+            target: ComponentKey::of::<Self::Target>(),
+            all,
+            any,
+            none,
         }
     }
 }
 
-/// Disjoint filters mean that two filters' targets are not the same one.
+/// Disjoint selectors mean that two selectors' targets are not the same one.
 /// Table below shows the disjoint conditions.
 ///
-/// | Filter | Target | All   | None     | Any   |
+/// | Select | Target | All   | None     | Any   |
 /// | :---:  | :---:  | :---: | :---:    | :---: |
-/// | FA     | T      | A, B  | C, D     | E, F  |
-/// | FB     | U      | ..    | ..       | ..    | // Case 1
-/// | FB     | T      | ..    | A, ..    | ..    | // Case 2
-/// | FB     | T      | ..    | B, ..    | ..    | // Case 2
-/// | FB     | T      | C, .. | ..       | ..    | // Case 3
-/// | FB     | T      | D, .. | ..       | ..    | // Case 3
-/// | FB     | T      | ..    | ..       | C     | // Case 4
-/// | FB     | T      | ..    | ..       | D     | // Case 4
-/// | FB     | T      | ..    | ..       | C, D  | // Case 4
-/// | FB     | T      | ..    | E, F, .. | ..    | // Case 5
-pub fn is_disjoint(a: &FilterInfo, b: &FilterInfo) -> bool {
+/// | SA     | T      | A, B  | C, D     | E, F  |
+/// | SB     | U      | ..    | ..       | ..    | // Case 1
+/// | SB     | T      | ..    | A, ..    | ..    | // Case 2
+/// | SB     | T      | ..    | B, ..    | ..    | // Case 2
+/// | SB     | T      | C, .. | ..       | ..    | // Case 3
+/// | SB     | T      | D, .. | ..       | ..    | // Case 3
+/// | SB     | T      | ..    | ..       | C     | // Case 4
+/// | SB     | T      | ..    | ..       | D     | // Case 4
+/// | SB     | T      | ..    | ..       | C, D  | // Case 4
+/// | SB     | T      | ..    | E, F, .. | ..    | // Case 5
+pub fn is_disjoint(a: &SelectInfo, b: &SelectInfo) -> bool {
     let a_target = a.target();
     let (a_all, a_any, a_none) = (a.all(), a.any(), a.none());
     let b_target = b.target();
@@ -103,22 +103,22 @@ pub fn is_disjoint(a: &FilterInfo, b: &FilterInfo) -> bool {
         return true;
     }
 
-    // Case 2. One of `FA's All` belongs to `FB's None`.
+    // Case 2. One of `SA's All` belongs to `SB's None`.
     if a_all.iter().any(|a| b_none.contains(a)) {
         return true;
     }
 
-    // Case 3. One of `FA's None` belongs to `FB's All`.
+    // Case 3. One of `SA's None` belongs to `SB's All`.
     if a_none.iter().any(|a| b_all.contains(a)) {
         return true;
     }
 
-    // Case 4. `FB's Any` is a subset of `FA's None`.
+    // Case 4. `SB's Any` is a subset of `SA's None`.
     if !b_any.is_empty() && b_any.iter().all(|b| a_none.contains(b)) {
         return true;
     }
 
-    // Case 5. `FA's Any` is a subset of `FB's None`.
+    // Case 5. `SA's Any` is a subset of `SB's None`.
     if !a_any.is_empty() && a_any.iter().all(|a| b_none.contains(a)) {
         return true;
     }
@@ -126,19 +126,22 @@ pub fn is_disjoint(a: &FilterInfo, b: &FilterInfo) -> bool {
     false
 }
 
-pub trait StoreFilterInfo {
-    fn get(&self, key: &FilterKey) -> Option<Arc<FilterInfo>>;
-    fn insert(&mut self, key: FilterKey, info: &Arc<FilterInfo>);
+pub trait StoreSelectInfo {
+    fn contains(&self, key: &SelectKey) -> bool;
+    fn get(&self, key: &SelectKey) -> Option<&Arc<SelectInfo>>;
+    fn insert(&mut self, key: SelectKey, info: Arc<SelectInfo>);
 }
 
-/// [`TypeId`] of a [`Filter`].
+/// Unique identifier for a type implementing [`Select`].
+pub type SelectKey = ATypeId<SelectKey_>;
+pub struct SelectKey_;
+
+/// Unique identifier for a type implementing [`Filter`].
 pub type FilterKey = ATypeId<FilterKey_>;
 pub struct FilterKey_;
 
-/// A Type that implemnts [`Filter`] can generate [`FilterInfo`],
-/// which is a [`TypeId`] package of associated types of the `Filter`.
 #[derive(Debug, Clone)]
-pub struct FilterInfo {
+pub struct SelectInfo {
     name: &'static str,
     target: ComponentKey,
     all: Box<[ComponentKey]>,
@@ -146,7 +149,7 @@ pub struct FilterInfo {
     none: Box<[ComponentKey]>,
 }
 
-impl FilterInfo {
+impl SelectInfo {
     pub fn name(&self) -> &'static str {
         self.name
     }
@@ -185,12 +188,12 @@ impl FilterInfo {
     }
 }
 
-/// Filtered component arryas by a [Filter].  
+/// Selected component arryas by a [`Select`].  
 ///
-// This struct contains borrowed [Filter::Target] arrays. But, this struct
+// This struct contains borrowed `Select::Target` arrays. But, this struct
 // doesn't bring lifetime constraint into inside the struct although it
 // borrows component arrays. Instead, borrowed data are encapsulated by
-// [Borrowed], which is a run-time borrow checker. In other words, component
+// `Borrowed`, which is a run-time borrow checker. In other words, component
 // arrays must be borrowed and released everytime.
 //
 // This struct is intended to be used as a cache without lifetime.
@@ -198,15 +201,17 @@ impl FilterInfo {
 // But system data will live indefinitely,
 // so removing lifetime helps to keep things simple.
 #[derive(Debug)]
-pub struct RawFiltered {
+pub struct SelectedRaw {
     /// [EntityTag] searched by the filter.
     //
-    // TODO: Each system owns [RawFiltered], so etags and col_idxs will be duplicated between systems.
+    // Each system owns `SelectedRaw`, so `etags` and `col_idxs` will be
+    // duplicated between systems.
     etags: Vec<EntityTag>,
 
     /// Column(Component) index searched by the filter.
     //
-    // TODO: Each system owns [RawFiltered], so etags and col_idxs will be duplicated between systems.
+    // Each system owns `SelectedRaw`, so `etags` and `col_idxs` will be
+    // duplicated between systems.
     col_idxs: Vec<usize>,
 
     /// Temporary buffer for the query result.
@@ -218,7 +223,7 @@ pub struct RawFiltered {
     query_res: Vec<Borrowed<RawGetter>>,
 }
 
-impl RawFiltered {
+impl SelectedRaw {
     pub(crate) const fn new(etags: Vec<EntityTag>, col_idxs: Vec<usize>) -> Self {
         Self {
             etags,
@@ -273,82 +278,82 @@ impl RawFiltered {
     }
 }
 
-/// Shared references to [Filter::Target] componenet arrays from multiple entities.  
-/// You can get an iterator traversing over each component array via [Self::iter].
-/// A component array belongs to a specific entity.
+/// Shared references to [`Select::Target`] componenet arrays from multiple
+/// entities. You can get an iterator traversing over each component array via
+/// [`iter`](Self::iter). A component array belongs to a specific entity.
 #[derive(Debug)]
-pub struct Filtered<'cont, Comp: 'cont> {
-    /// A data structure holding borrowed component arrays and their entity tags.
-    raw: &'cont mut RawFiltered,
+pub struct Selected<'cont, Comp: 'cont> {
+    /// A struct holding borrowed component arrays and their entity tags.
+    raw: &'cont mut SelectedRaw,
 
     /// Holds component type.
     _marker: PhantomData<Comp>,
 }
 
-impl<'cont, Comp> Filtered<'cont, Comp> {
-    /// Creates [Filtered] from mutable reference to a [RawFiltered].
-    /// [RawFiltered] is not a container, but it's borrowing container's data,
-    /// and holding them inside [Borrowed]s.
-    /// So we can think lifetime to the '&mut [RawFiltered]' is as if container's.
-    pub(crate) fn new(raw: &'cont mut RawFiltered) -> Self {
+impl<'cont, Comp: 'cont> Selected<'cont, Comp> {
+    /// Creates [`Selected`] from a mutable reference to a [`SelectedRaw`].
+    /// [`SelectedRaw`] is not a container, but it's borrowing container's data,
+    /// and holding them inside [`Borrowed`]s. So we can think lifetime to the
+    /// '&mut [`SelectedRaw`]' is as if container's.
+    pub(crate) fn new(raw: &'cont mut SelectedRaw) -> Self {
         Self {
             raw,
             _marker: PhantomData,
         }
     }
 
-    pub fn iter(&self) -> FilteredIter<'cont, Comp> {
-        FilteredIter::new(self)
+    pub fn iter(&self) -> SelectedIter<'cont, Comp> {
+        SelectedIter::new(self)
     }
 
-    pub fn ecs_par_iter(&self) -> ParFilteredIter<'cont, Comp> {
-        self.iter().into_par()
+    pub fn par_iter(&self) -> ParSelectedIter<'cont, Comp> {
+        ParSelectedIter(self.iter())
     }
 }
 
-impl<'cont, Comp> Deref for Filtered<'cont, Comp> {
-    type Target = RawFiltered;
+impl<Comp> Deref for Selected<'_, Comp> {
+    type Target = SelectedRaw;
 
     fn deref(&self) -> &Self::Target {
         self.raw
     }
 }
 
-/// Mutable references to filtered component arrays from multiple entities.  
-/// You can get an iterator traversing over each component array
-/// via [Self::iter] or [Self::iter_mut].
-/// A component array belongs to a specific entity.
+/// Mutable references to [`Select::Target`] component arrays from multiple
+/// entities.  You can get an iterator traversing over each component array via
+/// [`iter`](Self::iter) or [`iter_mut`](Self::iter_mut). A component array
+/// belongs to a specific entity.
 //
-// [Filtered] has mutable reference to a [RawFiltered] in it.
+// `Selected` has mutable reference to a `SelectedRaw` in it.
 // So we can make use of it and expose mutable methods to clients here.
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct FilteredMut<'cont, Comp>(Filtered<'cont, Comp>);
+pub struct SelectedMut<'cont, Comp>(Selected<'cont, Comp>);
 
-impl<'cont, Comp> FilteredMut<'cont, Comp> {
-    pub(crate) fn new(filtered: &'cont mut RawFiltered) -> Self {
-        Self(Filtered::new(filtered))
+impl<'cont, Comp: 'cont> SelectedMut<'cont, Comp> {
+    pub(crate) fn new(filtered: &'cont mut SelectedRaw) -> Self {
+        Self(Selected::new(filtered))
     }
 
-    pub fn iter(&self) -> FilteredIter<'cont, Comp> {
+    pub fn iter(&self) -> SelectedIter<'cont, Comp> {
         self.0.iter()
     }
 
-    pub fn iter_mut(&mut self) -> FilteredIterMut<'cont, Comp> {
-        FilteredIterMut::new(self.iter())
+    pub fn iter_mut(&mut self) -> SelectedIterMut<'cont, Comp> {
+        SelectedIterMut(self.iter())
     }
 
-    pub fn ecs_par_iter(&self) -> ParFilteredIter<'cont, Comp> {
-        self.0.ecs_par_iter()
+    pub fn par_iter(&self) -> ParSelectedIter<'cont, Comp> {
+        self.0.par_iter()
     }
 
-    pub fn ecs_par_iter_mut(&mut self) -> ParFilteredIterMut<'cont, Comp> {
-        ParFilteredIterMut::new(self.iter_mut())
+    pub fn par_iter_mut(&mut self) -> ParSelectedIterMut<'cont, Comp> {
+        ParSelectedIterMut(self.iter_mut())
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct FilteredIter<'cont, Comp: 'cont> {
+pub struct SelectedIter<'cont, Comp> {
     getter_cur: SendSyncPtr<Borrowed<RawGetter>>,
 
     getter_end: SendSyncPtr<Borrowed<RawGetter>>,
@@ -360,10 +365,10 @@ pub struct FilteredIter<'cont, Comp: 'cont> {
     _marker: PhantomData<&'cont Comp>,
 }
 
-impl<'cont, Comp> FilteredIter<'cont, Comp> {
-    // Borrows `Filtered`.
-    fn new(raw: &Filtered<'cont, Comp>) -> Self {
-        // Safety: `Filtered` guarantees we're good to access those vecs.
+impl<'cont, Comp: 'cont> SelectedIter<'cont, Comp> {
+    // Borrows `Selected`.
+    fn new(raw: &Selected<'cont, Comp>) -> Self {
+        // Safety: `Selected` guarantees we're good to access those vecs.
         unsafe {
             let getter_range = raw.query_res().as_ptr_range();
             let getter_cur = NonNull::new_unchecked(getter_range.start.cast_mut());
@@ -396,11 +401,6 @@ impl<'cont, Comp> FilteredIter<'cont, Comp> {
     }
 
     #[inline]
-    pub const fn into_par(self) -> ParFilteredIter<'cont, Comp> {
-        ParFilteredIter(self)
-    }
-
-    #[inline]
     fn split_at(self, index: usize) -> (Self, Self) {
         let l_getter_cur = self.getter_cur;
         let l_getter_end = unsafe { self.getter_cur.add(index) };
@@ -412,14 +412,14 @@ impl<'cont, Comp> FilteredIter<'cont, Comp> {
         let r_etag_cur = l_etag_end;
         let r_etag_end = self.etag_end;
 
-        let l = FilteredIter {
+        let l = SelectedIter {
             getter_cur: l_getter_cur,
             getter_end: l_getter_end,
             etag_cur: l_etag_cur,
             etag_end: l_etag_end,
             _marker: PhantomData,
         };
-        let r = FilteredIter {
+        let r = SelectedIter {
             getter_cur: r_getter_cur,
             getter_end: r_getter_end,
             etag_cur: r_etag_cur,
@@ -441,7 +441,7 @@ impl<'cont, Comp> FilteredIter<'cont, Comp> {
     }
 }
 
-impl<'cont, Comp> Iterator for FilteredIter<'cont, Comp> {
+impl<'cont, Comp: 'cont> Iterator for SelectedIter<'cont, Comp> {
     type Item = TaggedGetter<'cont, Comp>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -464,13 +464,13 @@ impl<'cont, Comp> Iterator for FilteredIter<'cont, Comp> {
     }
 }
 
-impl<'cont, Comp> ExactSizeIterator for FilteredIter<'cont, Comp> {
+impl<'cont, Comp: 'cont> ExactSizeIterator for SelectedIter<'cont, Comp> {
     fn len(&self) -> usize {
         Self::len(self)
     }
 }
 
-impl<'cont, Comp> DoubleEndedIterator for FilteredIter<'cont, Comp> {
+impl<'cont, Comp: 'cont> DoubleEndedIterator for SelectedIter<'cont, Comp> {
     fn next_back(&mut self) -> Option<Self::Item> {
         if self.getter_cur < self.getter_end {
             unsafe {
@@ -484,17 +484,18 @@ impl<'cont, Comp> DoubleEndedIterator for FilteredIter<'cont, Comp> {
     }
 }
 
-/// Parallel [`FilteredIter`].
+/// Parallel [`SelectedIter`].
 //
 // `Iterator` and `ParallelIterator` have the same signature methods,
 // So clients have to write fully-qualified syntax to specify methods.
 // This new type helps clients avoid it.
 #[derive(Debug, Clone)]
 #[repr(transparent)]
-pub struct ParFilteredIter<'cont, Comp: 'cont>(FilteredIter<'cont, Comp>);
+pub struct ParSelectedIter<'cont, Comp>(pub SelectedIter<'cont, Comp>);
 
-impl<'cont, Comp> ParFilteredIter<'cont, Comp> {
-    pub const fn into_seq(self) -> FilteredIter<'cont, Comp> {
+impl<'cont, Comp: 'cont> ParSelectedIter<'cont, Comp> {
+    #[inline]
+    pub const fn into_seq(self) -> SelectedIter<'cont, Comp> {
         self.0
     }
 
@@ -509,38 +510,9 @@ impl<'cont, Comp> ParFilteredIter<'cont, Comp> {
     }
 }
 
-impl<'cont, Comp: Send + Sync> ParallelIterator for ParFilteredIter<'cont, Comp> {
+impl<'cont, Comp: Send + Sync + 'cont> Producer for ParSelectedIter<'cont, Comp> {
     type Item = TaggedGetter<'cont, Comp>;
-
-    #[inline]
-    fn drive_unindexed<C>(self, consumer: C) -> C::Result
-    where
-        C: UnindexedConsumer<Self::Item>,
-    {
-        par::bridge(self, consumer)
-    }
-}
-
-impl<'cont, Comp: Send + Sync> IndexedParallelIterator for ParFilteredIter<'cont, Comp> {
-    #[inline]
-    fn len(&self) -> usize {
-        Self::len(self)
-    }
-
-    #[inline]
-    fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-        par::bridge(self, consumer)
-    }
-
-    #[inline]
-    fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
-        callback.callback(self)
-    }
-}
-
-impl<'cont, Comp: Send + Sync> Producer for ParFilteredIter<'cont, Comp> {
-    type Item = TaggedGetter<'cont, Comp>;
-    type IntoIter = FilteredIter<'cont, Comp>;
+    type IntoIter = SelectedIter<'cont, Comp>;
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
@@ -549,19 +521,34 @@ impl<'cont, Comp: Send + Sync> Producer for ParFilteredIter<'cont, Comp> {
 
     #[inline]
     fn split_at(self, index: usize) -> (Self, Self) {
-        let (l, r) = FilteredIter::split_at(self.into_seq(), index);
-        (l.into_par(), r.into_par())
+        let (l, r) = SelectedIter::split_at(self.0, index);
+        (ParSelectedIter(l), ParSelectedIter(r))
     }
 }
+
+impl_into_iterator_for_parallel!(
+    "lifetimes" = 'cont; "bounds" = Comp: {'cont};
+    "for" = ParSelectedIter; "to" = SelectedIter<'cont, Comp>;
+    "item" = TaggedGetter<'cont, Comp>;
+);
+impl_parallel_iterator!(
+    "lifetimes" = 'cont; "bounds" = Comp: {Send + Sync + 'cont};
+    "for" = ParSelectedIter; "item" = TaggedGetter<'cont, Comp>;
+);
+impl_unindexed_producer!(
+    "lifetimes" = 'cont; "bounds" = Comp: {Send + Sync + 'cont};
+    "for" = ParSelectedIter; "item" = TaggedGetter<'cont, Comp>;
+);
 
 // Mutable iterator is not clonable.
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct FilteredIterMut<'cont, Comp: 'cont>(FilteredIter<'cont, Comp>);
+pub struct SelectedIterMut<'cont, Comp>(pub SelectedIter<'cont, Comp>);
 
-impl<'cont, Comp> FilteredIterMut<'cont, Comp> {
-    const fn new(inner: FilteredIter<'cont, Comp>) -> Self {
-        Self(inner)
+impl<'cont, Comp: 'cont> SelectedIterMut<'cont, Comp> {
+    #[inline]
+    pub const fn into_seq(self) -> SelectedIter<'cont, Comp> {
+        self.0
     }
 
     #[inline]
@@ -575,18 +562,13 @@ impl<'cont, Comp> FilteredIterMut<'cont, Comp> {
     }
 
     #[inline]
-    pub const fn into_par(self) -> ParFilteredIterMut<'cont, Comp> {
-        ParFilteredIterMut(self)
-    }
-
-    #[inline]
     fn split_at(self, index: usize) -> (Self, Self) {
-        let (l, r) = FilteredIter::split_at(self.0, index);
+        let (l, r) = SelectedIter::split_at(self.0, index);
         (Self(l), Self(r))
     }
 }
 
-impl<'cont, Comp> Iterator for FilteredIterMut<'cont, Comp> {
+impl<'cont, Comp> Iterator for SelectedIterMut<'cont, Comp> {
     type Item = TaggedGetterMut<'cont, Comp>;
 
     #[inline]
@@ -606,13 +588,13 @@ impl<'cont, Comp> Iterator for FilteredIterMut<'cont, Comp> {
     }
 }
 
-impl<'cont, Comp> ExactSizeIterator for FilteredIterMut<'cont, Comp> {
+impl<'cont, Comp: 'cont> ExactSizeIterator for SelectedIterMut<'cont, Comp> {
     fn len(&self) -> usize {
         Self::len(self)
     }
 }
 
-impl<'cont, Comp> DoubleEndedIterator for FilteredIterMut<'cont, Comp> {
+impl<'cont, Comp: 'cont> DoubleEndedIterator for SelectedIterMut<'cont, Comp> {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
         self.0.next_back().map(|TaggedGetter { getter, etag }| {
@@ -626,21 +608,18 @@ impl<'cont, Comp> DoubleEndedIterator for FilteredIterMut<'cont, Comp> {
     }
 }
 
-/// Parallel [`FilteredIterMut`].
+/// Parallel [`SelectedIterMut`].
 //
 // `Iterator` and `ParallelIterator` have the same signature methods,
 // So clients have to write fully-qualified syntax to specify methods.
 // This new type helps clients avoid it.
 #[derive(Debug)]
 #[repr(transparent)]
-pub struct ParFilteredIterMut<'cont, Comp: 'cont>(FilteredIterMut<'cont, Comp>);
+pub struct ParSelectedIterMut<'cont, Comp>(pub SelectedIterMut<'cont, Comp>);
 
-impl<'cont, Comp> ParFilteredIterMut<'cont, Comp> {
-    const fn new(iter: FilteredIterMut<'cont, Comp>) -> Self {
-        Self(iter)
-    }
-
-    pub const fn into_seq(self) -> FilteredIterMut<'cont, Comp> {
+impl<'cont, Comp: 'cont> ParSelectedIterMut<'cont, Comp> {
+    #[inline]
+    pub const fn into_seq(self) -> SelectedIterMut<'cont, Comp> {
         self.0
     }
 
@@ -655,38 +634,9 @@ impl<'cont, Comp> ParFilteredIterMut<'cont, Comp> {
     }
 }
 
-impl<'cont, Comp: Send + Sync> ParallelIterator for ParFilteredIterMut<'cont, Comp> {
+impl<'cont, Comp: Send + Sync> Producer for ParSelectedIterMut<'cont, Comp> {
     type Item = TaggedGetterMut<'cont, Comp>;
-
-    #[inline]
-    fn drive_unindexed<C>(self, consumer: C) -> C::Result
-    where
-        C: UnindexedConsumer<Self::Item>,
-    {
-        par::bridge(self, consumer)
-    }
-}
-
-impl<'cont, Comp: Send + Sync> IndexedParallelIterator for ParFilteredIterMut<'cont, Comp> {
-    #[inline]
-    fn len(&self) -> usize {
-        Self::len(self)
-    }
-
-    #[inline]
-    fn drive<C: Consumer<Self::Item>>(self, consumer: C) -> C::Result {
-        par::bridge(self, consumer)
-    }
-
-    #[inline]
-    fn with_producer<CB: ProducerCallback<Self::Item>>(self, callback: CB) -> CB::Output {
-        callback.callback(self)
-    }
-}
-
-impl<'cont, Comp: Send + Sync> Producer for ParFilteredIterMut<'cont, Comp> {
-    type Item = TaggedGetterMut<'cont, Comp>;
-    type IntoIter = FilteredIterMut<'cont, Comp>;
+    type IntoIter = SelectedIterMut<'cont, Comp>;
 
     #[inline]
     fn into_iter(self) -> Self::IntoIter {
@@ -695,10 +645,24 @@ impl<'cont, Comp: Send + Sync> Producer for ParFilteredIterMut<'cont, Comp> {
 
     #[inline]
     fn split_at(self, index: usize) -> (Self, Self) {
-        let (l, r) = FilteredIterMut::split_at(self.into_seq(), index);
-        (l.into_par(), r.into_par())
+        let (l, r) = SelectedIterMut::split_at(self.0, index);
+        (ParSelectedIterMut(l), ParSelectedIterMut(r))
     }
 }
+
+impl_into_iterator_for_parallel!(
+    "lifetimes" = 'cont; "bounds" = Comp: {'cont};
+    "for" = ParSelectedIterMut; "to" = SelectedIterMut<'cont, Comp>;
+    "item" = TaggedGetterMut<'cont, Comp>;
+);
+impl_parallel_iterator!(
+    "lifetimes" = 'cont; "bounds" = Comp: {Send + Sync + 'cont};
+    "for" = ParSelectedIterMut; "item" = TaggedGetterMut<'cont, Comp>;
+);
+impl_unindexed_producer!(
+    "lifetimes" = 'cont; "bounds" = Comp: {Send + Sync + 'cont};
+    "for" = ParSelectedIterMut; "item" = TaggedGetterMut<'cont, Comp>;
+);
 
 /// Component getter with entity tag.
 ///
@@ -717,12 +681,12 @@ pub struct TaggedGetter<'cont, Comp: 'cont> {
     etag: ManagedConstPtr<EntityTag>,
 }
 
-impl<'cont, Comp> TaggedGetter<'cont, Comp> {
+impl<Comp> TaggedGetter<'_, Comp> {
     pub fn entity_index(&self) -> EntityIndex {
         self.etag.index()
     }
 
-    pub fn entity_name(&self) -> &str {
+    pub fn entity_name(&self) -> Option<&EntityName> {
         self.etag.name()
     }
 
@@ -778,12 +742,12 @@ pub struct TaggedGetterMut<'cont, Comp: 'cont> {
     etag: ManagedConstPtr<EntityTag>,
 }
 
-impl<'cont, Comp> TaggedGetterMut<'cont, Comp> {
+impl<Comp> TaggedGetterMut<'_, Comp> {
     pub fn entity_index(&self) -> EntityIndex {
         self.etag.index()
     }
 
-    pub fn entity_name(&self) -> &str {
+    pub fn entity_name(&self) -> Option<&EntityName> {
         self.etag.name()
     }
 
@@ -804,7 +768,7 @@ impl<'cont, Comp> Deref for TaggedGetterMut<'cont, Comp> {
     }
 }
 
-impl<'cont, Comp> DerefMut for TaggedGetterMut<'cont, Comp> {
+impl<Comp> DerefMut for TaggedGetterMut<'_, Comp> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.getter
     }

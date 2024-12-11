@@ -16,8 +16,8 @@ use std::{
     slice,
 };
 
-/// A structure representing 2^k value.
-/// But you can designate zero to this structure although zero is not 2^k.
+/// A struct representing 2^k value.
+/// But you can designate zero to this struct although zero is not 2^k.
 /// In that case, zero is considered as usize::MAX + 1.
 #[derive(Debug, Clone, Copy)]
 pub struct PowerOfTwo {

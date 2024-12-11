@@ -18,33 +18,53 @@ pub struct TypeInfo {
     pub ty: TypeId,
 
     /// Type name.
+    ///
     /// This field may differ from rust version to version.
     pub name: &'static str,
 
     /// Type size in bytes.
-    /// A multiple of `align` including zero.
+    ///
+    /// Size must be a multiple of `align` including zero.
     pub size: usize,
 
     /// Type alignment in bytes.
-    /// A power of two, at lease one.
+    ///
+    /// Alignment must be a power of two, at lease one.
     pub align: usize,
 
-    /// Raw level drop function.
+    /// Raw drop function.
     pub fn_drop: FnDropRaw,
 
-    /// Raw level clone function. If the type doesn't support clone, this must cause panic.
+    /// Raw clone function.
+    ///
+    /// If the type doesn't support clone, this must cause panic.
     pub fn_clone: FnCloneRaw,
 
-    /// Whether the type is Send.
+    /// Whether the type is [`Clone`] or not.
+    pub is_clone: bool,
+
+    /// Whether the type is [`Send`] or not.
     pub is_send: bool,
 
-    /// Whether the type is Sync.
+    /// Whether the type is [`Sync`] or not.
     pub is_sync: bool,
 }
 
 impl TypeInfo {
     pub fn is_type_of<T: 'static>(&self) -> bool {
         self.ty == TypeId::of::<T>()
+    }
+
+    pub fn set_additional(&mut self, is_send: bool, is_sync: bool, fn_clone: Option<FnCloneRaw>) {
+        self.is_send = is_send;
+        self.is_sync = is_sync;
+        if let Some(fn_clone) = fn_clone {
+            self.is_clone = true;
+            self.fn_clone = fn_clone;
+        } else {
+            self.is_clone = false;
+            self.fn_clone = unimpl_clone;
+        }
     }
 }
 
@@ -65,6 +85,7 @@ impl<T: 'static> AsTypeInfo for T {
             align: mem::align_of::<T>(),
             fn_drop: drop::<T>,
             fn_clone: unimpl_clone,
+            is_clone: false,
             is_send: false,
             is_sync: false,
         }
@@ -127,15 +148,63 @@ impl<T: ?Sized + UnwindSafe> TypeHelper<T> {
     pub const IS_UNWIND_SAFE: bool = true;
 }
 
+// === TypeHelper for Debug ===
+
+pub trait NotDebug {
+    const IS_DEBUG: bool = false;
+    const FN_FMT: FnFmtRaw = unimpl_fmt;
+}
+
+impl<T: ?Sized> NotDebug for TypeHelper<T> {}
+
+impl<T: fmt::Debug> TypeHelper<T> {
+    pub const IS_DEBUG: bool = true;
+    pub const FN_FMT: FnFmtRaw = Self::fn_fmt();
+
+    pub const fn fn_fmt() -> FnFmtRaw {
+        unsafe fn fmt<T: fmt::Debug>(
+            this: *const u8,
+            f: &mut fmt::Formatter<'_>,
+        ) -> Result<(), fmt::Error> {
+            let this: &T = (this as *const T).as_ref().unwrap();
+            write!(f, "{this:?}")
+        }
+
+        fmt::<T>
+    }
+}
+
+pub struct DebugHelper {
+    pub f: FnFmtRaw,
+    pub ptr: *const u8,
+}
+
+impl fmt::Debug for DebugHelper {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        unsafe { (self.f)(self.ptr, f) }
+    }
+}
+
+type FnFmtRaw = unsafe fn(*const u8, &mut fmt::Formatter<'_>) -> Result<(), fmt::Error>;
+
+pub(crate) unsafe fn unimpl_fmt(
+    _: *const u8,
+    _: &mut fmt::Formatter<'_>,
+) -> Result<(), fmt::Error> {
+    unimplemented!("type doesn't implement Debug");
+}
+
 // === TypeHelper for `Clone` ===
 
 pub trait NotClone {
+    const IS_CLONE: bool = false;
     const FN_CLONE: FnCloneRaw = unimpl_clone;
 }
 
 impl<T: ?Sized> NotClone for TypeHelper<T> {}
 
-impl<T: ?Sized + Clone> TypeHelper<T> {
+impl<T: Clone> TypeHelper<T> {
+    pub const IS_CLONE: bool = true;
     pub const FN_CLONE: FnCloneRaw = Self::fn_clone();
 
     pub const fn fn_clone() -> FnCloneRaw {
@@ -154,7 +223,7 @@ impl<T: ?Sized + Clone> TypeHelper<T> {
     }
 }
 
-unsafe fn unimpl_clone(_: *const u8, _: *mut u8) {
+pub(crate) unsafe fn unimpl_clone(_: *const u8, _: *mut u8) {
     unimplemented!("type doesn't implement Clone");
 }
 
@@ -221,9 +290,11 @@ macro_rules! tinfo {
         use $crate::ds::types::{AsTypeInfo, NotClone, NotSend, NotSync, TypeHelper};
 
         let mut tinfo = <$ty as AsTypeInfo>::as_type_info();
-        tinfo.fn_clone = TypeHelper::<$ty>::FN_CLONE;
-        tinfo.is_send = TypeHelper::<$ty>::IS_SEND;
-        tinfo.is_sync = TypeHelper::<$ty>::IS_SYNC;
+        tinfo.set_additional(
+            TypeHelper::<$ty>::IS_SEND,
+            TypeHelper::<$ty>::IS_SYNC,
+            TypeHelper::<$ty>::IS_CLONE.then_some(TypeHelper::<$ty>::FN_CLONE),
+        );
         tinfo
     }};
     ($ty:ty, $name:literal) => {{
@@ -231,9 +302,11 @@ macro_rules! tinfo {
         use $crate::ds::types::{AsTypeInfo, NotClone, NotSend, NotSync, TypeHelper};
 
         let mut tinfo = <$ty as AsTypeInfo>::as_type_info();
-        tinfo.fn_clone = TypeHelper::<$ty>::FN_CLONE;
-        tinfo.is_send = TypeHelper::<$ty>::IS_SEND;
-        tinfo.is_sync = TypeHelper::<$ty>::IS_SYNC;
+        tinfo.set_additional(
+            TypeHelper::<$ty>::IS_SEND,
+            TypeHelper::<$ty>::IS_SYNC,
+            TypeHelper::<$ty>::IS_CLONE.then_some(TypeHelper::<$ty>::FN_CLONE),
+        );
         tinfo.name = $name;
         tinfo
     }};
@@ -455,15 +528,27 @@ mod tests {
     #[allow(unused)]
     #[test]
     fn test_type_helper() {
+        #[derive(Clone)]
+        struct Cloneable(i32);
+        struct NotCloneable(i32);
         struct SendSync(i32);
         struct SyncNotSend(std::sync::MutexGuard<'static, i32>);
         struct SendNotSync(std::cell::Cell<i32>);
         struct NotSendNotSync(*mut i32);
+        #[derive(Debug)]
         struct A;
         struct B;
 
         const _: () = {
-            // === Detects `Send` and `Sync` ===
+            // Detects `Debug`.
+            assert!(TypeHelper::<A>::IS_DEBUG);
+            assert!(!TypeHelper::<B>::IS_DEBUG);
+
+            // Detects `Clone`.
+            assert!(TypeHelper::<Cloneable>::IS_CLONE);
+            assert!(!TypeHelper::<NotCloneable>::IS_CLONE);
+
+            // Detects `Send` and `Sync`.
             assert!(TypeHelper::<SendSync>::IS_SEND);
             assert!(TypeHelper::<SendSync>::IS_SYNC);
             assert!(!TypeHelper::<SyncNotSend>::IS_SEND);
@@ -473,7 +558,7 @@ mod tests {
             assert!(!TypeHelper::<NotSendNotSync>::IS_SEND);
             assert!(!TypeHelper::<NotSendNotSync>::IS_SYNC);
 
-            // === Detects `EqualType` ===
+            // Detects `EqualType`.
             assert!(TypeHelper::<(A, A)>::IS_EQUAL_TYPE);
             assert!(!TypeHelper::<(A, B)>::IS_EQUAL_TYPE);
         };

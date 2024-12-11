@@ -1,24 +1,34 @@
-use super::entity::{AddEntity, BorrowComponent, ContainEntity, RegisterComponent};
 use crate::ds::prelude::*;
+use crate::ecs::ent::entity::{AddEntity, BorrowComponent, ContainEntity, RegisterComponent};
 use std::{
     any::TypeId, cmp, collections::HashMap, fmt::Debug, hash::BuildHasher, mem, ptr::NonNull,
 };
 
 /// Two dimensional storage containing heterogeneous types of data.
-/// This structure is composed of "Sparse" and "Dense" layers.
-/// Sparse layer is literally sparse, so it has vacant slots in it, while dense layer doesn't.
-/// Dense layer has items and they can be accessed through the sparse layer.
-/// Each dense is identified by its item's [`TypeId`].
-/// But you are encouraged to access each dense by its index, not TypeId for the performance.
+///
+/// This struct is composed of "Sparse" and "Dense" layers. Sparse layer is
+/// literally sparse, so it has vacant slots in it, while dense layer doesn't.
+/// Dense layer contains real items and the items can be accessed through the
+/// sparse layer. Each dense is identified by its item's [`TypeId`]. But you
+/// are encouraged to access each dense by its index, not `TypeId` for the
+/// performance.
 ///
 /// We call each dense layer a column, and all columns have the same length.
-/// So it looks like a 2D matrix.
+/// So it looks like a 2D matrix as shown below.
+///
+/// ```text
+/// Index  Sparse  Dense  Dense
+///                  A      B
+///   0      0 _____ .      .
+///   1      2 _   _ .      .
+///   2      x  \_/_ .      .
+///   3      1 __/   
+/// ```
 #[derive(Debug)]
 pub struct SparseSet<S> {
     sparse: OptVec<usize, S>,
     deref: Vec<usize>,
     cols: Vec<Holder<ChunkAnyVec, RawGetter, RawGetter>>,
-    len: usize,
     map: HashMap<TypeId, usize, S>,
 }
 
@@ -34,7 +44,6 @@ where
             sparse: OptVec::new(),
             deref: Vec::new(),
             cols: Vec::new(),
-            len: 0,
             map: HashMap::default(),
         }
     }
@@ -65,19 +74,11 @@ where
             sparse: OptVec::new(),
             deref: Vec::new(),
             cols,
-            len: 0,
             map,
         };
         Box::new(this)
     }
 
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    /// # Panics
-    ///
-    /// Panics if other threads borrowed any column.
     fn get_item_mut(&mut self, ci: usize, ri: usize) -> Option<NonNull<u8>> {
         let key = ri;
 
@@ -85,6 +86,40 @@ where
         let col = self.cols.get_mut(ci)?;
         let col = col.get_mut().unwrap();
         col.get_raw(index)
+    }
+
+    fn len(&self) -> usize {
+        // All columns must have the same length.
+        self.cols
+            .first()
+            .map(|col| unsafe { col.get_unchecked().len() })
+            .unwrap_or_default()
+    }
+
+    fn capacity(&self) -> usize {
+        // All columns must have the same length.
+        self.cols
+            .first()
+            .map(|col| unsafe { col.get_unchecked().capacity() })
+            .unwrap_or_default()
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        for col in self.cols.iter_mut() {
+            col.get_mut().unwrap().reserve(additional);
+        }
+    }
+
+    fn shrink_to_fit(&mut self) {
+        for col in self.cols.iter_mut() {
+            col.get_mut().unwrap().shrink_to_fit();
+        }
+    }
+
+    unsafe fn resize_column(&mut self, ci: usize, new_len: usize, val_ptr: NonNull<u8>) {
+        let mut col = self.cols[ci].get_mut().unwrap();
+        assert!(col.is_clone());
+        col.resize_raw(new_len, val_ptr);
     }
 }
 
@@ -139,7 +174,7 @@ where
     }
 
     fn remove_column(&mut self, ci: usize) -> Option<TypeInfo> {
-        if ci >= self.get_column_num() || self.cols[ci].borrow_count() != 0 {
+        if ci >= self.num_columns() || self.cols[ci].borrow_count() != 0 {
             return None;
         }
 
@@ -173,7 +208,7 @@ where
         })
     }
 
-    fn get_column_num(&self) -> usize {
+    fn num_columns(&self) -> usize {
         self.cols.len()
     }
 
@@ -248,6 +283,12 @@ impl<S> AddEntity for SparseSet<S>
 where
     S: BuildHasher + Default + Clone + 'static,
 {
+    fn to_value_index(&self, ri: usize) -> Option<usize> {
+        let key = ri;
+
+        self.sparse.get(key).cloned()
+    }
+
     fn begin_add_row(&mut self) {}
 
     unsafe fn add_value(&mut self, ci: usize, val_ptr: NonNull<u8>) {
@@ -258,18 +299,21 @@ where
     }
 
     unsafe fn end_add_row(&mut self) -> usize {
-        self.len += 1;
-        let len = self.deref.len() + 1;
-        let key = self.sparse.add(len - 1);
-        self.deref.push(key);
-        key
+        let vi = self.deref.len();
+        let ri = self.sparse.add(vi);
+        self.deref.push(ri);
+        ri
+    }
+
+    fn value_ptr_by_value_index(&self, ci: usize, vi: usize) -> Option<NonNull<u8>> {
+        // Safety: Getting pointer is ok.
+        let col = unsafe { self.cols.get(ci)?.get_unchecked() };
+        col.get_raw(vi)
     }
 
     fn remove_row(&mut self, ri: usize) -> bool {
-        let key = ri;
-
-        if let Some(index) = self.sparse.take(key) {
-            self.remove_row_by_value_index(index);
+        if let Some(vi) = self.to_value_index(ri) {
+            self.remove_row_by_value_index(vi);
             true
         } else {
             false
@@ -277,15 +321,41 @@ where
     }
 
     fn remove_row_by_value_index(&mut self, vi: usize) {
-        for col in self.cols.iter_mut() {
-            let mut col = col.get_mut().unwrap();
-            col.swap_remove_drop(vi);
+        unsafe {
+            self.begin_remove_row_by_value_index(vi);
+            for ci in 0..self.num_columns() {
+                self.drop_value_by_value_index(ci, vi);
+            }
+            self.end_remove_row_by_value_index(vi);
         }
+    }
 
-        self.deref.swap_remove(vi);
+    unsafe fn begin_remove_row_by_value_index(&mut self, vi: usize) {
+        assert!(vi < self.len());
+    }
 
-        self.len -= 1;
+    unsafe fn remove_value_by_value_index(&mut self, ci: usize, vi: usize, buf: NonNull<u8>) {
+        let holder = self.cols.get_unchecked_mut(ci);
+        let mut col = holder.get_mut().unwrap();
+        col.swap_remove_raw(vi, buf.as_ptr());
+    }
 
+    unsafe fn drop_value_by_value_index(&mut self, ci: usize, vi: usize) {
+        let holder = self.cols.get_unchecked_mut(ci);
+        let mut col = holder.get_mut().unwrap();
+        col.swap_remove_drop(vi);
+    }
+
+    unsafe fn forget_value_by_value_index(&mut self, ci: usize, vi: usize) {
+        let holder = self.cols.get_unchecked_mut(ci);
+        let mut col = holder.get_mut().unwrap();
+        col.swap_remove_forget(vi);
+    }
+
+    unsafe fn end_remove_row_by_value_index(&mut self, vi: usize) {
+        let ri = self.deref.swap_remove(vi);
+        let _vi = self.sparse.take(ri);
+        debug_assert_eq!(_vi, Some(vi));
         if vi < self.deref.len() {
             let moved_key = self.deref[vi];
             *self.sparse.get_mut(moved_key).unwrap() = vi;
@@ -299,5 +369,52 @@ where
 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{hash::RandomState, ptr::NonNull};
+
+    #[test]
+    fn test_sparseset_reserve() {
+        const CHUNK_LEN: usize = SparseSet::<RandomState>::CHUNK_SIZE / 4;
+
+        let mut s: SparseSet<RandomState> = SparseSet::new();
+        let u_ci = s.add_column(tinfo!(u32)).unwrap();
+        let f_ci = s.add_column(tinfo!(f32)).unwrap();
+
+        for iter in 0..2 {
+            for i in 0..CHUNK_LEN {
+                // Checks len() and capacity().
+                assert_eq!(s.len(), iter * CHUNK_LEN + i);
+                for col in s.cols.iter() {
+                    let col = col.get().unwrap();
+                    assert_eq!(col.len(), s.len());
+                    assert_eq!(col.capacity(), s.capacity());
+                }
+
+                let u = i as u32;
+                let f = i as f32;
+                unsafe {
+                    s.begin_add_row();
+                    s.add_value(
+                        u_ci,
+                        NonNull::new(&u as *const u32 as *const u8 as *mut u8).unwrap(),
+                    );
+                    s.add_value(
+                        f_ci,
+                        NonNull::new(&f as *const f32 as *const u8 as *mut u8).unwrap(),
+                    );
+                    s.end_add_row();
+                }
+            }
+
+            // Checks reserve().
+            let old_cap = s.capacity();
+            s.reserve(CHUNK_LEN);
+            assert!(s.capacity() > old_cap);
+        }
     }
 }

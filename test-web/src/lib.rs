@@ -1,33 +1,34 @@
 #![allow(dead_code)]
 
 use my_ecs::prelude::*;
+use std::hash::BuildHasher;
 
 // === Defines number of workers ===
 const NUM_WORKERS: usize = 3;
 
 // === Defines `Component` ===
-#[derive(Component)]
-struct Ca(i32);
+#[derive(Component, Clone, Copy)]
+struct Ca(i64);
 
-#[derive(Component)]
-struct Cb(i32);
+#[derive(Component, Clone, Copy)]
+struct Cb(i64);
 
-#[derive(Component)]
-struct Cc(i32);
+#[derive(Component, Clone, Copy)]
+struct Cc(i64);
 
 // === Defines `Entity` ===
-#[derive(Entity)]
+#[derive(Entity, Clone, Copy)]
 struct Ea {
     a: Ca,
 }
 
-#[derive(Entity)]
+#[derive(Entity, Clone, Copy)]
 struct Eb {
     a: Ca,
     b: Cb,
 }
 
-#[derive(Entity)]
+#[derive(Entity, Clone, Copy)]
 struct Ec {
     c: Cc,
 }
@@ -78,7 +79,7 @@ fn try_register_struct_system(pool: WorkerPool) -> WorkerPool {
 
     ecs.add_system(SystemDesc::new().with_system(S)).unwrap();
 
-    ecs.set_workers(Vec::new(), [0]).into()
+    ecs.destroy().into()
 }
 
 /// Function systems can have five types of parameters, which are
@@ -209,7 +210,7 @@ fn try_register_fn_system(pool: WorkerPool) -> WorkerPool {
     // R, W, RR, RW, EW
     test!(r=r w=w rr=rr rw=rw ew=ew);
 
-    ecs.set_workers(Vec::new(), [0]).into()
+    ecs.destroy().into()
 }
 
 fn try_open_close(pool: WorkerPool) -> WorkerPool {
@@ -224,7 +225,7 @@ fn try_open_close(pool: WorkerPool) -> WorkerPool {
         let _ = ecs.run();
     }
 
-    ecs.set_workers(Vec::new(), [0]).into()
+    ecs.destroy().into()
 }
 
 fn try_schedule(pool: WorkerPool) -> WorkerPool {
@@ -236,16 +237,16 @@ fn try_schedule(pool: WorkerPool) -> WorkerPool {
     ecs.register_entity_of::<Ea>().unwrap();
     ecs.register_entity_of::<Eb>().unwrap();
     ecs.add_system(SystemDesc::new().with_once(|mut ew: EntWrite<Ea>| {
-        ew.add_entity(Ea { a: Ca(1) });
-        ew.add_entity(Ea { a: Ca(2) });
+        ew.add(Ea { a: Ca(1) });
+        ew.add(Ea { a: Ca(2) });
     }))
     .unwrap();
     ecs.add_system(SystemDesc::new().with_once(|mut ew: EntWrite<Eb>| {
-        ew.add_entity(Eb {
+        ew.add(Eb {
             a: Ca(3),
             b: Cb(10),
         });
-        ew.add_entity(Eb {
+        ew.add(Eb {
             a: Ca(4),
             b: Cb(20),
         });
@@ -280,7 +281,7 @@ fn try_schedule(pool: WorkerPool) -> WorkerPool {
 
     assert!(ecs.collect_poisoned_systems().is_empty());
 
-    return ecs.set_workers(Vec::new(), [0]).into();
+    return ecs.destroy().into();
 
     // === Internal struct and functions ===
 
@@ -289,7 +290,7 @@ fn try_schedule(pool: WorkerPool) -> WorkerPool {
         let mut w = w.take();
         w.iter_mut().flatten().for_each(|ca| ca.0 += 1);
 
-        let mut vals: Vec<i32> = w.iter().flatten().map(|ca| ca.0).collect();
+        let mut vals: Vec<i64> = w.iter().flatten().map(|ca| ca.0).collect();
         vals.sort_unstable();
         assert_eq!(vals, [2, 3, 4, 5]);
     }
@@ -299,57 +300,51 @@ fn try_schedule(pool: WorkerPool) -> WorkerPool {
         let mut w = w.take();
         w.iter_mut().flatten().for_each(|ca| ca.0 -= 1);
 
-        let mut vals: Vec<i32> = w.iter().flatten().map(|ca| ca.0).collect();
+        let mut vals: Vec<i64> = w.iter().flatten().map(|ca| ca.0).collect();
         vals.sort_unstable();
         assert_eq!(vals, [1, 2, 3, 4]);
     }
 
     // Iterates over `Ca`.
     fn iter_ca(r: Read<Fa>) {
-        let r = r.take();
-        let mut vals: Vec<i32> = r.iter().flatten().map(|ca| ca.0).collect();
+        let mut vals: Vec<i64> = r.iter().flatten().map(|ca| ca.0).collect();
         vals.sort_unstable();
         assert_eq!(vals, [1, 2, 3, 4]);
     }
 
     /// Increases `Cb` by 1.
-    fn inc_cb(w: Write<Fb>) {
-        let mut w = w.take();
+    fn inc_cb(mut w: Write<Fb>) {
         w.iter_mut().flatten().for_each(|cb| cb.0 += 1);
 
-        let mut vals: Vec<i32> = w.iter().flatten().map(|cb| cb.0).collect();
+        let mut vals: Vec<i64> = w.iter().flatten().map(|cb| cb.0).collect();
         vals.sort_unstable();
         assert_eq!(vals, [11, 21]);
     }
 
     /// Decreases `Cb` by 1.
-    fn dec_cb(w: Write<Fb>) {
-        let mut w = w.take();
+    fn dec_cb(mut w: Write<Fb>) {
         w.iter_mut().flatten().for_each(|cb| cb.0 -= 1);
 
-        let mut vals: Vec<i32> = w.iter().flatten().map(|cb| cb.0).collect();
+        let mut vals: Vec<i64> = w.iter().flatten().map(|cb| cb.0).collect();
         vals.sort_unstable();
         assert_eq!(vals, [10, 20]);
     }
 
     // Iterates over `Cb`.
     fn iter_cb(r: Read<Fb>) {
-        let r = r.take();
-        let mut vals: Vec<i32> = r.iter().flatten().map(|cb| cb.0).collect();
+        let mut vals: Vec<i64> = r.iter().flatten().map(|cb| cb.0).collect();
         vals.sort_unstable();
         assert_eq!(vals, [10, 20]);
     }
 
     // Attaches a letter to `Ra`.
-    fn attach_ra(w: ResWrite<Ra>) {
-        let w = w.take();
+    fn attach_ra(mut w: ResWrite<Ra>) {
         w.0.push('A');
         assert_eq!(w.0, "AA");
     }
 
     // Detaches a letter from `Ra`.
-    fn detach_ra(w: ResWrite<Ra>) {
-        let w = w.take();
+    fn detach_ra(mut w: ResWrite<Ra>) {
         w.0.pop();
         assert_eq!(w.0, "A");
     }
@@ -392,14 +387,14 @@ fn try_command(pool: WorkerPool) -> WorkerPool {
     // In the first run, the system was not registered yet.
     assert_eq!(*count.lock().unwrap(), REPEAT - 1);
 
-    ecs.set_workers(Vec::new(), [0]).into()
+    ecs.destroy().into()
 }
 
 fn try_parallel_task(pool: WorkerPool) -> WorkerPool {
-    const START: i32 = 0;
-    const END: i32 = 10_000;
-    const NUM: i32 = END - START + 1;
-    const SUM: i32 = ((START as i64 + END as i64) * NUM as i64 / 2) as i32;
+    const START: i64 = 0;
+    const END: i64 = 10_000;
+    const NUM: i64 = END - START + 1;
+    const SUM: i64 = ((START as i64 + END as i64) * NUM as i64 / 2) as i64;
 
     // Creates instance.
     let num_workers = pool.len();
@@ -408,55 +403,85 @@ fn try_parallel_task(pool: WorkerPool) -> WorkerPool {
     // Registers and inserts entities.
     ecs.register_entity_of::<Ea>().unwrap();
     ecs.add_system(SystemDesc::new().with_once(|mut ew: EntWrite<Ea>| {
-        for val in START..=END {
-            ew.add_entity(Ea { a: Ca(val) });
+        ew.resize(NUM as usize, Ea { a: Ca(0) });
+        let mut col = ew.get_column_mut_of::<Ca>().unwrap();
+        for (ca, val) in col.iter_mut().zip(START..=END) {
+            ca.0 = val;
         }
     }))
     .unwrap();
 
-    // Tests immutable parallel iterator.
-    ecs.add_system(SystemDesc::new().with_once(|r: Read<Fa>| {
-        // Sum
-        let sum = r
-            .take()
-            .ecs_par_iter()
-            .flatten()
-            .fold(|| 0_i32, |sum, ca| sum + ca.0)
-            .reduce(|| 0_i32, |sum_a, sum_b| sum_a + sum_b);
+    // Registers a resource.
+    #[derive(Resource)]
+    struct R(Vec<i64>);
+    let r = R((START..=END).into_iter().collect());
+    ecs.register_resource(ResourceDesc::new().with_owned(r))
+        .unwrap();
+
+    // Tests pure rayon iterator wrapped in into_ecs_par.
+    ecs.add_system(SystemDesc::new().with_once(|rr: ResRead<R>| {
+        let sum: i64 = rr.0.par_iter().into_ecs_par().sum();
         assert_eq!(sum, SUM);
     }))
     .unwrap();
+    run_with_validation(&mut ecs);
+
+    // Tests immutable parallel iterator.
+    ecs.add_system(SystemDesc::new().with_once(|r: Read<Fa>| {
+        let mut sum = 0_i64;
+        for getter in r.iter() {
+            sum += getter.par_iter().into_ecs_par().map(|ca| ca.0).sum::<i64>();
+        }
+        assert_eq!(sum, SUM);
+    }))
+    .unwrap();
+    run_with_validation(&mut ecs);
 
     // Tests mutable parallel iterator.
-    ecs.add_system(SystemDesc::new().with_once(|w: Write<Fa>| {
-        let mut w = w.take();
+    ecs.add_system(SystemDesc::new().with_once(|mut w: Write<Fa>| {
+        for mut getter in w.iter_mut() {
+            getter
+                .par_iter_mut()
+                .into_ecs_par()
+                .for_each(|ca| ca.0 *= 2);
+        }
 
-        // x 2
-        let par_iter = w.ecs_par_iter_mut().flatten();
-        par_iter.for_each(|ca| ca.0 *= 2);
-
-        // Sum
-        let par_iter = w.ecs_par_iter_mut().flatten();
-        let sum = par_iter
-            .fold(|| 0_i32, |sum, ca| sum + ca.0)
-            .reduce(|| 0_i32, |sum_a, sum_b| sum_a + sum_b);
-
+        let mut sum = 0_i64;
+        for getter in w.iter_mut() {
+            sum += getter.par_iter().into_ecs_par().map(|ca| ca.0).sum::<i64>();
+        }
         assert_eq!(sum, SUM * 2);
     }))
     .unwrap();
+    run_with_validation(&mut ecs);
 
-    ecs.run().schedule_all();
+    return ecs.destroy().into();
 
-    assert!(ecs.collect_poisoned_systems().is_empty());
+    // === Internal helper functions ===
 
-    ecs.set_workers(Vec::new(), [0]).into()
+    fn run_with_validation<W, S, const N: usize>(ecs: &mut EcsApp<W, S, N>)
+    where
+        W: Work + 'static,
+        S: BuildHasher + Default + 'static,
+    {
+        // Parallel task count == 0?
+        stat::exec::assert_eq_parallel_task_count(0);
+
+        // Runs.
+        ecs.run().schedule_all();
+        assert!(ecs.collect_poisoned_systems().is_empty());
+
+        // Parallel task count > 0?
+        stat::exec::assert_ne_parallel_task_count(0);
+        stat::exec::reset_parallel_task_count();
+    }
 }
 
 fn try_recover_from_panic(pool: WorkerPool) -> (WorkerPool, i32) {
-    const START: i32 = 0;
-    const END: i32 = 10;
-    const NUM: i32 = END - START + 1;
-    const SUM: i32 = ((START as i64 + END as i64) * NUM as i64 / 2) as i32;
+    const START: i64 = 0;
+    const END: i64 = 10;
+    const NUM: i64 = END - START + 1;
+    const SUM: i64 = ((START as i64 + END as i64) * NUM as i64 / 2) as i64;
 
     // Creates instance.
     let num_workers = pool.len();
@@ -466,7 +491,7 @@ fn try_recover_from_panic(pool: WorkerPool) -> (WorkerPool, i32) {
     ecs.register_entity_of::<Ea>().unwrap();
     ecs.add_system(SystemDesc::new().with_once(|mut ew: EntWrite<Ea>| {
         for val in START..=END {
-            ew.add_entity(Ea { a: Ca(val) });
+            ew.add(Ea { a: Ca(val) });
         }
     }))
     .unwrap();
@@ -476,11 +501,10 @@ fn try_recover_from_panic(pool: WorkerPool) -> (WorkerPool, i32) {
         .unwrap();
 
     // Registers systems.
-    let ok_sys = |r: Read<Fa>, rw: ResWrite<Ra>| {
-        let rw = rw.take();
+    let ok_sys = |r: Read<Fa>, mut rw: ResWrite<Ra>| {
         rw.0.push('x');
         let r = r.take();
-        let sum: i32 = r.iter().flatten().map(|ca| ca.0).sum();
+        let sum: i64 = r.iter().flatten().map(|ca| ca.0).sum();
         assert_eq!(sum, SUM);
     };
     let fail_sys = |_w: Write<Fa>| panic!("Panics on purpose");
@@ -515,14 +539,14 @@ fn try_recover_from_panic(pool: WorkerPool) -> (WorkerPool, i32) {
     .unwrap();
 
     const NUM_EXPECTED_PANICS: i32 = 1;
-    (ecs.set_workers(Vec::new(), [0]).into(), NUM_EXPECTED_PANICS)
+    (ecs.destroy().into(), NUM_EXPECTED_PANICS)
 }
 
 fn try_recover_from_panic_in_parallel_task(pool: WorkerPool) -> (WorkerPool, i32) {
-    const START: i32 = 0;
-    const END: i32 = 10_000;
-    const NUM: i32 = END - START + 1;
-    const SUM: i32 = ((START as i64 + END as i64) * NUM as i64 / 2) as i32;
+    const START: i64 = 0;
+    const END: i64 = 10_000;
+    const NUM: i64 = END - START + 1;
+    const SUM: i64 = ((START as i64 + END as i64) * NUM as i64 / 2) as i64;
 
     // Creates instance.
     let num_workers = pool.len();
@@ -532,7 +556,7 @@ fn try_recover_from_panic_in_parallel_task(pool: WorkerPool) -> (WorkerPool, i32
     ecs.register_entity_of::<Ea>().unwrap();
     ecs.add_system(SystemDesc::new().with_once(|mut ew: EntWrite<Ea>| {
         for val in START..=END {
-            ew.add_entity(Ea { a: Ca(val) });
+            ew.add(Ea { a: Ca(val) });
         }
     }))
     .unwrap();
@@ -546,24 +570,26 @@ fn try_recover_from_panic_in_parallel_task(pool: WorkerPool) -> (WorkerPool, i32
         let rw = rw.take();
         rw.0.push('x');
         let r = r.take();
-        let sum: i32 = r.iter().flatten().map(|ca| ca.0).sum();
+        let sum: i64 = r.iter().flatten().map(|ca| ca.0).sum();
         assert_eq!(sum, SUM);
     };
     let fail_sys = |r: Read<Fa>| {
-        let sum = r
-            .take()
-            .ecs_par_iter()
-            .flatten()
-            .fold(
-                || 0_i32,
-                |sum, ca| {
-                    if ca.0 == START + END / 2 {
-                        panic!("Panic on purpose");
-                    }
-                    sum + ca.0
-                },
-            )
-            .reduce(|| 0_i32, |sum_a, sum_b| sum_a + sum_b);
+        let mut sum = 0_i64;
+        for getter in r.iter() {
+            sum += getter
+                .par_iter()
+                .into_ecs_par()
+                .fold(
+                    || 0_i64,
+                    |sum, ca| {
+                        if ca.0 == START + END / 2 {
+                            panic!("Panic on purpose");
+                        }
+                        sum + ca.0
+                    },
+                )
+                .reduce(|| 0_i64, |sum_a, sum_b| sum_a + sum_b);
+        }
         assert_eq!(sum, SUM);
     };
 
@@ -597,7 +623,7 @@ fn try_recover_from_panic_in_parallel_task(pool: WorkerPool) -> (WorkerPool, i32
     .unwrap();
 
     const NUM_EXPECTED_PANICS: i32 = 1;
-    (ecs.set_workers(Vec::new(), [0]).into(), NUM_EXPECTED_PANICS)
+    (ecs.destroy().into(), NUM_EXPECTED_PANICS)
 }
 
 // === Non-web tests ===

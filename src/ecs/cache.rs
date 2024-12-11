@@ -1,14 +1,14 @@
 use super::{
     ent::{
         component::ComponentKey,
-        entity::{EntityIndex, EntityKey, EntityKeyKind, EntityTag},
+        entity::{EntityIndex, EntityKeyKind, EntityKeyRef, EntityTag},
         storage::EntityStorage,
     },
     resource::{ResourceKey, ResourceStorage},
     sys::{
-        filter::{FilterInfo, RawFiltered},
         query::{EntQueryInfo, QueryInfo, ResQueryInfo},
         request::{RequestInfo, SystemBuffer},
+        select::{SelectInfo, SelectedRaw},
         system::{SystemData, SystemId, SystemInfo},
     },
     wait::{WaitIndices, WaitRetryIndices},
@@ -17,7 +17,7 @@ use crate::ds::prelude::*;
 use std::{
     cell::{Ref, RefCell},
     collections::{HashMap, HashSet},
-    hash::BuildHasher,
+    hash::{BuildHasher, Hash},
     ops::{Deref, DerefMut},
     rc::Rc,
     sync::Arc,
@@ -38,25 +38,20 @@ use std::{
 #[derive(Debug)]
 pub(super) struct CacheStorage<S> {
     items: HashMap<SystemId, (CacheItem, Arc<SystemInfo>), S>,
-    noti: HashMap<CacheNoti, HashSet<SystemId, S>, S>,
-}
-
-impl<S> CacheStorage<S>
-where
-    S: Default,
-{
-    pub(super) fn new() -> Self {
-        Self {
-            items: HashMap::default(),
-            noti: HashMap::default(),
-        }
-    }
+    noti: CacheNotiMap<S>,
 }
 
 impl<S> CacheStorage<S>
 where
     S: BuildHasher + Default,
 {
+    pub(super) fn new() -> Self {
+        Self {
+            items: HashMap::default(),
+            noti: CacheNotiMap::new(),
+        }
+    }
+
     /// Creates a new cache item for the newly activated system.
     ///
     /// You can call this method before or after you activate the system.
@@ -110,8 +105,7 @@ where
         self.items.insert(sid, (item, sdata.info()));
 
         // Adds notification for the cache item.
-        let add_noti = |key| Self::add_noti_item(&mut self.noti, key, sid);
-        Self::update_noti(rinfo, add_noti);
+        self.noti.insert(rinfo, sid, ent_stor);
 
         return;
 
@@ -129,14 +123,14 @@ where
         fn cache_query<S>(
             qinfo: &QueryInfo,
             ent_stor: &EntityStorage<S>,
-        ) -> (DedupVec<(usize, usize), false>, Box<[RawFiltered]>)
+        ) -> (DedupVec<(usize, usize), false>, Box<[SelectedRaw]>)
         where
             S: BuildHasher + Default,
         {
             let mut merged_wait = DedupVec::new();
             let mut merged_filtered = Vec::new();
-            for (_, finfo) in qinfo.filters().iter() {
-                let (wait, filtered) = FilterUtil::filter_all(ent_stor, finfo);
+            for (_, sinfo) in qinfo.selectors().iter() {
+                let (wait, filtered) = FilterUtil::filter_all(ent_stor, sinfo);
 
                 // Gathers `wait indices` and `buffer for filtered data`.
                 let wait = wait.into_iter().map(|(ei, ci)| (ei.index(), ci));
@@ -175,7 +169,7 @@ where
         fn cache_ent_query<S>(
             eqinfo: &EntQueryInfo,
             ent_stor: &EntityStorage<S>,
-        ) -> DedupVec<usize, false>
+        ) -> DedupVec<EntityIndex, false>
         where
             S: BuildHasher + Default,
         {
@@ -184,9 +178,7 @@ where
                 let ekey = ent_stor
                     .convert_entity_key(ekey, EntityKeyKind::Index)
                     .unwrap();
-                let ei = ekey.index();
-
-                wait.push(ei.index());
+                wait.push(*ekey.index());
             }
             wait
         }
@@ -198,13 +190,12 @@ where
     /// unregistration, nothing takes place.
     ///
     /// You can call this method before or after you activate the system.
-    pub(crate) fn remove_item(&mut self, sid: &SystemId) {
+    pub(crate) fn remove_item(&mut self, sid: &SystemId, ent_stor: &EntityStorage<S>) {
         // Removes cache item.
         if let Some((_item, sinfo)) = self.items.remove(sid) {
             // Removes notification for the cache item.
             let rinfo = sinfo.get_request_info();
-            let remove_noti = |key| Self::remove_noti_item(&mut self.noti, &key, sid);
-            Self::update_noti(rinfo, remove_noti);
+            self.noti.remove(rinfo, sid, ent_stor);
         }
     }
 
@@ -213,21 +204,21 @@ where
     /// - Read and write queries in cache items can be updated.
     ///
     /// Note that you must call this method after you register the entity.
-    pub(super) fn update_by_entity_reg<Q>(
+    pub(super) fn update_by_entity_reg<'r, K>(
         &mut self,
-        ekey: Q,
+        ekey: K,
         ent_stor: &mut EntityStorage<S>,
         res_stor: &mut ResourceStorage<S>,
     ) where
-        Q: Into<EntityKey>,
+        K: Into<EntityKeyRef<'r>>,
     {
-        inner(self, &ekey.into(), ent_stor, res_stor);
+        inner(self, ekey.into(), ent_stor, res_stor);
 
         // === Internal helper functions ===
 
         fn inner<S>(
             this: &mut CacheStorage<S>,
-            ekey: &EntityKey,
+            ekey: EntityKeyRef<'_>,
             ent_stor: &mut EntityStorage<S>,
             res_stor: &mut ResourceStorage<S>,
         ) where
@@ -238,11 +229,11 @@ where
                 .unwrap()
                 .index();
             let (mut r_sids, mut w_sids) = (Vec::new(), Vec::new());
-            for ckey in ent_stor.get_component_keys(ekey).unwrap() {
-                if let Some(inner_set) = this.noti.get(&CacheNoti::Read(*ckey)) {
+            for ckey in ent_stor.get_component_keys(ekey).unwrap().iter() {
+                if let Some(inner_set) = this.noti.get_read(ckey) {
                     r_sids.extend(inner_set);
                 }
-                if let Some(inner_set) = this.noti.get(&CacheNoti::Write(*ckey)) {
+                if let Some(inner_set) = this.noti.get_write(ckey) {
                     w_sids.extend(inner_set);
                 }
             }
@@ -281,14 +272,14 @@ where
             ei: EntityIndex,
             qinfo: &QueryInfo,
             wait: &mut DedupVec<(usize, usize), false>,
-            buf: &mut [RawFiltered],
+            buf: &mut [SelectedRaw],
         ) where
             S: BuildHasher + Default,
         {
-            debug_assert_eq!(qinfo.filters().len(), buf.len());
+            debug_assert_eq!(qinfo.selectors().len(), buf.len());
 
-            for ((_, finfo), filtered) in qinfo.filters().iter().zip(buf.iter_mut()) {
-                if let Some((ci, etag)) = FilterUtil::filter(ent_stor, ei, finfo) {
+            for ((_, sinfo), filtered) in qinfo.selectors().iter().zip(buf.iter_mut()) {
+                if let Some((ci, etag)) = FilterUtil::filter(ent_stor, ei, sinfo) {
                     wait.push((ei.index(), ci));
                     filtered.add(etag, ci);
                 }
@@ -302,56 +293,52 @@ where
     /// - Read and write queries in cache items can be updated.
     ///
     /// Note that you must call this method before you unregister the entity.
-    pub(super) fn update_by_entity_unreg<Q, F>(
+    pub(super) fn update_by_entity_unreg<'r, K, F>(
         &mut self,
-        ekey: Q,
+        ekey: K,
         ent_stor: &mut EntityStorage<S>,
         res_stor: &mut ResourceStorage<S>,
         remove: F,
     ) where
-        Q: Into<EntityKey>,
+        K: Into<EntityKeyRef<'r>>,
         F: FnMut(&SystemId),
     {
-        inner(self, ekey.into(), ent_stor, res_stor, remove);
+        return inner(self, ekey.into(), ent_stor, res_stor, remove);
 
         // === Internal helper functions ===
 
         fn inner<F, S>(
             this: &mut CacheStorage<S>,
-            ekey: EntityKey,
+            ekey: EntityKeyRef<'_>,
             ent_stor: &mut EntityStorage<S>,
             res_stor: &mut ResourceStorage<S>,
             mut remove: F,
         ) where
-            S: BuildHasher + Default,
             F: FnMut(&SystemId),
+            S: BuildHasher + Default,
         {
             let ei = *ent_stor
-                .convert_entity_key(&ekey, EntityKeyKind::Index)
+                .convert_entity_key(ekey, EntityKeyKind::Index)
                 .unwrap()
                 .index();
 
             // Removes cache items for the systems that request the entity.
-            let noti_key = CacheNoti::EntWrite(ekey);
-            if let Some(inner_set) = this.noti.get(&noti_key) {
+            if let Some(inner_set) = this.noti.get_ent_write(&ei) {
                 let sids = inner_set.iter().cloned().collect::<Vec<_>>();
                 for sid in sids.iter() {
-                    this.remove_item(sid);
+                    this.remove_item(sid, ent_stor);
                     remove(sid);
                 }
             }
 
             // Updates chche items for the systems that request components
             // belonging to the entity.
-            let CacheNoti::EntWrite(ekey) = noti_key else {
-                unreachable!()
-            };
             let (mut r_sids, mut w_sids) = (Vec::new(), Vec::new());
-            for ckey in ent_stor.get_component_keys(&ekey).unwrap() {
-                if let Some(inner_set) = this.noti.get(&CacheNoti::Read(*ckey)) {
+            for ckey in ent_stor.get_component_keys(ekey).unwrap().iter() {
+                if let Some(inner_set) = this.noti.get_read(ckey) {
                     r_sids.extend(inner_set);
                 }
-                if let Some(inner_set) = this.noti.get(&CacheNoti::Write(*ckey)) {
+                if let Some(inner_set) = this.noti.get_write(ckey) {
                     w_sids.extend(inner_set);
                 }
             }
@@ -390,19 +377,19 @@ where
             ei: EntityIndex,
             qinfo: &QueryInfo,
             wait: &mut DedupVec<(usize, usize), false>,
-            buf: &mut [RawFiltered],
+            buf: &mut [SelectedRaw],
         ) where
             S: BuildHasher + Default,
         {
-            debug_assert_eq!(qinfo.filters().len(), buf.len());
+            debug_assert_eq!(qinfo.selectors().len(), buf.len());
 
             let eii = ei.index();
-            let ekey = EntityKey::Index(ei);
-            let cont = ent_stor.get_entity_container(&ekey).unwrap();
+            let ekey = EntityKeyRef::Index(&ei);
+            let cont = ent_stor.get_entity_container(ekey).unwrap();
 
-            for ((_, finfo), filtered) in qinfo.filters().iter().zip(buf.iter_mut()) {
+            for ((_, sinfo), filtered) in qinfo.selectors().iter().zip(buf.iter_mut()) {
                 // Finds ci.
-                let target = finfo.target().get_inner();
+                let target = sinfo.target().get_inner();
                 let Some(ci) = cont.get_column_index(target) else {
                     continue;
                 };
@@ -424,101 +411,253 @@ where
     //
     // Resource registration after system is not allowed. Therefore,
     // 'update_by_resource_reg()' doesn't exist.
-    pub(super) fn update_by_resource_unreg<F>(&mut self, rkey: ResourceKey, mut remove: F)
-    where
+    pub(super) fn update_by_resource_unreg<F>(
+        &mut self,
+        rkey: &ResourceKey,
+        ent_stor: &EntityStorage<S>,
+        mut remove: F,
+    ) where
         F: FnMut(&SystemId),
     {
         let mut sids = Vec::new();
 
-        if let Some(inner_set) = self.noti.get(&CacheNoti::ResRead(rkey)) {
+        if let Some(inner_set) = self.noti.get_res_read(rkey) {
             sids.extend(inner_set);
         }
-        if let Some(inner_set) = self.noti.get(&CacheNoti::ResWrite(rkey)) {
+        if let Some(inner_set) = self.noti.get_res_write(rkey) {
             sids.extend(inner_set);
         }
 
         for sid in sids.iter() {
-            self.remove_item(sid);
+            self.remove_item(sid, ent_stor);
             remove(sid);
-        }
-    }
-
-    fn update_noti<F>(rinfo: &RequestInfo, mut f: F)
-    where
-        F: FnMut(CacheNoti),
-        S: BuildHasher + Default,
-    {
-        // Component notification for system's queries.
-        for (_, finfo) in rinfo.read().1.filters() {
-            f(CacheNoti::Read(*finfo.target()));
-        }
-        for (_, finfo) in rinfo.write().1.filters() {
-            f(CacheNoti::Write(*finfo.target()));
-        }
-
-        // Resource notification for system's resource queries.
-        for rkey in rinfo.res_read().1.rkeys() {
-            f(CacheNoti::ResRead(*rkey));
-        }
-        for rkey in rinfo.res_write().1.rkeys() {
-            f(CacheNoti::ResWrite(*rkey));
-        }
-
-        // Entity notification for system's entity query.
-        for ekey in rinfo.ent_write().1.ekeys() {
-            f(CacheNoti::EntWrite(ekey.clone()));
-        }
-    }
-
-    fn add_noti_item(
-        noti: &mut HashMap<CacheNoti, HashSet<SystemId, S>, S>,
-        key: CacheNoti,
-        sid: SystemId,
-    ) where
-        S: BuildHasher + Default,
-    {
-        noti.entry(key)
-            .and_modify(|inner_set| {
-                inner_set.insert(sid);
-            })
-            .or_insert(HashSet::from_iter([sid]));
-    }
-
-    fn remove_noti_item(
-        noti: &mut HashMap<CacheNoti, HashSet<SystemId, S>, S>,
-        key: &CacheNoti,
-        sid: &SystemId,
-    ) {
-        let Some(inner_set) = noti.get_mut(key) else {
-            return;
-        };
-        inner_set.remove(sid);
-        if inner_set.is_empty() {
-            noti.remove(key);
         }
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
-pub(super) enum CacheNoti {
-    /// Component key a cache item is referencing.
-    ///
-    /// - When new entity is registered, related cache items are updated for
-    ///   their read and write queries.
-    /// - When an entity is unregistered, same update happens.
-    Read(ComponentKey),
-    Write(ComponentKey),
+#[derive(Debug)]
+pub(super) struct CacheNotiMap<S> {
+    read: HashMap<ComponentKey, HashSet<SystemId, S>, S>,
+    write: HashMap<ComponentKey, HashSet<SystemId, S>, S>,
+    res_read: HashMap<ResourceKey, HashSet<SystemId, S>, S>,
+    res_write: HashMap<ResourceKey, HashSet<SystemId, S>, S>,
+    ent_write: HashMap<EntityIndex, HashSet<SystemId, S>, S>,
+}
 
-    /// Resource key a cache item is referencing.
-    ///
-    /// - When a resource is unregistered, related cache items are removed.
-    ResRead(ResourceKey),
-    ResWrite(ResourceKey),
+impl<S> CacheNotiMap<S>
+where
+    S: BuildHasher + Default,
+{
+    fn new() -> Self {
+        Self {
+            read: HashMap::default(),
+            write: HashMap::default(),
+            res_read: HashMap::default(),
+            res_write: HashMap::default(),
+            ent_write: HashMap::default(),
+        }
+    }
 
-    /// Entity key a cache item is referencing.
-    ///
-    /// - When an entity is unregistered, related cache items are removed.
-    EntWrite(EntityKey),
+    pub(super) fn len(&self) -> usize {
+        self.read.len()
+            + self.write.len()
+            + self.res_read.len()
+            + self.res_write.len()
+            + self.ent_write.len()
+    }
+
+    // Allows dead code: Used in test + for future use.
+    #[allow(dead_code)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub(super) fn insert(
+        &mut self,
+        rinfo: &RequestInfo,
+        sid: SystemId,
+        ent_stor: &EntityStorage<S>,
+    ) {
+        // Component notification for system's queries.
+        for (_, sinfo) in rinfo.read().1.selectors() {
+            self.insert_read(*sinfo.target(), sid);
+        }
+        for (_, sinfo) in rinfo.write().1.selectors() {
+            self.insert_write(*sinfo.target(), sid);
+        }
+
+        // Resource notification for system's resource queries.
+        for rkey in rinfo.res_read().1.rkeys() {
+            self.insert_res_read(*rkey, sid);
+        }
+        for rkey in rinfo.res_write().1.rkeys() {
+            self.insert_res_write(*rkey, sid);
+        }
+
+        // Entity notification for system's entity query.
+        for ekey in rinfo.ent_write().1.ekeys() {
+            let ekey = ent_stor
+                .convert_entity_key(ekey, EntityKeyKind::Index)
+                .unwrap();
+            self.insert_ent_write(*ekey.index(), sid);
+        }
+    }
+
+    pub(super) fn remove(
+        &mut self,
+        rinfo: &RequestInfo,
+        sid: &SystemId,
+        ent_stor: &EntityStorage<S>,
+    ) {
+        // Component notification for system's queries.
+        for (_, sinfo) in rinfo.read().1.selectors() {
+            self.remove_read(sinfo.target(), sid);
+        }
+        for (_, sinfo) in rinfo.write().1.selectors() {
+            self.remove_write(sinfo.target(), sid);
+        }
+
+        // Resource notification for system's resource queries.
+        for rkey in rinfo.res_read().1.rkeys() {
+            self.remove_res_read(rkey, sid);
+        }
+        for rkey in rinfo.res_write().1.rkeys() {
+            self.remove_res_write(rkey, sid);
+        }
+
+        // Entity notification for system's entity query.
+        for ekey in rinfo.ent_write().1.ekeys() {
+            let ekey = ent_stor
+                .convert_entity_key(ekey, EntityKeyKind::Index)
+                .unwrap();
+            self.remove_ent_write(ekey.index(), sid);
+        }
+    }
+
+    pub(super) fn get_read<Q>(&self, key: &Q) -> Option<&HashSet<SystemId, S>>
+    where
+        ComponentKey: std::borrow::Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.read.get(key)
+    }
+
+    pub(super) fn get_write<Q>(&self, key: &Q) -> Option<&HashSet<SystemId, S>>
+    where
+        ComponentKey: std::borrow::Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.write.get(key)
+    }
+
+    pub(super) fn get_res_read<Q>(&self, key: &Q) -> Option<&HashSet<SystemId, S>>
+    where
+        ResourceKey: std::borrow::Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.res_read.get(key)
+    }
+
+    pub(super) fn get_res_write<Q>(&self, key: &Q) -> Option<&HashSet<SystemId, S>>
+    where
+        ResourceKey: std::borrow::Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.res_write.get(key)
+    }
+
+    pub(super) fn get_ent_write<Q>(&self, key: &Q) -> Option<&HashSet<SystemId, S>>
+    where
+        EntityIndex: std::borrow::Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.ent_write.get(key)
+    }
+
+    fn insert_read(&mut self, key: ComponentKey, sid: SystemId) {
+        Self::_insert(&mut self.read, key, sid)
+    }
+
+    fn insert_write(&mut self, key: ComponentKey, sid: SystemId) {
+        Self::_insert(&mut self.write, key, sid)
+    }
+
+    fn insert_res_read(&mut self, key: ResourceKey, sid: SystemId) {
+        Self::_insert(&mut self.res_read, key, sid)
+    }
+
+    fn insert_res_write(&mut self, key: ResourceKey, sid: SystemId) {
+        Self::_insert(&mut self.res_write, key, sid)
+    }
+
+    fn insert_ent_write(&mut self, key: EntityIndex, sid: SystemId) {
+        Self::_insert(&mut self.ent_write, key, sid)
+    }
+
+    fn _insert<K>(map: &mut HashMap<K, HashSet<SystemId, S>, S>, key: K, sid: SystemId)
+    where
+        K: Hash + Eq,
+    {
+        map.entry(key)
+            .and_modify(|set| {
+                set.insert(sid);
+            })
+            .or_insert(HashSet::from_iter([sid]));
+    }
+
+    fn remove_read<Q>(&mut self, key: &Q, sid: &SystemId)
+    where
+        ComponentKey: std::borrow::Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        Self::_remove(&mut self.read, key, sid)
+    }
+
+    fn remove_write<Q>(&mut self, key: &Q, sid: &SystemId)
+    where
+        ComponentKey: std::borrow::Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        Self::_remove(&mut self.write, key, sid)
+    }
+
+    fn remove_res_read<Q>(&mut self, key: &Q, sid: &SystemId)
+    where
+        ResourceKey: std::borrow::Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        Self::_remove(&mut self.res_read, key, sid)
+    }
+
+    fn remove_res_write<Q>(&mut self, key: &Q, sid: &SystemId)
+    where
+        ResourceKey: std::borrow::Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        Self::_remove(&mut self.res_write, key, sid)
+    }
+
+    fn remove_ent_write<Q>(&mut self, key: &Q, sid: &SystemId)
+    where
+        EntityIndex: std::borrow::Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        Self::_remove(&mut self.ent_write, key, sid)
+    }
+
+    fn _remove<K, Q>(map: &mut HashMap<K, HashSet<SystemId, S>, S>, key: &Q, sid: &SystemId)
+    where
+        K: Hash + Eq + std::borrow::Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        let Some(set) = map.get_mut(key) else {
+            return;
+        };
+        set.remove(sid);
+        if set.is_empty() {
+            map.remove(key);
+        }
+    }
 }
 
 struct FilterUtil;
@@ -526,15 +665,15 @@ impl FilterUtil {
     /// Filters currently registered entity containers by the given filter.
     fn filter_all<S>(
         ent_stor: &EntityStorage<S>,
-        finfo: &FilterInfo,
-    ) -> (Vec<(EntityIndex, usize)>, RawFiltered)
+        sinfo: &SelectInfo,
+    ) -> (Vec<(EntityIndex, usize)>, SelectedRaw)
     where
         S: BuildHasher + Default,
     {
         let (v_ei_ci, (v_etag, v_ci)): (Vec<_>, (Vec<_>, Vec<_>)) = ent_stor
             .iter_entity_container()
             .filter_map(|(_, ei, _)| {
-                Self::filter(ent_stor, ei, finfo).map(|(ci, etag)| {
+                Self::filter(ent_stor, ei, sinfo).map(|(ci, etag)| {
                     let ei_ci = (ei, ci);
                     let etag_ci = (etag, ci);
                     (ei_ci, etag_ci)
@@ -542,7 +681,7 @@ impl FilterUtil {
             })
             .unzip();
 
-        (v_ei_ci, RawFiltered::new(v_etag, v_ci))
+        (v_ei_ci, SelectedRaw::new(v_etag, v_ci))
     }
 
     /// Determines the entity is matched by the filter.
@@ -550,14 +689,14 @@ impl FilterUtil {
     fn filter<S>(
         ent_stor: &EntityStorage<S>,
         ei: EntityIndex,
-        finfo: &FilterInfo,
+        sinfo: &SelectInfo,
     ) -> Option<(usize, EntityTag)>
     where
         S: BuildHasher + Default,
     {
-        let ekey = EntityKey::from(ei);
-        let cont = ent_stor.get_entity_container(&ekey)?;
-        if !finfo.filter(|ckey| cont.contains_column(ckey)) {
+        let ekey = EntityKeyRef::Index(&ei);
+        let cont = ent_stor.get_entity_container(ekey)?;
+        if !sinfo.filter(|ckey| cont.contains_column(ckey)) {
             return None;
         }
 
@@ -567,9 +706,9 @@ impl FilterUtil {
         // while the etag is in use.
         // - ci: It's safe because we've already filtered.
         unsafe {
-            let ckeys = ent_stor.get_component_keys(&ekey).unwrap_unchecked();
-            let etag = EntityTag::new(ei, cont.name().clone(), ckeys, cont.comp_names());
-            let ci = cont.get_column_index(finfo.target()).unwrap_unchecked();
+            let ckeys = ent_stor.get_component_keys(ekey).unwrap_unchecked();
+            let etag = EntityTag::new(ei, cont.name().cloned(), ckeys, cont.component_names());
+            let ci = cont.get_column_index(sinfo.target()).unwrap_unchecked();
             Some((ci, etag))
         }
     }
@@ -639,8 +778,10 @@ impl CacheItem {
 
             // The buffer must be consumed in advance.
             debug_assert!(query_res.is_empty());
-            for (ei, ci) in RawFiltered::iter_index_pair(etags, col_idxs) {
-                let cont = ent_stor.get_entity_container(&EntityKey::from(ei)).unwrap();
+            for (ei, ci) in SelectedRaw::iter_index_pair(etags, col_idxs) {
+                let cont = ent_stor
+                    .get_entity_container(EntityKeyRef::Index(&ei))
+                    .unwrap();
                 let col = cont.borrow_column(ci).unwrap();
                 query_res.push(col);
             }
@@ -650,9 +791,9 @@ impl CacheItem {
 
             // The buffer must be consumed in advance.
             debug_assert!(query_res.is_empty());
-            for (ei, ci) in RawFiltered::iter_index_pair(etags, col_idxs) {
+            for (ei, ci) in SelectedRaw::iter_index_pair(etags, col_idxs) {
                 let cont = ent_stor
-                    .get_entity_container_mut(&EntityKey::from(ei))
+                    .get_entity_container_mut(EntityKeyRef::Index(&ei))
                     .unwrap();
                 let col = cont.borrow_column_mut(ci).unwrap();
                 query_res.push(col);
@@ -679,11 +820,10 @@ impl CacheItem {
         // The buffer must be consumed in advance.
         debug_assert!(self.buf.ent_write.is_empty());
         for ei in self.wait.borrow().ent_write.iter().cloned() {
-            // Safety: We didn't keep the generation of the entity container,
-            // But we guarantee that it's fine.
-            // TODO: Should we preserve the generation as well?
-            let borrowed = unsafe { ent_stor.borrow_unchecked_mut(ei).unwrap() };
-            self.buf.ent_write.push(borrowed);
+            let ekey = EntityKeyRef::Index(&ei);
+            let cont = ent_stor.get_entity_container_mut(ekey).unwrap();
+            let borrowed = cont.borrow_mut().unwrap();
+            self.buf.ent_write.push((ei, borrowed));
         }
     }
 }
@@ -759,7 +899,7 @@ where
     }
 }
 
-impl<'a, S> Deref for RefreshCacheItem<'a, S> {
+impl<S> Deref for RefreshCacheItem<'_, S> {
     type Target = CacheItem;
 
     fn deref(&self) -> &Self::Target {
@@ -767,7 +907,7 @@ impl<'a, S> Deref for RefreshCacheItem<'a, S> {
     }
 }
 
-impl<'a, S> DerefMut for RefreshCacheItem<'a, S> {
+impl<S> DerefMut for RefreshCacheItem<'_, S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.item
     }
@@ -871,7 +1011,7 @@ mod tests {
             &sdata, cache_stor, ent_stor, res_stor, (&[0, 0], &[], 0, 0, 0)
         );
 
-        cache_stor.remove_item(&sdata.id());
+        cache_stor.remove_item(&sdata.id(), ent_stor);
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
     }
@@ -930,7 +1070,7 @@ mod tests {
             &sdata, cache_stor, ent_stor, res_stor, (&[], &[0, 0], 0, 0, 0)
         );
 
-        cache_stor.remove_item(&sdata.id());
+        cache_stor.remove_item(&sdata.id(), ent_stor);
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
     }
@@ -956,8 +1096,8 @@ mod tests {
         // Res: R0, R1 -> R1
         // Cache: None -> Sys -> None
         cache_stor.create_item(&sdata, ent_stor, res_stor);
-        cache_stor.update_by_resource_unreg(R0::resource_key(), |_| {});
-        res_stor.unregister(&R0::resource_key()).unwrap();
+        cache_stor.update_by_resource_unreg(&ResourceKey::of::<R0>(), ent_stor, |_| {});
+        res_stor.unregister(&ResourceKey::of::<R0>()).unwrap();
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
 
@@ -966,15 +1106,15 @@ mod tests {
         // Cache: None -> Sys -> None
         res_stor.register(ResourceDesc::new().with_owned(R0(0))).unwrap();
         cache_stor.create_item(&sdata, ent_stor, res_stor);
-        cache_stor.update_by_resource_unreg(R1::resource_key(), |_| {});
-        res_stor.unregister(&R1::resource_key()).unwrap();
+        cache_stor.update_by_resource_unreg(&ResourceKey::of::<R1>(), ent_stor, |_| {});
+        res_stor.unregister(&ResourceKey::of::<R1>()).unwrap();
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
 
         // Clean up
-        res_stor.unregister(&R0::resource_key());
-        res_stor.unregister(&R1::resource_key());
-        cache_stor.remove_item(&sdata.id());
+        res_stor.unregister(&ResourceKey::of::<R0>());
+        res_stor.unregister(&ResourceKey::of::<R1>());
+        cache_stor.remove_item(&sdata.id(), ent_stor);
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
     }
@@ -1000,8 +1140,8 @@ mod tests {
         // Res: R0, R1 -> R1
         // Cache: None -> Sys -> None
         cache_stor.create_item(&sdata, ent_stor, res_stor);
-        cache_stor.update_by_resource_unreg(R0::resource_key(), |_| {});
-        res_stor.unregister(&R0::resource_key()).unwrap();
+        cache_stor.update_by_resource_unreg(&ResourceKey::of::<R0>(), ent_stor, |_| {});
+        res_stor.unregister(&ResourceKey::of::<R0>()).unwrap();
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
 
@@ -1010,15 +1150,15 @@ mod tests {
         // Cache: None -> Sys -> None
         res_stor.register(ResourceDesc::new().with_owned(R0(0))).unwrap();
         cache_stor.create_item(&sdata, ent_stor, res_stor);
-        cache_stor.update_by_resource_unreg(R1::resource_key(), |_| {});
-        res_stor.unregister(&R1::resource_key()).unwrap();
+        cache_stor.update_by_resource_unreg(&ResourceKey::of::<R1>(), ent_stor, |_| {});
+        res_stor.unregister(&ResourceKey::of::<R1>()).unwrap();
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
 
         // Clean up
-        res_stor.unregister(&R0::resource_key());
-        res_stor.unregister(&R1::resource_key());
-        cache_stor.remove_item(&sdata.id());
+        res_stor.unregister(&ResourceKey::of::<R0>());
+        res_stor.unregister(&ResourceKey::of::<R1>());
+        cache_stor.remove_item(&sdata.id(), ent_stor);
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
     }
@@ -1044,8 +1184,8 @@ mod tests {
         // Ent: E0_C0, E1_C0 -> E1_C0
         // Cache: None -> Sys -> None
         cache_stor.create_item(&sdata, ent_stor, res_stor);
-        cache_stor.update_by_entity_unreg(E0_C0::entity_key(), ent_stor, res_stor, |_| {});
-        ent_stor.unregister(&E0_C0::entity_key()).unwrap();
+        cache_stor.update_by_entity_unreg(&EntityKey::of::<E0_C0>(), ent_stor, res_stor, |_| {});
+        ent_stor.unregister(&EntityKey::of::<E0_C0>()).unwrap();
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
 
@@ -1054,15 +1194,15 @@ mod tests {
         // Cache: None -> Sys -> None
         ent_stor.register(E0_C0::as_entity_descriptor()).unwrap();
         cache_stor.create_item(&sdata, ent_stor, res_stor);
-        cache_stor.update_by_entity_unreg(E1_C0::entity_key(), ent_stor, res_stor, |_| {});
-        ent_stor.unregister(&E1_C0::entity_key()).unwrap();
+        cache_stor.update_by_entity_unreg(&EntityKey::of::<E1_C0>(), ent_stor, res_stor, |_| {});
+        ent_stor.unregister(&EntityKey::of::<E1_C0>()).unwrap();
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
 
         // Clean up
-        ent_stor.unregister(&E0_C0::entity_key());
-        ent_stor.unregister(&E1_C0::entity_key());
-        cache_stor.remove_item(&sdata.id());
+        ent_stor.unregister(&EntityKey::of::<E0_C0>());
+        ent_stor.unregister(&EntityKey::of::<E1_C0>());
+        cache_stor.remove_item(&sdata.id(), ent_stor);
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
     }
@@ -1095,7 +1235,7 @@ mod tests {
             &sdata, cache_stor, ent_stor, res_stor, (&[0], &[0], 1, 1, 1)
         );
 
-        cache_stor.remove_item(&sdata.id());
+        cache_stor.remove_item(&sdata.id(), ent_stor);
         assert!(cache_stor.items.is_empty());
         assert!(cache_stor.noti.is_empty());
     }
@@ -1112,7 +1252,7 @@ mod tests {
     {
         // Register entity and then updates cache.
         let ei = ent_stor.register(E::as_entity_descriptor()).unwrap();
-        cache_stor.update_by_entity_reg(ei, ent_stor, res_stor);
+        cache_stor.update_by_entity_reg(EntityKeyRef::Index(&ei), ent_stor, res_stor);
 
         // Validates.
         validate_item(&sdata, cache_stor, ent_stor, res_stor, expect_len);
@@ -1129,8 +1269,8 @@ mod tests {
         S: BuildHasher + Default + Clone + 'static,
     {
         // Update cache and then register entity.
-        cache_stor.update_by_entity_unreg(E::entity_key(), ent_stor, res_stor, |_| {});
-        ent_stor.unregister(&E::entity_key()).unwrap();
+        cache_stor.update_by_entity_unreg(&E::key(), ent_stor, res_stor, |_| {});
+        ent_stor.unregister(&E::key()).unwrap();
 
         // Validates.
         validate_item(&sdata, cache_stor, ent_stor, res_stor, expect_len);
@@ -1153,7 +1293,7 @@ mod tests {
     }
 
     fn validate_len(item: &CacheItem, expect_len: (&[usize], &[usize], usize, usize, usize)) {
-        let validate_query = |buf: &[RawFiltered], exp_lens: &[usize]| {
+        let validate_query = |buf: &[SelectedRaw], exp_lens: &[usize]| {
             assert_eq!(buf.len(), exp_lens.len());
             for (filtered, &expect_len) in buf.iter().zip(exp_lens) {
                 let getters = filtered.query_res();
@@ -1202,10 +1342,21 @@ mod tests {
             ent_write: sys_ent_write,
         } = sys_idxs;
 
-        let validate_query = |wait: &DedupVec<(usize, usize), false>,
-                              sys: &[Vec<(usize, usize)>]| {
-            let mut wait = wait.iter().cloned().collect::<Vec<_>>();
-            let mut sys = sys.iter().flatten().cloned().collect::<Vec<_>>();
+        validate_query(wait_read.iter().cloned(), sys_read.iter().flatten().cloned());
+        validate_query(wait_write.iter().cloned(), sys_write.iter().flatten().cloned());
+        validate_res_ent_query(wait_res_read.iter().cloned(), sys_res_read.iter().cloned());
+        validate_res_ent_query(wait_res_write.iter().cloned(), sys_res_write.iter().cloned());
+        validate_res_ent_query(wait_ent_write.iter().map(EntityIndex::index), sys_ent_write.iter().cloned());
+
+        // === Internal helper functions ===
+
+        fn validate_query<Iw, Is>(wait: Iw, sys: Is)
+        where
+            Iw: Iterator<Item = (usize, usize)>,
+            Is: Iterator<Item = (usize, usize)>,
+        {
+            let mut wait = wait.collect::<Vec<_>>();
+            let mut sys = sys.collect::<Vec<_>>();
 
             // - Wait indices are basically deduplicated, but not sorted.
             // - Indices we got for testing are neither sorted nor deduplicated.
@@ -1213,11 +1364,15 @@ mod tests {
             sys.sort_unstable();
             sys.dedup();
             assert_eq!(wait, sys);
-        };
+        }
 
-        let validate_res_ent_query = |wait: &DedupVec<usize, false>, sys: &[usize]| {
-            let mut wait = wait.iter().cloned().collect::<Vec<_>>();
-            let mut sys = sys.iter().cloned().collect::<Vec<_>>();
+        fn validate_res_ent_query<Iw, Is>(wait: Iw, sys: Is) 
+        where
+            Iw: Iterator<Item = usize>,
+            Is: Iterator<Item = usize>,
+        {
+            let mut wait = wait.collect::<Vec<_>>();
+            let mut sys = sys.collect::<Vec<_>>();
 
             // # Indices for resource and entity queries cannot be duplicated.
             // - Wait indices are not sorted.
@@ -1225,13 +1380,7 @@ mod tests {
             wait.sort_unstable();
             sys.sort_unstable();
             assert_eq!(wait, sys);
-        };
-
-        validate_query(wait_read, sys_read);
-        validate_query(wait_write, sys_write);
-        validate_res_ent_query(wait_res_read, sys_res_read);
-        validate_res_ent_query(wait_res_write, sys_res_write);
-        validate_res_ent_query(wait_ent_write, sys_ent_write);
+        }
     }
 
     fn validate_buffer_addresses<S>(
@@ -1257,7 +1406,7 @@ mod tests {
             ent_write: sys_ent_write,
         } = sys_idxs;
 
-        let validate_query = |buf: &[RawFiltered], sys: &[Vec<(usize, usize)>]| {
+        let validate_query = |buf: &[SelectedRaw], sys: &[Vec<(usize, usize)>]| {
             assert_eq!(buf.len(), sys.len());
             for (buf_filtered, sys_pairs) in buf.iter().zip(sys) {
                 let buf_getters = buf_filtered.query_res();
@@ -1308,7 +1457,7 @@ mod tests {
 
         // Validates entity write query.
         assert_eq!(buf_ent_write.len(), sys_ent_write.len());
-        for (buf_ptr, ei) in buf_ent_write.iter().zip(sys_ent_write) {
+        for ((_ei, buf_ptr), ei) in buf_ent_write.iter().zip(sys_ent_write) {
             let sys_ptr = unsafe { ent_stor.get_ptr(*ei).unwrap() };
             assert_eq!(**buf_ptr, sys_ptr);
         }
@@ -1339,10 +1488,10 @@ mod tests {
         {
             let query_indices = |qinfo: &QueryInfo| {
                 qinfo
-                    .filters()
+                    .selectors()
                     .iter()
-                    .map(|(_, finfo)| {
-                        FilterUtil::filter_all(ent_stor, finfo)
+                    .map(|(_, sinfo)| {
+                        FilterUtil::filter_all(ent_stor, sinfo)
                             .0
                             .into_iter()
                             .map(|(ei, ci)| (ei.index(), ci))

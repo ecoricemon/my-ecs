@@ -9,7 +9,7 @@ use std::{
 /// There are two types of resources.
 /// First one is static resource which is defined internally.
 /// The other one is user resource which is defined by users.
-/// This structure has pointers to those resources and dosen't update it once it's set.
+/// This struct has pointers to those resources and dosen't update it once it's set.
 /// Because, resource is a kind of unique data storage, so it makes sense.
 #[derive(Debug)]
 pub(super) struct ResourceStorage<S> {
@@ -233,7 +233,7 @@ impl ResourceDesc {
     pub fn new() -> Self {
         Self {
             dedicated: false,
-            key: EmptyResource::resource_key(),
+            key: EmptyResource::key(),
             data: Or::B(NonNull::dangling()),
         }
     }
@@ -244,7 +244,7 @@ impl ResourceDesc {
     }
 
     pub fn with_owned<R: Resource>(mut self, data: R) -> Self {
-        self.key = R::resource_key();
+        self.key = R::key();
         self.data = Or::A(Box::new(data));
         self
     }
@@ -254,7 +254,7 @@ impl ResourceDesc {
     /// If caller registered the resource to ecs and accesses memory at the data
     /// address while ecs is working, it's undefined behavior.
     pub unsafe fn with_ptr<R: Resource>(mut self, data: *mut R) -> Self {
-        self.key = R::resource_key();
+        self.key = R::key();
         self.data = Or::B(NonNull::new(data as *mut u8).unwrap());
         self
     }
@@ -268,12 +268,8 @@ impl Default for ResourceDesc {
 
 /// Unique data over entire application.
 pub trait Resource: Send + 'static {
-    fn resource_key() -> ResourceKey {
+    fn key() -> ResourceKey {
         ResourceKey::of::<Self>()
-    }
-
-    fn get_resource_key(&self) -> ResourceKey {
-        Self::resource_key()
     }
 }
 
@@ -281,6 +277,6 @@ pub trait Resource: Send + 'static {
 struct EmptyResource;
 impl Resource for EmptyResource {}
 
-/// [`TypeId`](std::any::TypeId) of a [`Resource`].
+/// Unique identifier for a type implementing [`Resource`].
 pub type ResourceKey = ATypeId<ResourceKey_>;
 pub struct ResourceKey_;

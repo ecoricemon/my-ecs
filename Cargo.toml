@@ -16,6 +16,7 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 check = []
+stat = []
 
 # ====================
 # === Dependencies ===
@@ -28,13 +29,12 @@ thiserror = { version = "2.0.3" }
 crossbeam-deque = { version = "0.8.5" }
 rayon = { version = "1.10.0" }
 bitflags = { version = "2.6.0" }
-# Debug mode only
-dashmap = { version = "6.0.1" }
+dashmap = { version = "6.1.0" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-wasm-bindgen = { version = "0.2.95" }
-js-sys = { version = "0.3.72" }
-web-sys = { version = "0.3.72", features = [
+wasm-bindgen = { version = "0.2.97" }
+js-sys = { version = "0.3.74" }
+web-sys = { version = "0.3.74", features = [
   "Blob",
   "BlobPropertyBag",
   "console",
@@ -61,7 +61,7 @@ surf = { version = "2.3.2" }
 futures = { version = "0.3.31" }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = { version = "0.3.45" }
+wasm-bindgen-test = { version = "0.3.47" }
 console_error_panic_hook = { version = "0.1.7" }
 
 # =================
@@ -69,15 +69,25 @@ console_error_panic_hook = { version = "0.1.7" }
 # =================
 
 [workspace]
-members = ["web-test", "examples/web"] # To share output directory 'target'
+members = ["test-web", "examples/web"] # To share output directory 'target'
 
 # =============
 # === Tests ===
 # =============
 
 [[test]]
-name = "web-test-on-host"
-path = "web-test/src/lib.rs"
+name = "test-web-on-host"
+path = "test-web/src/lib.rs"
+
+# ===========================
+# === Test with sanitizer ===
+# ===========================
+
+# On linux, there may be false-positive warning in rust test harness.
+[[example]]
+name = "tsan"
+path = "test-san/thread.rs"
+crate-type = ["bin"]
 
 # ================
 # === Examples ===

@@ -15,10 +15,11 @@ pub mod prelude {
     pub use super::sched::prelude::*;
     pub use super::sys::prelude::*;
 
-    pub use super::cmd::{schedule_command, Command, CommandObject};
-    pub use super::entry::{Ecs, EcsApp, EcsEntry, RawEcsApp, RunningEcs};
+    pub use super::cmd::{self, schedule_command, Command, CommandObject};
+    pub use super::entry::{Ecs, EcsApp, EcsEntry, EcsExt, LeakedEcsApp, RunningEcs};
     pub use super::lock::request_lock;
     pub use super::resource::{Resource, ResourceDesc, ResourceKey};
+    pub use super::stat;
     #[cfg(target_arch = "wasm32")]
     pub use super::web::{set_panic_hook_once, web_panic_hook};
     pub use super::worker::Work;
@@ -130,5 +131,61 @@ impl<Data> EcsError<Data> {
             Self::InvalidRequest(reason, old) => EcsError::InvalidRequest(reason, f(old)),
             Self::Unknown(reason, old) => EcsError::Unknown(reason, f(old)),
         }
+    }
+}
+
+pub mod stat {
+    use paste::paste;
+    #[allow(unused_imports)]
+    use std::sync::{
+        atomic::{AtomicI64, Ordering},
+        LazyLock,
+    };
+
+    macro_rules! decl_counter {
+        ($name:ident, $id:ident) => {
+            paste! {
+                #[cfg(feature = "stat")]
+                pub(crate) static $id: LazyLock<AtomicI64> = LazyLock::new(|| {
+                    AtomicI64::new(0)
+                });
+
+                pub fn [<current _$name>]() -> i64 {
+                    #[cfg(feature = "stat")]
+                    { $id.load(Ordering::Relaxed) }
+
+                    #[cfg(not(feature = "stat"))]
+                    { -1 }
+                }
+
+                pub fn [<reset _$name>]() {
+                    #[cfg(feature = "stat")]
+                    $id.store(0, Ordering::Relaxed);
+                }
+
+                pub(crate) fn [<increase _$name>]() {
+                    #[cfg(feature = "stat")]
+                    $id.fetch_add(1, Ordering::Relaxed);
+                }
+
+                pub fn [<assert_eq _$name>](_value: i64) {
+                    #[cfg(feature = "stat")]
+                    assert_eq!([<current _$name>](), _value);
+                }
+
+                pub fn [<assert_ne _$name>](_value: i64) {
+                    #[cfg(feature = "stat")]
+                    assert_ne!([<current _$name>](), _value);
+                }
+            }
+        };
+    }
+
+    pub mod exec {
+        use super::*;
+
+        decl_counter!(system_task_count, SYS_CNT);
+        decl_counter!(future_task_count, FUT_CNT);
+        decl_counter!(parallel_task_count, PAR_CNT);
     }
 }

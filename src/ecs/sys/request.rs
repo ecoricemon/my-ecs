@@ -1,16 +1,16 @@
 use super::{
-    filter::{self, FilterInfo, FilterKey, RawFiltered, StoreFilterInfo},
     query::{
         EntQueryInfo, EntQueryKey, EntQueryMut, Query, QueryInfo, QueryKey, QueryMut, ResQuery,
         ResQueryInfo, ResQueryKey, ResQueryMut, StoreEntQueryInfo, StoreQueryInfo,
         StoreResQueryInfo,
     },
+    select::{self, SelectInfo, SelectKey, SelectedRaw, StoreSelectInfo},
 };
 use crate::{
     debug_format,
     ds::prelude::*,
     ecs::{
-        ent::entity::{ContainEntity, EntityKey},
+        ent::entity::{ContainEntity, EntityIndex, EntityKey},
         resource::ResourceKey,
     },
     DefaultHasher,
@@ -48,8 +48,8 @@ pub(crate) struct RequestInfoStorage<S> {
     /// [`EntQueryKey`] -> [`EntQueryInfo`].
     eqinfo: HashMap<EntQueryKey, Arc<EntQueryInfo>, S>,
 
-    /// [`FilterKey`] -> [`FilterInfo`].
-    finfo: HashMap<FilterKey, Arc<FilterInfo>, S>,
+    /// [`SelectKey`] -> [`SelectInfo`].
+    sinfo: HashMap<SelectKey, Arc<SelectInfo>, S>,
 }
 
 impl<S> RequestInfoStorage<S>
@@ -62,7 +62,7 @@ where
             qinfo: HashMap::default(),
             rqinfo: HashMap::default(),
             eqinfo: HashMap::default(),
-            finfo: HashMap::default(),
+            sinfo: HashMap::default(),
         }
     }
 }
@@ -73,32 +73,32 @@ where
 {
     // for future use.
     #[allow(dead_code)]
-    pub(crate) fn get_request_info(&self, key: &RequestKey) -> Option<Arc<RequestInfo>> {
+    pub(crate) fn get_request_info(&self, key: &RequestKey) -> Option<&Arc<RequestInfo>> {
         StoreRequestInfo::get(self, key)
     }
 
     // for future use.
     #[allow(dead_code)]
-    pub(crate) fn get_query_info(&self, key: &QueryKey) -> Option<Arc<QueryInfo>> {
+    pub(crate) fn get_query_info(&self, key: &QueryKey) -> Option<&Arc<QueryInfo>> {
         StoreQueryInfo::get(self, key)
     }
 
     // for future use.
     #[allow(dead_code)]
-    pub(crate) fn get_resource_query_info(&self, key: &ResQueryKey) -> Option<Arc<ResQueryInfo>> {
+    pub(crate) fn get_resource_query_info(&self, key: &ResQueryKey) -> Option<&Arc<ResQueryInfo>> {
         StoreResQueryInfo::get(self, key)
     }
 
     // for future use.
     #[allow(dead_code)]
-    pub(crate) fn get_entity_query_info(&self, key: &EntQueryKey) -> Option<Arc<EntQueryInfo>> {
+    pub(crate) fn get_entity_query_info(&self, key: &EntQueryKey) -> Option<&Arc<EntQueryInfo>> {
         StoreEntQueryInfo::get(self, key)
     }
 
     // for future use.
     #[allow(dead_code)]
-    pub(crate) fn get_filter_info(&self, key: &FilterKey) -> Option<Arc<FilterInfo>> {
-        StoreFilterInfo::get(self, key)
+    pub(crate) fn get_select_info(&self, key: &SelectKey) -> Option<&Arc<SelectInfo>> {
+        StoreSelectInfo::get(self, key)
     }
 
     fn remove(&mut self, key: &RequestKey) {
@@ -116,9 +116,9 @@ where
             let ent_write_key = rinfo.ent_write().0;
             drop(rinfo);
 
-            // Removes read & write query and filter info.
-            remove_qinfo_finfo(self, &read_key);
-            remove_qinfo_finfo(self, &write_key);
+            // Removes read & write query and select info.
+            remove_qinfo_sinfo(self, &read_key);
+            remove_qinfo_sinfo(self, &write_key);
 
             // Removes read & write resource info.
             remove_rqinfo(self, &res_read_key);
@@ -128,9 +128,9 @@ where
             remove_eqinfo(self, &ent_write_key);
         }
 
-        // Removes query and filter info if it's not referenced from external anymore.
+        // Removes query and select info if it's not referenced from external anymore.
         // This function must be called inside `remove()`.
-        fn remove_qinfo_finfo<S>(this: &mut RequestInfoStorage<S>, key: &QueryKey)
+        fn remove_qinfo_sinfo<S>(this: &mut RequestInfoStorage<S>, key: &QueryKey)
         where
             S: BuildHasher,
         {
@@ -147,12 +147,12 @@ where
                 let qinfo = unsafe { this.qinfo.remove(key).unwrap_unchecked() };
 
                 // Removes filter info it's not referenced from external anymore.
-                for (fkey, finfo) in qinfo.filters() {
-                    // `finfo` + `self.finfo` = 2.
+                for (fkey, sinfo) in qinfo.selectors() {
+                    // `sinfo` + `self.sinfo` = 2.
                     const FINFO_EMPTY_STRONG_CNT: usize = 2;
 
-                    if Arc::strong_count(finfo) == FINFO_EMPTY_STRONG_CNT {
-                        this.finfo.remove(fkey);
+                    if Arc::strong_count(sinfo) == FINFO_EMPTY_STRONG_CNT {
+                        this.sinfo.remove(fkey);
                     }
                 }
             }
@@ -207,12 +207,16 @@ impl<S> StoreRequestInfo for RequestInfoStorage<S>
 where
     S: BuildHasher,
 {
-    fn get(&self, key: &RequestKey) -> Option<Arc<RequestInfo>> {
-        self.rinfo.get(key).map(Arc::clone)
+    fn contains(&self, key: &RequestKey) -> bool {
+        self.rinfo.contains_key(key)
     }
 
-    fn insert(&mut self, key: RequestKey, info: &Arc<RequestInfo>) {
-        self.rinfo.insert(key, Arc::clone(info));
+    fn get(&self, key: &RequestKey) -> Option<&Arc<RequestInfo>> {
+        self.rinfo.get(key)
+    }
+
+    fn insert(&mut self, key: RequestKey, info: Arc<RequestInfo>) {
+        self.rinfo.insert(key, info);
     }
 
     // Top level cleaner.
@@ -225,12 +229,16 @@ impl<S> StoreQueryInfo for RequestInfoStorage<S>
 where
     S: BuildHasher,
 {
-    fn get(&self, key: &QueryKey) -> Option<Arc<QueryInfo>> {
-        self.qinfo.get(key).map(Arc::clone)
+    fn contains(&self, key: &QueryKey) -> bool {
+        self.qinfo.contains_key(key)
     }
 
-    fn insert(&mut self, key: QueryKey, info: &Arc<QueryInfo>) {
-        self.qinfo.insert(key, Arc::clone(info));
+    fn get(&self, key: &QueryKey) -> Option<&Arc<QueryInfo>> {
+        self.qinfo.get(key)
+    }
+
+    fn insert(&mut self, key: QueryKey, info: Arc<QueryInfo>) {
+        self.qinfo.insert(key, info);
     }
 }
 
@@ -238,12 +246,16 @@ impl<S> StoreResQueryInfo for RequestInfoStorage<S>
 where
     S: BuildHasher,
 {
-    fn get(&self, key: &ResQueryKey) -> Option<Arc<ResQueryInfo>> {
-        self.rqinfo.get(key).map(Arc::clone)
+    fn contains(&self, key: &ResQueryKey) -> bool {
+        self.rqinfo.contains_key(key)
     }
 
-    fn insert(&mut self, key: ResQueryKey, info: &Arc<ResQueryInfo>) {
-        self.rqinfo.insert(key, Arc::clone(info));
+    fn get(&self, key: &ResQueryKey) -> Option<&Arc<ResQueryInfo>> {
+        self.rqinfo.get(key)
+    }
+
+    fn insert(&mut self, key: ResQueryKey, info: Arc<ResQueryInfo>) {
+        self.rqinfo.insert(key, info);
     }
 }
 
@@ -251,25 +263,33 @@ impl<S> StoreEntQueryInfo for RequestInfoStorage<S>
 where
     S: BuildHasher,
 {
-    fn get(&self, key: &EntQueryKey) -> Option<Arc<EntQueryInfo>> {
-        self.eqinfo.get(key).map(Arc::clone)
+    fn contains(&self, key: &EntQueryKey) -> bool {
+        self.eqinfo.contains_key(key)
     }
 
-    fn insert(&mut self, key: EntQueryKey, info: &Arc<EntQueryInfo>) {
-        self.eqinfo.insert(key, Arc::clone(info));
+    fn get(&self, key: &EntQueryKey) -> Option<&Arc<EntQueryInfo>> {
+        self.eqinfo.get(key)
+    }
+
+    fn insert(&mut self, key: EntQueryKey, info: Arc<EntQueryInfo>) {
+        self.eqinfo.insert(key, info);
     }
 }
 
-impl<S> StoreFilterInfo for RequestInfoStorage<S>
+impl<S> StoreSelectInfo for RequestInfoStorage<S>
 where
     S: BuildHasher,
 {
-    fn get(&self, key: &FilterKey) -> Option<Arc<FilterInfo>> {
-        self.finfo.get(key).map(Arc::clone)
+    fn contains(&self, key: &SelectKey) -> bool {
+        self.sinfo.contains_key(key)
     }
 
-    fn insert(&mut self, key: FilterKey, info: &Arc<FilterInfo>) {
-        self.finfo.insert(key, Arc::clone(info));
+    fn get(&self, key: &SelectKey) -> Option<&Arc<SelectInfo>> {
+        self.sinfo.get(key)
+    }
+
+    fn insert(&mut self, key: SelectKey, info: Arc<SelectInfo>) {
+        self.sinfo.insert(key, info);
     }
 }
 
@@ -279,7 +299,7 @@ where
 /// and queries for entity containers.
 /// They must be requested at once in order to prevent dead lock.
 /// You can make a request by implementing this trait and put it in a system.
-pub trait Request: Send + 'static {
+pub trait Request: 'static {
     /// Read-only access [`Query`] consisting of [`Filter`]s.
     /// Read-only access helps us execute systems simultaneously.
     ///
@@ -310,53 +330,55 @@ pub trait Request: Send + 'static {
     /// [`Entity`]: super::super::ent::entity::Entity
     type EntWrite: EntQueryMut;
 
-    /// Provided.
-    fn request_key() -> RequestKey {
+    fn key() -> RequestKey {
         RequestKey::of::<Self>()
-    }
-
-    /// Provided.
-    fn as_request_key(&self) -> RequestKey {
-        Self::request_key()
     }
 }
 
 /// [`Request`], but not exposed to clients.
 /// This trait is implemented and used in the crate only.
 pub(crate) trait PrivateRequest: Request {
-    fn get_info<S>(stor: &mut S) -> Arc<RequestInfo>
+    fn get_info_from<S>(stor: &mut S) -> &Arc<RequestInfo>
     where
         S: StoreRequestInfo + ?Sized,
     {
-        let key = Self::request_key();
-        if let Some(info) = StoreRequestInfo::get(stor, &key) {
-            info
-        } else {
-            let info = Arc::new(RequestInfo {
-                name: any::type_name::<Self>(),
-                read: (
-                    <Self::Read as Query>::query_key(),
-                    <Self::Read as Query>::get_info(stor),
-                ),
-                write: (
-                    <Self::Write as QueryMut>::query_mut_key(),
-                    <Self::Write as QueryMut>::get_info(stor),
-                ),
-                res_read: (
-                    <Self::ResRead as ResQuery>::resource_query_key(),
-                    <Self::ResRead as ResQuery>::get_info(stor),
-                ),
-                res_write: (
-                    <Self::ResWrite as ResQueryMut>::resource_query_mut_key(),
-                    <Self::ResWrite as ResQueryMut>::get_info(stor),
-                ),
-                ent_write: (
-                    <Self::EntWrite as EntQueryMut>::entity_query_mut_key(),
-                    <Self::EntWrite as EntQueryMut>::get_info(stor),
-                ),
-            });
-            StoreRequestInfo::insert(stor, key, &info);
-            info
+        let key = Self::key();
+
+        if !StoreRequestInfo::contains(stor, &key) {
+            let rinfo = Arc::new(Self::info_from(stor));
+            StoreRequestInfo::insert(stor, key, rinfo);
+        }
+
+        // Safety: Inserted right before.
+        unsafe { StoreRequestInfo::get(stor, &key).unwrap_unchecked() }
+    }
+
+    fn info_from<S>(stor: &mut S) -> RequestInfo
+    where
+        S: StoreRequestInfo + ?Sized,
+    {
+        RequestInfo {
+            name: any::type_name::<Self>(),
+            read: (
+                Self::Read::key(),
+                Arc::clone(Self::Read::get_info_from(stor)),
+            ),
+            write: (
+                Self::Write::key(),
+                Arc::clone(Self::Write::get_info_from(stor)),
+            ),
+            res_read: (
+                Self::ResRead::key(),
+                Arc::clone(Self::ResRead::get_info_from(stor)),
+            ),
+            res_write: (
+                Self::ResWrite::key(),
+                Arc::clone(Self::ResWrite::get_info_from(stor)),
+            ),
+            ent_write: (
+                Self::EntWrite::key(),
+                Arc::clone(Self::EntWrite::get_info_from(stor)),
+            ),
         }
     }
 }
@@ -414,12 +436,13 @@ macro_rules! request {
 pub(crate) trait StoreRequestInfo:
     StoreQueryInfo + StoreResQueryInfo + StoreEntQueryInfo
 {
-    fn get(&self, key: &RequestKey) -> Option<Arc<RequestInfo>>;
-    fn insert(&mut self, key: RequestKey, info: &Arc<RequestInfo>);
+    fn contains(&self, key: &RequestKey) -> bool;
+    fn get(&self, key: &RequestKey) -> Option<&Arc<RequestInfo>>;
+    fn insert(&mut self, key: RequestKey, info: Arc<RequestInfo>);
     fn remove(&mut self, key: &RequestKey);
 }
 
-/// [`TypeId`] of a [`Request`].
+/// Unique identifier for a type implementing [`Request`].
 pub type RequestKey = ATypeId<RequestKey_>;
 pub struct RequestKey_;
 
@@ -473,37 +496,37 @@ impl RequestInfo {
     /// Determines whether the request info is valid or not in terms of
     /// `Read`, `Write`, `ResRead`, and `ResWrite`.
     /// Request info that meets conditions below is valid.
-    /// - Write query filters are disjoint against other filters.
+    /// - Write query selectors are disjoint against other selectors.
     /// - Write resource query doesn't overlap other read or write resource query.
     ///
     /// Note that request info cannot validate `EntWrite` itself.
     /// That must be validated outside.
     pub(crate) fn validate(&self) -> Result<(), String> {
-        // 1. Write query contains disjoint filters only?
+        // 1. Write query contains disjoint selectors only?
         let (_, r_qinfo) = self.read();
         let (_, w_qinfo) = self.write();
-        let r_filters = r_qinfo.filters();
-        let w_filters = w_qinfo.filters();
-        for i in 0..w_filters.len() {
+        let r_sels = r_qinfo.selectors();
+        let w_sels = w_qinfo.selectors();
+        for i in 0..w_sels.len() {
             // Doesn't overlap other write?
-            for j in i + 1..w_filters.len() {
-                if !filter::is_disjoint(&w_filters[i].1, &w_filters[j].1) {
+            for j in i + 1..w_sels.len() {
+                if !select::is_disjoint(&w_sels[i].1, &w_sels[j].1) {
                     let errmsg = debug_format!(
                         "`{}` and `{}` are not disjoint in request `{}`",
-                        w_filters[i].1.name(),
-                        w_filters[j].1.name(),
+                        w_sels[i].1.name(),
+                        w_sels[j].1.name(),
                         self.name(),
                     );
                     return Err(errmsg);
                 }
             }
             // Doesn't overlap read?
-            for (_, r_filter) in r_filters.iter() {
-                if !filter::is_disjoint(&w_filters[i].1, r_filter) {
+            for (_, r_sel) in r_sels.iter() {
+                if !select::is_disjoint(&w_sels[i].1, r_sel) {
                     let errmsg = debug_format!(
                         "`{}` and `{}` are not disjoint in request `{}`",
-                        w_filters[i].1.name(),
-                        r_filter.name(),
+                        w_sels[i].1.name(),
+                        r_sel.name(),
                         self.name(),
                     );
                     return Err(errmsg);
@@ -554,28 +577,31 @@ impl Request for () {
     type EntWrite = ();
 }
 
-/// System buffer for request.  
-/// Each system has its buffer for the system's request.
-/// The buffer has borrowed data for the request in it, but, it doesn't actually own it.
-/// Because the buffer exists as long as the system and won't be freed.
-/// Plus, each field must be released individually.
+/// System buffer for its request.
+///
+/// System request, [`Request`], is composed of requests for read, write,
+/// resource read, resource write, and entity write. They are actually pointers
+/// to the requesting data. Each requuest means,
+/// - Read or write: Read or write requests for specific
+///   [`Component`](crate::ecs::ent::component::Component)s.
+/// - Resource read or write: Read or write requests for specific
+///   [`Resource`](crate::ecs::resource::Resource)s.
+/// - Enitty write: Write requests for specific entity containers.
 //
-// Why system buffer rather than request buffer?
-// Q. Many systems can have the same request, so is they be able to share the same buffer?
+// Why buffer for system rather than request?
+// Q. Many systems may have the same request, so is they be able to share the
+//    same buffer?
 // A. Because of borrow check, we need system-individual buffer.
 // - We check borrow status, so we need to borrow and release data everytime.
-//   * Borrow check helps us avoid running into hidden data race during development.
-// - Each system borrows, conceptually, needed data, and then release them at the end of task.
-//   * So we can detect borrow violation.
-//
-// See [RefreshCacheItem::refresh] and [Filtered::drop].
+//   * Borrow check helps us avoid running into hidden data race during
+//     development.
 #[derive(Debug)]
 pub struct SystemBuffer {
     /// Buffer for read-only borrowed component arrays for the system's request.
-    pub(crate) read: Box<[RawFiltered]>,
+    pub(crate) read: Box<[SelectedRaw]>,
 
     /// Buffer for writable borrowed component arrays for the system's request.
-    pub(crate) write: Box<[RawFiltered]>,
+    pub(crate) write: Box<[SelectedRaw]>,
 
     /// Buffer for read-only borrowed resources for the system's request.
     pub(crate) res_read: Vec<Borrowed<ManagedConstPtr<u8>>>,
@@ -584,7 +610,7 @@ pub struct SystemBuffer {
     pub(crate) res_write: Vec<Borrowed<ManagedMutPtr<u8>>>,
 
     /// Buffer for writable borrowed entity container for the system's request.
-    pub(crate) ent_write: Vec<Borrowed<NonNull<dyn ContainEntity>>>,
+    pub(crate) ent_write: Vec<(EntityIndex, Borrowed<NonNull<dyn ContainEntity>>)>,
 }
 
 // We're going to send this buffer to other threads with a system implementation.
@@ -661,7 +687,7 @@ struct BufferCleaner<'buf> {
     _marker: PhantomData<&'buf ()>,
 }
 
-impl<'buf> Drop for BufferCleaner<'buf> {
+impl Drop for BufferCleaner<'_> {
     fn drop(&mut self) {
         // Safety: We're actually borrowing `SystemBuffer` via `buf lifetime.
         let buf = unsafe { self.buf_ptr.as_mut() };

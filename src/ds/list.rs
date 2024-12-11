@@ -806,7 +806,7 @@ pub struct PosIter<'a, V, S> {
     cur: ListPos,
 }
 
-impl<'a, V, S> Iterator for PosIter<'a, V, S> {
+impl<V, S> Iterator for PosIter<'_, V, S> {
     type Item = ListPos;
 
     fn next(&mut self) -> Option<Self::Item> {

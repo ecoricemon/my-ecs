@@ -29,8 +29,5 @@
     "vite-plugin-cross-origin-isolation": "0.1.6",
     "vite-plugin-top-level-await": "1.4.4",
     "vite-plugin-wasm": "3.3.0"
-  },
-  "dependencies": {
-    "lil-gui": "^0.20.0"
   }
 }

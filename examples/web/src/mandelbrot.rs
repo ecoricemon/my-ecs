@@ -23,13 +23,16 @@ static PALETTE: LazyLock<[u32; MAX_ITER as usize + 1]> = LazyLock::new(|| {
 pub(super) fn calc(args: Args, buf: &mut [u8]) {
     assert!(args.width * args.height * 4 <= buf.len() as u32);
     let buf = unsafe { slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u32, buf.len() / 4) };
-    let iter = (0..args.width * args.height).into_par_iter().zip(buf);
-    EcsPar(iter).for_each(|(i, pixel)| {
-        let x = i % args.width;
-        let y = i / args.width;
-        let iter = calc_pixel(x, y, args);
-        *pixel = PALETTE[iter as usize];
-    });
+    (0..args.width * args.height)
+        .into_par_iter()
+        .zip(buf)
+        .into_ecs_par()
+        .for_each(|(i, pixel)| {
+            let x = i % args.width;
+            let y = i / args.width;
+            let iter = calc_pixel(x, y, args);
+            *pixel = PALETTE[iter as usize];
+        });
 }
 
 fn is_little_endian() -> bool {

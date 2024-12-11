@@ -1,7 +1,8 @@
+use super::ent::entity::EntityIndex;
 use crate::ds::prelude::*;
 use std::{fmt::Debug, hash::BuildHasher, ops::Deref};
 
-/// A structure containing [`WaitQueue`]s for each component, resource, and entity.
+/// A struct containing [`WaitQueue`]s for each component, resource, and entity.
 /// Their indices are the same with the ones from the data containers.
 #[derive(Debug)]
 pub(super) struct WaitQueues<S> {
@@ -55,15 +56,18 @@ where
 
     pub(super) fn dequeue(&mut self, wait: &WaitIndices) {
         // Dequeues component read & write requests from their wait queues.
-        dequeue_comp(&mut self.ent_queues, wait.read.iter());
-        dequeue_comp(&mut self.ent_queues, wait.write.iter());
+        dequeue_comp(&mut self.ent_queues, wait.read.iter().cloned());
+        dequeue_comp(&mut self.ent_queues, wait.write.iter().cloned());
 
         // Dequeues resource read & write requests from their wait queues.
-        dequeue_res(&mut self.res_queues, wait.res_read.iter());
-        dequeue_res(&mut self.res_queues, wait.res_write.iter());
+        dequeue_res(&mut self.res_queues, wait.res_read.iter().cloned());
+        dequeue_res(&mut self.res_queues, wait.res_write.iter().cloned());
 
         // Dequeues entity write requests from their wait queues.
-        dequeue_ent(&mut self.ent_queues, wait.ent_write.iter());
+        dequeue_ent(
+            &mut self.ent_queues,
+            wait.ent_write.iter().map(EntityIndex::index),
+        );
 
         // Increases generation.
         self.gen += 1;
@@ -72,12 +76,12 @@ where
 
         /// Dequeues an item from componenet wait queues.
         /// The component queues are picked up by `wait` indices.
-        fn dequeue_comp<'a, S, I>(ent_queues: &mut OptVec<OptVec<WaitQueue, S>, S>, wait_iter: I)
+        fn dequeue_comp<S, I>(ent_queues: &mut OptVec<OptVec<WaitQueue, S>, S>, wait_iter: I)
         where
             S: BuildHasher,
-            I: Iterator<Item = &'a (usize, usize)>,
+            I: Iterator<Item = (usize, usize)>,
         {
-            for (ei, ci) in wait_iter.cloned() {
+            for (ei, ci) in wait_iter {
                 let comp_queues = ent_queues.get_mut(ei).unwrap();
                 let queue = comp_queues.get_mut(ci).unwrap();
                 queue.pop();
@@ -86,12 +90,12 @@ where
 
         /// Dequeues an item from resource wait queues.
         /// The component queues are picked up by `wait` indices.
-        fn dequeue_res<'a, S, I>(res_queues: &mut OptVec<WaitQueue, S>, wait_iter: I)
+        fn dequeue_res<S, I>(res_queues: &mut OptVec<WaitQueue, S>, wait_iter: I)
         where
             S: BuildHasher,
-            I: Iterator<Item = &'a usize>,
+            I: Iterator<Item = usize>,
         {
-            for resi in wait_iter.cloned() {
+            for resi in wait_iter {
                 let queue = res_queues.get_mut(resi).unwrap();
                 queue.pop();
             }
@@ -99,12 +103,12 @@ where
 
         /// Dequeues an item from component wait queues.
         /// The component queues are picked up by `wait` indices.
-        fn dequeue_ent<'a, S, I>(ent_queues: &mut OptVec<OptVec<WaitQueue, S>, S>, wait_iter: I)
+        fn dequeue_ent<S, I>(ent_queues: &mut OptVec<OptVec<WaitQueue, S>, S>, wait_iter: I)
         where
             S: BuildHasher,
-            I: Iterator<Item = &'a usize>,
+            I: Iterator<Item = usize>,
         {
-            for ei in wait_iter.cloned() {
+            for ei in wait_iter {
                 let comp_queues = ent_queues.get_mut(ei).unwrap();
                 for (_, queue) in comp_queues.iter_occupied_mut() {
                     queue.pop();
@@ -124,13 +128,13 @@ where
         res &= enqueue_comp(
             &mut self.ent_queues,
             RW::Read,
-            wait.read.iter(),
+            wait.read.iter().cloned(),
             &mut retry.read,
         );
         res &= enqueue_comp(
             &mut self.ent_queues,
             RW::Write,
-            wait.write.iter(),
+            wait.write.iter().cloned(),
             &mut retry.write,
         );
 
@@ -138,20 +142,20 @@ where
         res &= enqueue_res(
             &mut self.res_queues,
             RW::Read,
-            wait.res_read.iter(),
+            wait.res_read.iter().cloned(),
             &mut retry.res_read,
         );
         res &= enqueue_res(
             &mut self.res_queues,
             RW::Write,
-            wait.res_write.iter(),
+            wait.res_write.iter().cloned(),
             &mut retry.res_write,
         );
 
         // Enqueues entity write requests into their wait queues.
         res &= enqueue_ent(
             &mut self.ent_queues,
-            wait.ent_write.iter(),
+            wait.ent_write.iter().map(EntityIndex::index),
             &mut retry.ent_write,
         );
 
@@ -168,7 +172,7 @@ where
         /// # Panics
         ///
         /// Panics if any index in `wait` is out of bounds.
-        fn enqueue_comp<'a, S, I>(
+        fn enqueue_comp<S, I>(
             ent_queues: &mut OptVec<OptVec<WaitQueue, S>, S>,
             rw: RW,
             wait_iter: I,
@@ -176,12 +180,12 @@ where
         ) -> bool
         where
             S: BuildHasher,
-            I: Iterator<Item = &'a (usize, usize)>,
+            I: Iterator<Item = (usize, usize)>,
         {
             debug_assert!(retry.is_empty());
 
             let mut available = true;
-            for (ei, ci) in wait_iter.cloned() {
+            for (ei, ci) in wait_iter {
                 let comp_queues = ent_queues.get_mut(ei).unwrap();
                 let queue = comp_queues.get_mut(ci).unwrap();
                 let target_gen = queue.push(rw);
@@ -202,7 +206,7 @@ where
         /// # Panics
         ///
         /// Panics if any index in `wait` is out of bounds.
-        fn enqueue_res<'a, S, I>(
+        fn enqueue_res<S, I>(
             res_queues: &mut OptVec<WaitQueue, S>,
             rw: RW,
             wait_iter: I,
@@ -210,12 +214,12 @@ where
         ) -> bool
         where
             S: BuildHasher,
-            I: Iterator<Item = &'a usize>,
+            I: Iterator<Item = usize>,
         {
             debug_assert!(retry.is_empty());
 
             let mut available = true;
-            for ri in wait_iter.cloned() {
+            for ri in wait_iter {
                 let queue = res_queues.get_mut(ri).unwrap();
                 let target_gen = queue.push(rw);
                 if target_gen != queue.gen() {
@@ -235,19 +239,19 @@ where
         /// # Panics
         ///
         /// Panics if any index in `wait` is out of bounds.
-        fn enqueue_ent<'a, S, I>(
+        fn enqueue_ent<S, I>(
             ent_queues: &mut OptVec<OptVec<WaitQueue, S>, S>,
             wait_iter: I,
             retry: &mut Vec<(u64, usize, usize)>,
         ) -> bool
         where
             S: BuildHasher,
-            I: Iterator<Item = &'a usize>,
+            I: Iterator<Item = usize>,
         {
             debug_assert!(retry.is_empty());
 
             let mut available = true;
-            for ei in wait_iter.cloned() {
+            for ei in wait_iter {
                 let comp_queues = ent_queues.get_mut(ei).unwrap();
                 for (ci, queue) in comp_queues.iter_occupied_mut() {
                     let target_gen = queue.push(RW::Write);
@@ -405,7 +409,7 @@ pub(super) struct WaitIndices {
 
     /// Wait queue indices to writable entity container.
     /// Each index is the same as entity container index.
-    pub(super) ent_write: DedupVec<usize, false>,
+    pub(super) ent_write: DedupVec<EntityIndex, false>,
 }
 
 #[derive(Debug)]

@@ -19,7 +19,6 @@ macro_rules! decl_default_ent_comp_res_filter {
             a: Ca,
             b: Cb,
         }
-
         #[allow(dead_code)]
         #[derive(Entity)]
         struct Eb {
@@ -32,13 +31,11 @@ macro_rules! decl_default_ent_comp_res_filter {
         struct Ca {
             val: i32,
         }
-
         #[allow(dead_code)]
         #[derive(Component)]
         struct Cb {
             val: i32,
         }
-
         #[allow(dead_code)]
         #[derive(Component)]
         struct Cc {
@@ -51,7 +48,6 @@ macro_rules! decl_default_ent_comp_res_filter {
         struct Ra {
             val: i32,
         }
-
         #[allow(dead_code)]
         #[derive(Resource)]
         struct Rb {
@@ -110,7 +106,7 @@ fn test_system_with_unknown() {
 #[test]
 fn test_unregister() {
     // Tests if particular systems are correctly inactivated when unregistration
-    // events of relavant resources or entities occured.
+    // events of relavant resources or entities occurred.
     //
     // Scenario
     // 1. We have 5 systems for Read, Write, ResRead, ResWrite, and EntWrite.
@@ -166,17 +162,17 @@ fn test_unregister() {
     assert_eq!(*state.lock().unwrap(), [1, 1, 1, 1, 1]);
 
     // 2. Unregisters `Ra`, then related systems are inactivated or dead?
-    ecs.unregister_resource(Ra::resource_key()).unwrap();
+    ecs.unregister_resource(&ResourceKey::of::<Ra>()).unwrap();
     ecs.run().schedule_all();
     assert_eq!(*state.lock().unwrap(), [2, 2, 1, 2, 2]);
 
     // 2. Unregisters `Rb`, then related systems are inactivated or dead?
-    ecs.unregister_resource(Rb::resource_key()).unwrap();
+    ecs.unregister_resource(&ResourceKey::of::<Rb>()).unwrap();
     ecs.run().schedule_all();
     assert_eq!(*state.lock().unwrap(), [3, 3, 1, 2, 3]);
 
     // 3. Unregisters `Ea`, then related systems are inacivated or dead?
-    ecs.unregister_entity(Ea::entity_key()).unwrap();
+    ecs.unregister_entity(&EntityKey::of::<Ea>()).unwrap();
     ecs.run().schedule_all();
     assert_eq!(*state.lock().unwrap(), [4, 4, 1, 2, 3]);
 }
@@ -254,12 +250,11 @@ fn test_async_abort() {
 #[test]
 fn test_request_lock() {
     let pool = WorkerPool::with_len(3);
-    let workers = test_request_lock_normal(pool.into());
-    let workers = test_request_lock_canceled_by_cmd(workers);
-    test_request_lock_canceled_by_sys(workers);
+    let workers = test_request_lock_ok(pool.into());
+    test_request_lock_cancelled(workers);
 }
 
-fn test_request_lock_normal(workers: Vec<Worker>) -> Vec<Worker> {
+fn test_request_lock_ok(workers: Vec<Worker>) -> Vec<Worker> {
     const COUNT: u64 = 1000;
 
     // Creates instance.
@@ -320,25 +315,47 @@ fn test_request_lock_normal(workers: Vec<Worker>) -> Vec<Worker> {
     // While async task has decreased the counter by COUNT.
     assert_eq!(cnt.0, COUNT as i32);
 
-    ecs.set_workers(Vec::new(), [0])
+    ecs.destroy()
 }
 
-fn test_request_lock_canceled_by_cmd(workers: Vec<Worker>) -> Vec<Worker> {
+fn test_request_lock_cancelled(workers: Vec<Worker>) -> Vec<Worker> {
     // Creates instance.
     let num_workers = workers.len();
     let mut ecs = Ecs::default(workers, [num_workers]);
 
-    // todo!("@@@ TODO");
+    // Registers a shared resource.
+    #[derive(Resource)]
+    struct Counter(i32);
+    let mut cnt = Counter(0);
+    let desc = unsafe { ResourceDesc::new().with_ptr(&mut cnt as *mut _) };
+    ecs.register_resource(desc).unwrap();
 
-    ecs.set_workers(Vec::new(), [0])
-}
+    // A synchronous system writing something on the resource.
+    ecs.add_system(SystemDesc::new().with_system(move |rw: ResWrite<Counter>| {
+        let rw = rw.take();
+        rw.0 += 1;
+    }))
+    .unwrap();
 
-fn test_request_lock_canceled_by_sys(workers: Vec<Worker>) -> Vec<Worker> {
-    // Creates instance.
-    let num_workers = workers.len();
-    let mut ecs = Ecs::default(workers, [num_workers]);
+    // An asynchronous system locking the resource.
+    ecs.add_system(SystemDesc::new().with_once(|| {
+        schedule_future(async move {
+            request!(Req, ResWrite = (Counter));
+            let mut guard = request_lock::<Req>().await?;
+            guard.res_write.0 += 1;
+            Ok(())
+        });
+    }))
+    .unwrap();
 
-    // todo!("@@@ TODO");
+    ecs.run().schedule_all();
 
-    ecs.set_workers(Vec::new(), [0])
+    // `request_lock` command or system will be cancelled by destruction of ecs.
+    let workers = ecs.destroy();
+
+    // Sync system increased it by 1, while future couldn't have a chance to
+    // modity the counter.
+    assert_eq!(cnt.0, 1);
+
+    workers
 }

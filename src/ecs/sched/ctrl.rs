@@ -10,7 +10,8 @@ use crate::{
     ecs::{
         cache::{CacheItem, RefreshCacheStorage},
         cmd::{Command, CommandObject},
-        entry::Ecs,
+        entry::{Ecs, Shared},
+        stat,
         sys::system::{RawSystemCycleIter, SystemCycleIter, SystemData, SystemGroup, SystemId},
         wait::WaitQueues,
         worker::{Message, PanicMessage, Work, WorkerId},
@@ -138,7 +139,7 @@ where
     W: Work + 'static,
     S: BuildHasher + Default + 'static,
 {
-    pub(crate) fn new(mut workers: Vec<W>, nums: [usize; N]) -> Self {
+    pub(crate) fn new(mut workers: Vec<W>, nums: [usize; N], shared: &Arc<Shared>) -> Self {
         assert_eq!(workers.len(), nums.iter().sum::<usize>());
 
         let pending_limit: usize = workers.len();
@@ -155,7 +156,7 @@ where
             mem::swap(&mut workers, &mut piece);
 
             // Creates sub context group and initializes it.
-            let mut group = WorkGroup::new(i as u16, piece, &tx_msg, &tx_cmd);
+            let mut group = WorkGroup::new(i as u16, piece, &tx_msg, &tx_cmd, shared);
             group.initialize(&rx_msg);
             group
         });
@@ -180,10 +181,10 @@ where
         cache: &mut RefreshCacheStorage<S>,
     ) {
         // # Procedures
-        // 1. Open sub workers through `WorkGroup`s.
+        // 1. Opens sub workers through `WorkGroup`s.
         // 2. Creates `ScheduleUnit` for each `WorkGroup` and `SystemGroup`,
         //    then runs every `ScheduleUnit`.
-        // 3. Clean up.
+        // 3. Cleans up.
 
         // 1. Opens work groups.
         let mut lives: [bool; N] = array::from_fn(|i| sgroups[i].len_active() > 0);
@@ -254,7 +255,7 @@ where
         cache: &mut RefreshCacheStorage<'_, S>,
         panicked: &mut Vec<(SystemId, Box<dyn Any + Send>)>,
     ) {
-        // Consumes buffered messages as much as possible.
+        // Consumes buffered messages as many as possible.
         if let Ok(msg) = self.rx_msg.recv_timeout(Duration::MAX) {
             self.handle_message(msg, cache, panicked);
         }
@@ -353,8 +354,6 @@ where
             // In web, buffer is not released by [`BufferCleaner`] because
             // wasm-bindgen make it abort instead of unwinding stack.
             // So, we need to release it manually.
-            //
-            // [`BufferCleaner`]: crate::ecs::sys::request::BufferCleaner
             #[cfg(target_arch = "wasm32")]
             {
                 let mut cache = cache.get_mut(&msg.sid).unwrap();
@@ -549,7 +548,7 @@ where
     }
 }
 
-impl<'s, W, S, const N: usize> Drop for ScheduleUnit<'s, W, S, N> {
+impl<W, S, const N: usize> Drop for ScheduleUnit<'_, W, S, N> {
     fn drop(&mut self) {
         // We've consumed cycle completely?
         debug_assert!(self.cycle.position().is_end());
@@ -840,6 +839,7 @@ where
         workers: Vec<W>,
         tx_msg: &ParkingSender<Message>,
         tx_cmd: &CommandSender,
+        shared: &Arc<Shared>,
     ) -> Self {
         // Creates global queue.
         let injector = Arc::new(cb::Injector::new());
@@ -868,6 +868,7 @@ where
                     handle: UnsafeCell::new(thread::current()),
                     comm,
                     need_close: Cell::new(false),
+                    shared: Arc::clone(shared),
                     _pin: PhantomPinned,
                 })
             })
@@ -989,6 +990,8 @@ pub struct SubContext {
 
     need_close: Cell<bool>,
 
+    shared: Arc<Shared>,
+
     _pin: PhantomPinned,
 }
 
@@ -1034,8 +1037,12 @@ impl SubContext {
         this.comm.signal().sub_open_count(1);
     }
 
-    pub(crate) fn comm(&self) -> &SubComm {
+    pub(crate) fn get_comm(&self) -> &SubComm {
         &self.comm
+    }
+
+    pub(crate) fn get_shared(&self) -> &Shared {
+        &self.shared
     }
 
     fn set_handle(ptr: ManagedConstPtr<Self>) {
@@ -1118,9 +1125,18 @@ impl SubContext {
         loop {
             match mem::replace(steal, cb::Steal::Empty) {
                 cb::Steal::Success(cur) => match cur {
-                    Task::System(task) => self.work_for_system_task(task),
-                    Task::Parallel(task) => self.work_for_parallel_task(task),
-                    Task::Future(task) => self.work_for_future_task(task),
+                    Task::System(task) => {
+                        stat::exec::increase_system_task_count();
+                        self.work_for_system_task(task);
+                    }
+                    Task::Parallel(task) => {
+                        // Statistic counter is increased in bridge().
+                        self.work_for_parallel_task(task);
+                    }
+                    Task::Future(task) => {
+                        stat::exec::increase_future_task_count();
+                        self.work_for_future_task(task);
+                    }
                 },
                 cb::Steal::Empty => break,
                 cb::Steal::Retry => {}
@@ -1140,7 +1156,7 @@ impl SubContext {
         // In web, panic is normally aborted, but we can detect
         // whether or not panic has been happened through panic hook.
         // We write `WorkId` to thread local variable to be used in
-        // panic hook in order to identify where the panic occured.
+        // panic hook in order to identify where the panic occurred.
         #[cfg(target_arch = "wasm32")]
         {
             use super::comm::{TaskKind, WorkId, WORK_ID};
@@ -1293,7 +1309,7 @@ impl SubContext {
         assert!(self.guide.is_empty());
 
         // Validates comm.
-        match self.comm().search() {
+        match self.get_comm().search() {
             cb::Steal::Empty => {}
             _ => panic!("validation failed due to remaining task"),
         }
@@ -1481,7 +1497,7 @@ unsafe impl Sync for UnsafeWaker {}
 impl WakeSend for UnsafeWaker {
     fn wake_send(&self, handle: UnsafeFuture) {
         // Safety: Scheduler holds sub contexts while it is executing.
-        let comm = unsafe { self.ptr.as_ref().unwrap_unchecked().comm() };
+        let comm = unsafe { self.ptr.as_ref().unwrap_unchecked().get_comm() };
 
         // Pushes the future handle onto local future queue.
         comm.push_future_task(handle);
@@ -1507,7 +1523,7 @@ where
 
     // Pushes the future handle onto local future queue.
     // Safety: Current worker has valid sub context pointer.
-    let comm = unsafe { ptr.as_ref().comm() };
+    let comm = unsafe { ptr.as_ref().get_comm() };
     comm.push_future_task(handle);
 
     // Increases future count.

@@ -9,7 +9,7 @@ use super::{
 };
 use crate::util::prelude::*;
 use std::{
-    panic::{self, PanicInfo},
+    panic::{self, PanicHookInfo},
     sync::Once,
 };
 
@@ -25,7 +25,7 @@ pub fn set_panic_hook_once() {
     })
 }
 
-pub fn web_panic_hook(_info: &PanicInfo<'_>) {
+pub fn web_panic_hook(_info: &PanicHookInfo<'_>) {
     let ptr = SUB_CONTEXT.get();
     if !ptr.is_dangling() {
         let wid = WORK_ID.get().wid;
@@ -48,10 +48,10 @@ pub fn web_panic_hook(_info: &PanicInfo<'_>) {
         // it was in OPEN & WORK states. In web, however, those states cannot be
         // cancelled and remained as it was. Therefore, we need to cancel it out
         // here.
-        cx.comm().signal().sub_work_count(1);
-        cx.comm().signal().sub_open_count(1);
+        cx.get_comm().signal().sub_work_count(1);
+        cx.get_comm().signal().sub_open_count(1);
 
-        cx.comm().send_message(Message::Panic(msg));
+        cx.get_comm().send_message(Message::Panic(msg));
     }
 
     let _ = web_util::worker_post_message(&"panic".into());

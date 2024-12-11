@@ -1,8 +1,5 @@
 # Project development environment on docker
 
-## Prerequisites
-- Docker
-
 ## How to run
 
 Using compose, you can easily run the environment.
