@@ -4,9 +4,13 @@ use crate::ds::prelude::*;
 
 /// Ordinary rust types.
 pub trait Component: Send + Sync + Sized + 'static {
-    const IS_CLONE: bool = false; // depends on impl
     const IS_SEND: bool = true; // by bound
     const IS_SYNC: bool = true; // by bound
+
+    // === Must be overwitten by something like [`my_ecs_macros::Component`] ===
+    const IS_DEFAULT: bool = false; // depends on impl
+    const FN_DEFAULT: FnDefaultRaw = unimpl_default; // depends on impl
+    const IS_CLONE: bool = false; // depends on impl
     const FN_CLONE: FnCloneRaw = unimpl_clone; // depends on impl
 
     fn key() -> ComponentKey {
@@ -18,6 +22,7 @@ pub trait Component: Send + Sync + Sized + 'static {
         tinfo.set_additional(
             Self::IS_SEND,
             Self::IS_SYNC,
+            Self::IS_DEFAULT.then_some(Self::FN_DEFAULT),
             Self::IS_CLONE.then_some(Self::FN_CLONE),
         );
         tinfo
@@ -32,6 +37,7 @@ pub trait Components: 'static {
 
     fn keys() -> Self::Keys;
     fn infos() -> Self::Infos;
+    fn sorted_keys() -> Self::Keys;
 }
 
 #[macro_export]
@@ -53,15 +59,17 @@ macro_rules! impl_components {
                 const LEN: usize = $n;
 
                 fn keys() -> Self::Keys {
-                    [
-                        $( [<A $i>]::key() ),*
-                    ]
+                    [ $( [<A $i>]::key() ),* ]
                 }
 
                 fn infos() -> Self::Infos {
-                    [
-                        $( [<A $i>]::type_info() ),*
-                    ]
+                    [ $( [<A $i>]::type_info() ),* ]
+                }
+
+                fn sorted_keys() -> Self::Keys {
+                    let mut keys = [ $( [<A $i>]::key() ),* ];
+                    keys.sort_unstable();
+                    keys
                 }
             }
         }

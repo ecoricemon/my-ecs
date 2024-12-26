@@ -10,6 +10,7 @@ use std::{
 };
 
 pub type FnDropRaw = unsafe fn(*mut u8);
+pub type FnDefaultRaw = unsafe fn(*mut u8);
 pub type FnCloneRaw = unsafe fn(*const u8, *mut u8);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,19 +36,27 @@ pub struct TypeInfo {
     /// Raw drop function.
     pub fn_drop: FnDropRaw,
 
-    /// Raw clone function.
-    ///
-    /// If the type doesn't support clone, this must cause panic.
-    pub fn_clone: FnCloneRaw,
-
-    /// Whether the type is [`Clone`] or not.
-    pub is_clone: bool,
-
     /// Whether the type is [`Send`] or not.
     pub is_send: bool,
 
     /// Whether the type is [`Sync`] or not.
     pub is_sync: bool,
+
+    /// Whether the type is [`Default`] or not.
+    pub is_default: bool,
+
+    /// Raw [`Default`] function.
+    ///
+    /// If the type doesn't support `Default`, this causes panic.
+    pub fn_default: FnDefaultRaw,
+
+    /// Whether the type is [`Clone`] or not.
+    pub is_clone: bool,
+
+    /// Raw [`Clone`] function.
+    ///
+    /// If the type doesn't support `Clone`, this causes panic.
+    pub fn_clone: FnCloneRaw,
 }
 
 impl TypeInfo {
@@ -55,15 +64,22 @@ impl TypeInfo {
         self.ty == TypeId::of::<T>()
     }
 
-    pub fn set_additional(&mut self, is_send: bool, is_sync: bool, fn_clone: Option<FnCloneRaw>) {
+    pub fn set_additional(
+        &mut self,
+        is_send: bool,
+        is_sync: bool,
+        fn_default: Option<FnDefaultRaw>,
+        fn_clone: Option<FnCloneRaw>,
+    ) {
         self.is_send = is_send;
         self.is_sync = is_sync;
+        if let Some(fn_default) = fn_default {
+            self.is_default = true;
+            self.fn_default = fn_default;
+        }
         if let Some(fn_clone) = fn_clone {
             self.is_clone = true;
             self.fn_clone = fn_clone;
-        } else {
-            self.is_clone = false;
-            self.fn_clone = unimpl_clone;
         }
     }
 }
@@ -84,10 +100,12 @@ impl<T: 'static> AsTypeInfo for T {
             size: mem::size_of::<T>(),
             align: mem::align_of::<T>(),
             fn_drop: drop::<T>,
-            fn_clone: unimpl_clone,
-            is_clone: false,
             is_send: false,
             is_sync: false,
+            is_default: false,
+            fn_default: unimpl_default,
+            is_clone: false,
+            fn_clone: unimpl_clone,
         }
     }
 }
@@ -148,7 +166,7 @@ impl<T: ?Sized + UnwindSafe> TypeHelper<T> {
     pub const IS_UNWIND_SAFE: bool = true;
 }
 
-// === TypeHelper for Debug ===
+// === TypeHelper for `Debug` ===
 
 pub trait NotDebug {
     const IS_DEBUG: bool = false;
@@ -192,6 +210,37 @@ pub(crate) unsafe fn unimpl_fmt(
     _: &mut fmt::Formatter<'_>,
 ) -> Result<(), fmt::Error> {
     unimplemented!("type doesn't implement Debug");
+}
+
+// === TypeHelper for `Default` ===
+
+pub trait NotDefault {
+    const IS_DEFAULT: bool = false;
+    const FN_DEFAULT: FnDefaultRaw = unimpl_default;
+}
+
+impl<T: ?Sized> NotDefault for TypeHelper<T> {}
+
+impl<T: Default> TypeHelper<T> {
+    const IS_DEFAULT: bool = true;
+    const FN_DEFAULT: FnDefaultRaw = Self::fn_default();
+
+    pub const fn fn_default() -> FnDefaultRaw {
+        unsafe fn default<T: Default>(dst: *mut u8) {
+            let src = <T as Default>::default();
+            let dst = dst as *mut T;
+
+            ptr::copy_nonoverlapping(&src as *const T, dst, 1);
+
+            mem::forget(src);
+        }
+
+        default::<T>
+    }
+}
+
+pub(crate) unsafe fn unimpl_default(_: *mut u8) {
+    unimplemented!("type doesn't implement Default");
 }
 
 // === TypeHelper for `Clone` ===
@@ -287,24 +336,26 @@ impl<T> TypeHelper<(T, T)> {
 macro_rules! tinfo {
     ($ty:ty) => {{
         #[allow(unused_imports)]
-        use $crate::ds::types::{AsTypeInfo, NotClone, NotSend, NotSync, TypeHelper};
+        use $crate::ds::types::{AsTypeInfo, NotClone, NotDefault, NotSend, NotSync, TypeHelper};
 
         let mut tinfo = <$ty as AsTypeInfo>::as_type_info();
         tinfo.set_additional(
             TypeHelper::<$ty>::IS_SEND,
             TypeHelper::<$ty>::IS_SYNC,
+            TypeHelper::<$ty>::IS_DEFAULT.then_some(TypeHelper::<$ty>::FN_DEFAULT),
             TypeHelper::<$ty>::IS_CLONE.then_some(TypeHelper::<$ty>::FN_CLONE),
         );
         tinfo
     }};
     ($ty:ty, $name:literal) => {{
         #[allow(unused_imports)]
-        use $crate::ds::types::{AsTypeInfo, NotClone, NotSend, NotSync, TypeHelper};
+        use $crate::ds::types::{AsTypeInfo, NotClone, NotDefault, NotSend, NotSync, TypeHelper};
 
         let mut tinfo = <$ty as AsTypeInfo>::as_type_info();
         tinfo.set_additional(
             TypeHelper::<$ty>::IS_SEND,
             TypeHelper::<$ty>::IS_SYNC,
+            TypeHelper::<$ty>::IS_DEFAULT.then_some(TypeHelper::<$ty>::FN_DEFAULT),
             TypeHelper::<$ty>::IS_CLONE.then_some(TypeHelper::<$ty>::FN_CLONE),
         );
         tinfo.name = $name;
@@ -525,40 +576,91 @@ impl<Salt> From<&TypeInfo> for ATypeId<Salt> {
 mod tests {
     use super::*;
 
-    #[allow(unused)]
     #[test]
+    #[allow(unused)]
+    #[rustfmt::skip]
     fn test_type_helper() {
-        #[derive(Clone)]
-        struct Cloneable(i32);
-        struct NotCloneable(i32);
-        struct SendSync(i32);
-        struct SyncNotSend(std::sync::MutexGuard<'static, i32>);
-        struct SendNotSync(std::cell::Cell<i32>);
-        struct NotSendNotSync(*mut i32);
+        use std::alloc::{self, Layout};
+
+        // Detects `Debug`.
         #[derive(Debug)]
+        struct DebugTrue(i32);
+        struct DebugFalse(i32);
+        const _: () = {
+            assert!(TypeHelper::<DebugTrue>::IS_DEBUG);
+            assert!(!TypeHelper::<DebugFalse>::IS_DEBUG);
+        };
+
+        // Validates `TypeHelper::fn_fmt`.
+        let v = DebugTrue(42);
+        let helper = DebugHelper { 
+            f: TypeHelper::<DebugTrue>::fn_fmt(), 
+            ptr: &v as *const _ as *const u8
+        };
+        let formatted = format!("{helper:?}");
+        assert_eq!(&formatted, "DebugTrue(42)");
+
+        // Detects `Default`.
+        struct DefaultInner(i32);
+        impl Default for DefaultInner { fn default() -> Self { Self(42) } }
+        #[derive(Default)]
+        struct DefaultTrue(DefaultInner);
+        struct DefaultFalse;
+        const _: () = {
+            assert!(TypeHelper::<DefaultTrue>::IS_DEFAULT);
+            assert!(!TypeHelper::<DefaultFalse>::IS_DEFAULT);
+        };
+
+        // Validates `TypeHelper::fn_default`.
+        let layout = Layout::new::<DefaultTrue>();
+        let fn_default = TypeHelper::<DefaultTrue>::fn_default();
+        unsafe {
+            let buf = alloc::alloc(layout);
+            fn_default(buf);
+            let v = &*buf.cast::<DefaultTrue>();
+            assert_eq!(v.0.0, 42);
+            alloc::dealloc(buf, layout);
+        }
+
+        // Detects `Clone`.
+        #[derive(Clone)]
+        struct CloneTrue(i32);
+        struct CloneFalse(i32);
+        const _: () = {
+            assert!(TypeHelper::<CloneTrue>::IS_CLONE);
+            assert!(!TypeHelper::<CloneFalse>::IS_CLONE);
+        };
+
+        // Validates `TypeHelper::fn_clone`.
+        let (src, mut dst) = (CloneTrue(42), CloneTrue(0));
+        let fn_clone = TypeHelper::<CloneTrue>::fn_clone();
+        unsafe {
+            let src_ptr = &src as *const _ as *const u8;
+            let dst_ptr = &mut dst as *mut _ as *mut u8;
+            fn_clone(src_ptr, dst_ptr);
+        }
+        assert_eq!(src.0, dst.0);
+
+        // Detects `Send`.
+        struct SendTrue;
+        struct SendFalse(*const ());
+        const _: () = {
+            assert!(TypeHelper::<SendTrue>::IS_SEND);
+            assert!(!TypeHelper::<SendFalse>::IS_SEND);
+        };
+
+        // Detects `Sync`.
+        struct SyncTrue;
+        struct SyncFalse(*const ());
+        const _: () = {
+            assert!(TypeHelper::<SyncTrue>::IS_SYNC);
+            assert!(!TypeHelper::<SyncFalse>::IS_SYNC);
+        };
+
+        // Detects `EqualType`.
         struct A;
         struct B;
-
         const _: () = {
-            // Detects `Debug`.
-            assert!(TypeHelper::<A>::IS_DEBUG);
-            assert!(!TypeHelper::<B>::IS_DEBUG);
-
-            // Detects `Clone`.
-            assert!(TypeHelper::<Cloneable>::IS_CLONE);
-            assert!(!TypeHelper::<NotCloneable>::IS_CLONE);
-
-            // Detects `Send` and `Sync`.
-            assert!(TypeHelper::<SendSync>::IS_SEND);
-            assert!(TypeHelper::<SendSync>::IS_SYNC);
-            assert!(!TypeHelper::<SyncNotSend>::IS_SEND);
-            assert!(TypeHelper::<SyncNotSend>::IS_SYNC);
-            assert!(TypeHelper::<SendNotSync>::IS_SEND);
-            assert!(!TypeHelper::<SendNotSync>::IS_SYNC);
-            assert!(!TypeHelper::<NotSendNotSync>::IS_SEND);
-            assert!(!TypeHelper::<NotSendNotSync>::IS_SYNC);
-
-            // Detects `EqualType`.
             assert!(TypeHelper::<(A, A)>::IS_EQUAL_TYPE);
             assert!(!TypeHelper::<(A, B)>::IS_EQUAL_TYPE);
         };

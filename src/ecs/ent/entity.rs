@@ -1,8 +1,9 @@
 use super::component::{ComponentKey, Components};
 use crate::{ds::prelude::*, util::prelude::*};
-use std::{any::TypeId, fmt, mem, mem::MaybeUninit, ops::Deref, ptr::NonNull, slice, sync::Arc};
+use std::{any::TypeId, fmt, mem, mem::MaybeUninit, ops::Deref, ptr::NonNull, sync::Arc};
 
-pub trait Entity: Components + Send + Sync + 'static {
+#[allow(private_interfaces)]
+pub trait Entity: Components + Send + 'static {
     type Ref<'cont>;
     type Mut<'cont>;
 
@@ -158,6 +159,7 @@ pub trait Entity: Components + Send + Sync + 'static {
     //
     // TODO: Arc is not shared with the Arc inside of entity container.
     // But we need to generate sorted component keys as an entity key.
+    #[doc(hidden)]
     fn key() -> EntityKey {
         let ckeys: Arc<[ComponentKey]> = (0..Self::num_components())
             .map(|ci| {
@@ -1001,19 +1003,19 @@ impl fmt::Debug for EntityId {
 /// - Name: Unique name for the entity. Each entity must have its name.
 /// - Type: If the entity is declared statically, it has its own type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum EntityKey {
-    /// Index to an entity container.
-    ///
-    /// Searching an entity container using entity index always succeeds if
-    /// the index is valid.
-    Index(EntityIndex),
-
+pub(crate) enum EntityKey {
     /// Component keys, another type of [`TypeId`], that belong to an entity.
     ///
     /// Searching an entity container using component keys always succeeds if
     /// the keys are valid. In searching, component keys are must sorted and
     /// deduplicated.
     Ckeys(Arc<[ComponentKey]>),
+
+    /// Index to an entity container.
+    ///
+    /// Searching an entity container using entity index always succeeds if
+    /// the index is valid.
+    Index(EntityIndex),
 
     /// Name of an entity container.
     ///
@@ -1022,29 +1024,21 @@ pub enum EntityKey {
     Name(EntityName),
 }
 
-impl_from_for_enum!("outer" = EntityKey; "var" = Index; "inner" = EntityIndex);
 impl_from_for_enum!("outer" = EntityKey; "var" = Ckeys; "inner" = Arc<[ComponentKey]>);
+impl_from_for_enum!("outer" = EntityKey; "var" = Index; "inner" = EntityIndex);
 impl_from_for_enum!("outer" = EntityKey; "var" = Name; "inner" = EntityName);
 
 impl EntityKey {
-    pub fn name(&self) -> &EntityName {
+    pub(crate) fn index(&self) -> &EntityIndex {
         self.try_into().unwrap()
     }
 
-    pub fn index(&self) -> &EntityIndex {
-        self.try_into().unwrap()
-    }
-
-    pub fn get_ref(&self) -> EntityKeyRef<'_> {
+    pub(crate) fn get_ref(&self) -> EntityKeyRef<'_> {
         match self {
             Self::Index(ei) => EntityKeyRef::Index(ei),
             Self::Ckeys(ckeys) => EntityKeyRef::Ckeys(ckeys),
             Self::Name(name) => EntityKeyRef::Name(name),
         }
-    }
-
-    pub fn of<T: Entity + ?Sized>() -> Self {
-        T::key()
     }
 }
 
@@ -1055,28 +1049,23 @@ impl<'r> From<&'r EntityKey> for EntityKeyRef<'r> {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum EntityKeyRef<'r> {
-    Index(&'r EntityIndex),
+pub(crate) enum EntityKeyRef<'r> {
     Ckeys(&'r [ComponentKey]),
+    Index(&'r EntityIndex),
     Name(&'r str),
-    Type(&'r EntityTypeId),
 }
 
-impl_from_for_enum!(
-    "lifetimes" = 'r;
-    "outer" = EntityKeyRef; "var" = Index; "inner" = &'r EntityIndex
-);
 impl_from_for_enum!(
     "lifetimes" = 'r;
     "outer" = EntityKeyRef; "var" = Ckeys; "inner" = &'r [ComponentKey]
 );
 impl_from_for_enum!(
     "lifetimes" = 'r;
-    "outer" = EntityKeyRef; "var" = Name; "inner" = &'r str
+    "outer" = EntityKeyRef; "var" = Index; "inner" = &'r EntityIndex
 );
 impl_from_for_enum!(
     "lifetimes" = 'r;
-    "outer" = EntityKeyRef; "var" = Type; "inner" = &'r EntityTypeId
+    "outer" = EntityKeyRef; "var" = Name; "inner" = &'r str
 );
 
 /// [`GenIndex`] of entity container.
@@ -1087,11 +1076,11 @@ pub struct EntityIndex(GenIndex<u32, u32>);
 impl EntityIndex {
     const DUMMY: Self = Self(GenIndex::new(u32::MAX, u32::MAX));
 
-    pub const fn new(index: GenIndex<u32, u32>) -> Self {
+    pub(crate) const fn new(index: GenIndex<u32, u32>) -> Self {
         Self(index)
     }
 
-    pub const fn dummy() -> Self {
+    pub(crate) const fn dummy() -> Self {
         Self::DUMMY
     }
 
@@ -1148,12 +1137,8 @@ impl fmt::Display for EntityName {
     }
 }
 
-/// [`TypeId`] of an entity.
-pub type EntityTypeId = ATypeId<EntityTypeId_>;
-pub struct EntityTypeId_;
-
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq)]
-pub enum EntityKeyKind {
+pub(crate) enum EntityKeyKind {
     /// Corresponds to [`EntityKey::Index`].
     Index,
     /// Corresponds to [`EntityKey::Ckeys`].
@@ -1173,78 +1158,65 @@ impl From<&EntityKey> for EntityKeyKind {
 }
 
 /// A piece of information about an entity such as entity index, name, and its components.
-#[derive(Debug, Eq)]
+#[derive(Eq)]
 pub struct EntityTag {
-    /// Corresponds to [`EntityKey::Index`].
     index: EntityIndex,
 
-    /// Corresponds to [`EntityKey::Name`].
+    /// Optional entity name.
     name: Option<EntityName>,
 
-    /// Component keys that belong to the entity.
-    comp_keys: ManagedConstPtr<ComponentKey>,
+    /// Sorted component keys.
+    ///
+    /// Note that this is sorted, so that index may be different with colum
+    /// index used in [`Self::cont`].
+    ckeys: Arc<[ComponentKey]>,
 
-    /// Corresponds to [`EntityContainer::comp_names`].
-    comp_names: ManagedConstPtr<&'static str>,
+    /// Corresponding component names to component keys.
+    cnames: Box<[&'static str]>,
+}
 
-    /// Length of [`Self::comp_keys`] slice and [`Self::comp_names`] slice.
-    comp_len: usize,
+impl fmt::Debug for EntityTag {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EntityTag")
+            .field("index", &self.index())
+            .field("name", &self.get_name())
+            .field("ckeys", &self.get_component_keys())
+            .field("cnames", &self.get_component_names())
+            .finish()
+    }
 }
 
 impl EntityTag {
-    /// Creates a tag including pointers to the given arguments.
-    /// So caller must guarantee validity for those pointers.
-    ///
-    /// # Safety
-    ///
-    /// Undefined behavior if `name`, `comp_keys` or `comp_names` are invalidated.
-    /// For example, it's undfeind if one of them is dropped or aliased
-    /// as mutable reference while the tag lives.
-    pub unsafe fn new(
+    pub(crate) fn new(
         index: EntityIndex,
         name: Option<EntityName>,
-        comp_keys: &[ComponentKey],
-        comp_names: &[&'static str],
+        ckeys: Arc<[ComponentKey]>,
+        cnames: Box<[&'static str]>,
     ) -> Self {
-        debug_assert_eq!(comp_keys.len(), comp_names.len());
-
-        let comp_len = comp_keys.len();
-        let comp_keys = NonNull::new_unchecked(comp_keys.as_ptr().cast_mut());
-        let comp_keys = NonNullExt::from_nonnull(comp_keys);
-        let comp_keys = ManagedConstPtr::new(comp_keys);
-        let comp_names = NonNull::new_unchecked(comp_names.as_ptr().cast_mut());
-        let comp_names = NonNullExt::from_nonnull(comp_names);
-        let comp_names = ManagedConstPtr::new(comp_names);
+        assert_eq!(ckeys.len(), ckeys.len());
 
         Self {
             index,
             name,
-            comp_keys,
-            comp_names,
-            comp_len,
+            ckeys,
+            cnames,
         }
     }
 
-    pub fn index(&self) -> EntityIndex {
+    pub(crate) const fn index(&self) -> EntityIndex {
         self.index
     }
 
-    pub fn name(&self) -> Option<&EntityName> {
+    pub const fn get_name(&self) -> Option<&EntityName> {
         self.name.as_ref()
     }
 
-    pub fn comp_keys(&self) -> &[ComponentKey] {
-        let ptr = self.comp_keys.as_ptr();
-
-        // Safety: Caller who called `Self::new()` guarantees validity of the pointers.
-        unsafe { slice::from_raw_parts(ptr, self.comp_len) }
+    pub(crate) const fn get_component_keys(&self) -> &Arc<[ComponentKey]> {
+        &self.ckeys
     }
 
-    pub fn comp_names(&self) -> &[&'static str] {
-        let ptr = self.comp_names.as_ptr();
-
-        // Safety: Caller who called `Self::new()` guarantees validity of the pointers.
-        unsafe { slice::from_raw_parts(ptr, self.comp_len) }
+    pub const fn get_component_names(&self) -> &[&'static str] {
+        &self.cnames
     }
 }
 

@@ -6,7 +6,7 @@ pub mod prelude {
     pub use super::str as str_util;
     #[cfg(target_arch = "wasm32")]
     pub use super::web as web_util;
-    pub use super::{Multi, Or, PowerOfTwo};
+    pub use super::{Multi, Or, PowerOfTwo, Take, WithResult};
     pub use crate::{debug_format, impl_from_for_enum, log, tinfo, unwrap_or};
 }
 
@@ -15,6 +15,12 @@ use std::{
     ops::{Deref, DerefMut},
     slice,
 };
+
+pub trait Take {
+    type Inner;
+
+    fn take(self) -> Self::Inner;
+}
 
 /// A struct representing 2^k value.
 /// But you can designate zero to this struct although zero is not 2^k.
@@ -140,5 +146,105 @@ impl<A: fmt::Debug, B: fmt::Debug> fmt::Debug for Or<A, B> {
             Self::A(a) => a.fmt(f),
             Self::B(b) => b.fmt(f),
         }
+    }
+}
+
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct WithResult<O, T, E> {
+    outer: O,
+    res: Result<T, E>,
+}
+
+impl<O, T, E> WithResult<O, T, E> {
+    pub const fn new(outer: O, res: Result<T, E>) -> Self {
+        Self { outer, res }
+    }
+
+    pub fn take(self) -> Result<T, E> {
+        self.res
+    }
+
+    /// See [`Result::is_ok`].
+    pub const fn is_ok(&self) -> bool {
+        self.res.is_ok()
+    }
+
+    /// See [`Result::is_ok_and`].
+    pub fn is_ok_and(self, f: impl FnOnce(T) -> bool) -> bool {
+        self.res.is_ok_and(f)
+    }
+
+    /// See [`Result::is_err`].
+    pub const fn is_err(&self) -> bool {
+        self.res.is_err()
+    }
+
+    /// See [`Result::is_err_and`].
+    pub fn is_err_and(self, f: impl FnOnce(E) -> bool) -> bool {
+        self.res.is_err_and(f)
+    }
+
+    /// See [`Result::ok`].
+    pub fn ok(self) -> Option<T> {
+        self.res.ok()
+    }
+
+    /// See [`Result::err`].
+    pub fn err(self) -> Option<E> {
+        self.res.err()
+    }
+
+    /// See [`Result::as_ref`].
+    pub const fn as_ref(&self) -> Result<&T, &E> {
+        self.res.as_ref()
+    }
+
+    /// See [`Result::as_mut`].
+    pub fn as_mut(&mut self) -> Result<&mut T, &mut E> {
+        self.res.as_mut()
+    }
+
+    pub fn map<U, F>(self, op: F) -> WithResult<O, U, E>
+    where 
+        F: FnOnce(T) -> U,
+    {
+        WithResult::new(self.outer, self.res.map(op))
+    }
+
+    /// See [`Result::expect`].
+    pub fn expect(self, msg: &str) -> T
+    where
+        E: fmt::Debug,
+    {
+        self.res.expect(msg)
+    }
+
+    /// See [`Result::unwrap`].
+    pub fn unwrap(self) -> T
+    where
+        E: fmt::Debug,
+    {
+        self.res.unwrap()
+    }
+}
+
+impl<O, T, E: fmt::Debug> Deref for WithResult<O, T, E> {
+    type Target = O;
+
+    fn deref(&self) -> &Self::Target {
+        if let Err(e) = &self.res {
+            panic!("{e:?}");
+        }
+        &self.outer
+    }
+}
+
+impl<O, T, E: fmt::Debug> DerefMut for WithResult<O, T, E> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        if let Err(e) = &self.res {
+            panic!("{e:?}");
+        }
+        &mut self.outer
     }
 }

@@ -177,6 +177,16 @@ where
         mem::replace(&mut self.values[index], value)
     }
 
+    /// Returns an index that will be returned when the next [`add`](Self::add)
+    /// is called.
+    pub fn next_index(&self) -> usize {
+        if let Some(index) = self.vacancies.iter().next() {
+            *index
+        } else {
+            self.values.len()
+        }
+    }
+
     /// Adds the value to a vacant slot if it's possible or put it at the end of vector.
     /// Then returns its index.
     pub fn add(&mut self, value: T) -> usize {

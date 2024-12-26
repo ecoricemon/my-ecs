@@ -225,7 +225,7 @@ where
 #[derive(Debug)]
 pub struct ResourceDesc {
     pub dedicated: bool,
-    pub key: ResourceKey,
+    pub(crate) key: ResourceKey,
     pub data: Or<Box<dyn Any>, NonNull<u8>>,
 }
 
@@ -267,7 +267,9 @@ impl Default for ResourceDesc {
 }
 
 /// Unique data over entire application.
+#[allow(private_interfaces)]
 pub trait Resource: Send + 'static {
+    #[doc(hidden)]
     fn key() -> ResourceKey {
         ResourceKey::of::<Self>()
     }
@@ -278,5 +280,5 @@ struct EmptyResource;
 impl Resource for EmptyResource {}
 
 /// Unique identifier for a type implementing [`Resource`].
-pub type ResourceKey = ATypeId<ResourceKey_>;
-pub struct ResourceKey_;
+pub(crate) type ResourceKey = ATypeId<ResourceKey_>;
+pub(crate) struct ResourceKey_;

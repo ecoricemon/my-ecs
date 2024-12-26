@@ -1,8 +1,10 @@
 use proc_macro::TokenStream;
 use proc_macro2::Span;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::quote;
+use proc_macro2::TokenTree as TokenTree2;
+use quote::{quote, ToTokens, TokenStreamExt};
 use std::iter;
+use syn::token::Comma;
 use syn::{
     parenthesized,
     parse::{Parse, ParseStream},
@@ -40,6 +42,10 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
     TokenStream::from(quote! {
         // Implements `Component` trait.
         impl my_ecs::ecs::ent::component::Component for #ident {
+            const IS_DEFAULT: bool
+                = my_ecs::ds::types::TypeHelper::<#ident>::IS_DEFAULT;
+            const FN_DEFAULT: my_ecs::ds::types::FnDefaultRaw
+                = my_ecs::ds::types::TypeHelper::<#ident>::FN_DEFAULT;
             const IS_CLONE: bool
                 = my_ecs::ds::types::TypeHelper::<#ident>::IS_CLONE;
             const FN_CLONE: my_ecs::ds::types::FnCloneRaw
@@ -114,12 +120,11 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
                 let name = my_ecs::ecs::ent::entity::EntityName::new(
                     #ident_str.into()
                 );
-                let ty = my_ecs::ecs::ent::entity::EntityTypeId::of::<#ident>();
                 let cont = Box::new(
                     my_ecs::default::ent_cont::SparseSet::<#hasher>::new()
                 );
                 let mut desc = my_ecs::ecs::ent::storage::EntityReg::new(
-                    Some(name), Some(ty), cont
+                    Some(name), cont
                 );
                 #(
                     desc.add_component(my_ecs::tinfo!(#field_types));
@@ -148,6 +153,14 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
                 [#(
                     <#field_types as my_ecs::ecs::ent::component::Component>::type_info()
                 ),*]
+            }
+
+            fn sorted_keys() -> Self::Keys {
+                let mut keys = [#(
+                    <#field_types as my_ecs::ecs::ent::component::Component>::key()
+                ),*];
+                keys.sort_unstable();
+                keys
             }
         }
     };
@@ -330,21 +343,31 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
 
 #[proc_macro]
 pub fn filter(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as Select);
+    let sel = parse_macro_input!(input as Select);
 
-    // `Target`, `All`, `Any`, and `None` types must implement `Component`.
-    let target = &input.target.ty;
+    // Validates if the Select::Target implement Component.
+    let validate_impl_comp_for_target = if let Some(target) = &sel.target {
+        quote! {
+            const _: () = {
+                const fn validate<T: my_ecs::ecs::ent::component::Component>() {}
+                validate::<#target>();
+            };
+        }
+    } else {
+        TokenStream2::new()
+    };
+
+    // Validates if the Filter types implement Component.
     let empty = Punctuated::<TypePath, Token![,]>::new();
-    let all = get_iter(&input.all, &empty);
-    let any = get_iter(&input.any, &empty);
-    let none = get_iter(&input.none, &empty);
+    let all = get_iter(&sel.filter.all, &empty);
+    let any = get_iter(&sel.filter.any, &empty);
+    let none = get_iter(&sel.filter.none, &empty);
     let all_clone = all.clone();
     let any_clone = any.clone();
     let none_clone = none.clone();
-    let validate_impl_component = quote! {
+    let validate_impl_comp_for_filter = quote! {
         const _: () = {
             const fn validate<T: my_ecs::ecs::ent::component::Component>() {}
-            validate::<#target>();
             #(validate::<#all_clone>();)*
             #(validate::<#any_clone>();)*
             #(validate::<#none_clone>();)*
@@ -352,56 +375,68 @@ pub fn filter(input: TokenStream) -> TokenStream {
     };
 
     // Validates that `Target`, `All` and `Any` doesn't overlap `None`.
-    let positive = iter::once(target).chain(all.clone()).chain(any.clone());
-    let pairs = positive.flat_map(|p| none.clone().map(move |n| (p, n)));
-    let ps = pairs.clone().map(|(p, _)| p);
-    let ns = pairs.map(|(_, n)| n);
-    let validate_non_overlap = quote! {
-        const _: () = {#(
-            assert!(
-                !my_ecs::ds::types::TypeHelper::<(#ps, #ns)>::IS_EQUAL_TYPE,
-                "Types in `Target`, `All`, and `Any` must not be included in `None`",
-            );
-        )*};
+    let validate_non_overlap = if let Some(target) = &sel.target {
+        let pos = iter::once(&target.ty).chain(all.clone()).chain(any.clone());
+        validate_non_overlap_tokens(pos, none.clone())
+    } else {
+        let pos = all.clone().chain(any.clone());
+        validate_non_overlap_tokens(pos, none.clone())
     };
 
     // The same purpose of code above.
     // This gives more specific position where the error occurs.
     // However, this cannot detect something like as follows
     // Target = Ca, None = crate::Ca
-    let positive = iter::once(target).chain(all).chain(any);
-    if let Some(conflict) = none.clone().find(|&n| positive.clone().any(|p| p == n)) {
-        let err = Error::new(conflict.span(), "conflicts").into_compile_error();
-        return TokenStream::from(err);
+    if let Some(target) = &sel.target {
+        let mut pos = iter::once(&target.ty).chain(all).chain(any);
+        if let Some(conflict) = none.clone().find(|&n| pos.any(|p| p == n)) {
+            let err = Error::new(conflict.span(), "conflicts").into_compile_error();
+            return TokenStream::from(err);
+        }
+    } else {
+        let mut pos = all.chain(any);
+        if let Some(conflict) = none.clone().find(|&n| pos.any(|p| p == n)) {
+            let err = Error::new(conflict.span(), "conflicts").into_compile_error();
+            return TokenStream::from(err);
+        }
     }
 
-    // Declares a struct with the given ident.
-    let vis = &input.vis;
-    let ident = &input.ident;
-    let decl_struct = quote! {
-        #vis struct #ident;
-    };
-
-    // Implements `Select`.
-    let impl_filter = input.token_stream();
-
     return TokenStream::from(quote! {
-        #validate_impl_component
+        #validate_impl_comp_for_target
+        #validate_impl_comp_for_filter
         #validate_non_overlap
-        #decl_struct
-        #impl_filter
+        #sel
     });
 
     // === Internal helper functions ===
 
     fn get_iter<'a>(
-        x: &'a Option<(Token![,], Ident, SelectList)>,
+        x: &'a Option<(Token![,], Ident, FilterList)>,
         empty: &'a Punctuated<TypePath, Token![,]>,
     ) -> syn::punctuated::Iter<'a, TypePath> {
         if let Some((_, _, list)) = x {
             list.types.iter()
         } else {
             empty.iter()
+        }
+    }
+
+    fn validate_non_overlap_tokens<'a, 'b, Ia, Ib>(ia: Ia, ib: Ib) -> TokenStream2
+    where
+        Ia: Iterator<Item = &'a TypePath> + Clone,
+        Ib: Iterator<Item = &'b TypePath> + Clone,
+    {
+        let pairs = ia.flat_map(|a| ib.clone().map(move |b| (a, b)));
+        let pair_as = pairs.clone().map(|(a, _)| a);
+        let pair_bs = pairs.map(|(_, b)| b);
+
+        quote! {
+            const _: () = {#(
+                assert!(
+                    !my_ecs::ds::types::TypeHelper::<(#pair_as, #pair_bs)>::IS_EQUAL_TYPE,
+                    "Types in `Target`, `All`, and `Any` must not be included in `None`",
+                );
+            )*};
         }
     }
 }
@@ -411,35 +446,97 @@ struct Select {
     vis: Visibility,
     ident: Ident,
     _comma: Token![,],
-    target: SelectTarget,
-    all: Option<(Token![,], Ident, SelectList)>,
-    any: Option<(Token![,], Ident, SelectList)>,
-    none: Option<(Token![,], Ident, SelectList)>,
+    target: Option<SelectTarget>,
+    filter: Filter,
 }
 
-impl Select {
-    fn token_stream(&self) -> TokenStream2 {
-        let ident = &self.ident;
-        let target = &self.target.ty;
-        let all = from_list(&self.all);
-        let any = from_list(&self.any);
-        let none = from_list(&self.none);
+impl Parse for Select {
+    fn parse(input: ParseStream) -> Result<Self> {
+        let vis = input.parse()?;
+        let ident = input.parse()?;
+        let _comma = input.parse()?;
 
-        return quote! {
-            impl my_ecs::ecs::sys::select::Select for #ident {
-                type Target = #target;
+        let contains_target = input
+            .step(|cursor| {
+                if let Some((tt, next)) = cursor.token_tree() {
+                    match &tt {
+                        TokenTree2::Ident(ident) if &ident.to_string() == "Target" => {
+                            Ok(((), next))
+                        }
+                        _ => Err(cursor.error("")),
+                    }
+                } else {
+                    Err(cursor.error(""))
+                }
+            })
+            .is_ok();
+
+        let (target, filter) = if contains_target {
+            let target = input.parse().ok();
+            let filter = input.parse()?;
+            (target, filter)
+        } else {
+            let filter = input.parse()?;
+            (None, filter)
+        };
+
+        Ok(Self {
+            vis,
+            ident,
+            _comma,
+            target,
+            filter,
+        })
+    }
+}
+
+impl ToTokens for Select {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        let vis = &self.vis;
+        let ident = &self.ident;
+        let all = from_list(&self.filter.all);
+        let any = from_list(&self.filter.any);
+        let none = from_list(&self.filter.none);
+        let exact = from_list(&self.filter.exact);
+
+        let decl_struct = quote! {
+            #vis struct #ident;
+        };
+
+        let impl_filter = quote! {
+            impl my_ecs::ecs::sys::select::Filter for #ident {
                 type All = #all;
                 type Any = #any;
                 type None = #none;
+                type Exact = #exact;
             }
         };
 
+        let impl_select = if let Some(target) = &self.target {
+            quote! {
+                impl my_ecs::ecs::sys::select::Select for #ident {
+                    type Target = #target;
+                    type Filter = #ident;
+                }
+            }
+        } else {
+            TokenStream2::new()
+        };
+
+        tokens.append_all(decl_struct);
+        tokens.append_all(impl_select);
+        tokens.append_all(impl_filter);
+
         // === Internal helper functions ===
 
-        fn from_list(x: &Option<(Token![,], Ident, SelectList)>) -> TokenStream2 {
+        fn from_list(x: &Option<(Token![,], Ident, FilterList)>) -> TokenStream2 {
             if let Some((_, _, list)) = x.as_ref() {
                 let types = &list.types;
-                quote! {( #types )}
+                if types.len() == 1 {
+                    quote! { #types }
+                } else {
+                    quote! {( #types )}
+                }
             } else {
                 quote! {()}
             }
@@ -447,22 +544,49 @@ impl Select {
     }
 }
 
-impl Parse for Select {
+#[derive(Debug)]
+struct SelectTarget {
+    _eq: Token![=],
+    ty: TypePath,
+}
+
+impl Parse for SelectTarget {
     fn parse(input: ParseStream) -> Result<Self> {
-        // Parses struct ident.
-        let vis: Visibility = input.parse()?;
-        let ident: Ident = input.parse()?;
+        let eq: Token![=] = input.parse()?;
+        let ty: syn::TypePath = input.parse()?;
 
-        // Parses `Target`.
-        let comma: Token![,] = input.parse()?;
-        let target: SelectTarget = input.parse()?;
+        Ok(Self { _eq: eq, ty })
+    }
+}
 
-        // Parses `All`.
+impl ToTokens for SelectTarget {
+    fn to_tokens(&self, tokens: &mut TokenStream2) {
+        let ty = &self.ty;
+        let ty = quote! { #ty };
+        tokens.append_all(ty);
+    }
+}
+
+#[derive(Debug)]
+struct Filter {
+    all: Option<(Token![,], Ident, FilterList)>,
+    any: Option<(Token![,], Ident, FilterList)>,
+    none: Option<(Token![,], Ident, FilterList)>,
+    exact: Option<(Token![,], Ident, FilterList)>,
+}
+
+impl Parse for Filter {
+    fn parse(input: ParseStream) -> Result<Self> {
         let mut all = None;
         let mut any = None;
         let mut none = None;
-        while input.peek(Token![,]) {
-            let comma: Token![,] = input.parse()?;
+        let mut exact = None;
+        while input.peek(Token![,]) || input.peek(Ident) {
+            let comma: Token![,] = if input.peek(Token![,]) {
+                input.parse()?
+            } else {
+                Comma::default()
+            };
             let ident: Ident = input.parse()?;
             let ident_str = ident.to_string();
             match ident_str.as_str() {
@@ -470,73 +594,63 @@ impl Parse for Select {
                     if all.is_some() {
                         return Err(Error::new(ident.span(), "duplicate `All`"));
                     }
-                    let list: SelectList = input.parse()?;
+                    let list: FilterList = input.parse()?;
                     all = Some((comma, ident, list));
                 }
                 "Any" => {
                     if any.is_some() {
                         return Err(Error::new(ident.span(), "duplicate `Any`"));
                     }
-                    let list: SelectList = input.parse()?;
+                    let list: FilterList = input.parse()?;
                     any = Some((comma, ident, list));
                 }
                 "None" => {
                     if none.is_some() {
                         return Err(Error::new(ident.span(), "duplicate `None`"));
                     }
-                    let list: SelectList = input.parse()?;
+                    let list: FilterList = input.parse()?;
                     none = Some((comma, ident, list));
                 }
+                "Exact" => {
+                    if exact.is_some() {
+                        return Err(Error::new(ident.span(), "duplicate `Exact`"));
+                    }
+                    let list: FilterList = input.parse()?;
+                    exact = Some((comma, ident, list));
+                }
                 _ => {
-                    return Err(Error::new(ident.span(), "expected `All`, `Any` or `None`"));
+                    return Err(Error::new(
+                        ident.span(),
+                        "expected `All`, `Any`, `None`, or `Exact`",
+                    ));
                 }
             }
         }
 
+        if exact.is_some() && (all.is_some() || any.is_some() || none.is_some()) {
+            return Err(Error::new(
+                input.span(),
+                "`Exact` cannot be with `All`, `Any`, or `None`",
+            ));
+        }
+
         Ok(Self {
-            vis,
-            ident,
-            _comma: comma,
-            target,
             all,
             any,
             none,
+            exact,
         })
     }
 }
 
 #[derive(Debug)]
-struct SelectTarget {
-    _ident: Ident,
-    _eq: Token![=],
-    ty: TypePath,
-}
-
-impl Parse for SelectTarget {
-    fn parse(input: ParseStream) -> Result<Self> {
-        let ident: Ident = input.parse()?;
-        if ident.to_string().as_str() != "Target" {
-            return Err(Error::new(ident.span(), "expected `Target`"));
-        }
-        let eq: Token![=] = input.parse()?;
-        let ty: syn::TypePath = input.parse()?;
-
-        Ok(Self {
-            _ident: ident,
-            _eq: eq,
-            ty,
-        })
-    }
-}
-
-#[derive(Debug)]
-struct SelectList {
+struct FilterList {
     _eq: Token![=],
     _paren: Option<token::Paren>,
     types: Punctuated<TypePath, Token![,]>,
 }
 
-impl Parse for SelectList {
+impl Parse for FilterList {
     fn parse(input: ParseStream) -> Result<Self> {
         let eq: Token![=] = input.parse()?;
 

@@ -1,20 +1,26 @@
 use super::{
     cache::{CacheStorage, RefreshCacheStorage},
-    cmd::EntMoveStorage,
+    cmd::{CommandObject, Commander},
     ent::{
+        component::Components,
         entity::{Entity, EntityId, EntityIndex, EntityKeyRef},
         storage::{AsEntityReg, EntityContainer, EntityReg, EntityStorage},
     },
     resource::{Resource, ResourceDesc, ResourceKey, ResourceStorage},
-    sched::ctrl::Scheduler,
+    sched::{
+        comm::{command_channel, CommandReceiver, CommandSender},
+        ctrl::Scheduler,
+    },
+    share::Shared,
     sys::{
-        storage::{SystemDesc, SystemStorage},
+        storage::SystemStorage,
         system::{
-            InsertPos, NonZeroTick, PrivateSystem, System, SystemData, SystemFlags, SystemId,
+            FnOnceSystem, InsertPos, NonZeroTick, PoisonedSystem, System, SystemData, SystemDesc,
+            SystemFlags, SystemId,
         },
     },
     worker::Work,
-    EcsError,
+    EcsError, EcsResult,
 };
 use crate::util::prelude::*;
 use std::{
@@ -25,15 +31,31 @@ use std::{
     mem,
     ops::Deref,
     ptr::NonNull,
-    sync::{Arc, Mutex, MutexGuard},
+    rc::Rc,
+    sync::Arc,
+    thread,
 };
 
 pub trait EcsEntry {
-    fn add_system<Sys>(&mut self, desc: SystemDesc<Sys>) -> Result<SystemId, EcsError<SystemData>>
+    // === System methods ===
+
+    fn add_system<T, Sys>(
+        &mut self,
+        desc: T,
+    ) -> WithResult<&mut Self, SystemId, EcsError<SystemDesc<Sys>>>
     where
+        T: Into<SystemDesc<Sys>>,
         Sys: System;
 
-    fn unregister_system(&mut self, sid: SystemId) -> Result<(), EcsError>;
+    fn add_once<T, Req, F>(
+        &mut self,
+        sys: T,
+    ) -> WithResult<&mut Self, SystemId, EcsError<SystemDesc<FnOnceSystem<Req, F>>>>
+    where
+        T: Into<FnOnceSystem<Req, F>>,
+        FnOnceSystem<Req, F>: System;
+
+    fn unregister_system(&mut self, sid: SystemId) -> WithResult<&mut Self, (), EcsError>;
 
     /// Activates the system. If the system is already active, nothing takes place.
     fn activate_system(
@@ -41,31 +63,48 @@ pub trait EcsEntry {
         target: SystemId,
         at: InsertPos,
         live: NonZeroTick,
-    ) -> Result<(), EcsError>;
+    ) -> WithResult<&mut Self, (), EcsError>;
 
-    fn inactivate_system(&mut self, sid: SystemId) -> Result<(), EcsError>;
+    fn inactivate_system(&mut self, sid: SystemId) -> WithResult<&mut Self, (), EcsError>;
 
-    fn register_entity(&mut self, desc: EntityReg) -> Result<EntityIndex, EcsError>;
+    // === Entity methods ===
 
-    fn register_entity_of<T>(&mut self) -> Result<EntityIndex, EcsError>
+    fn register_entity_of<T>(&mut self) -> WithResult<&mut Self, EntityIndex, EcsError>
     where
-        T: AsEntityReg;
+        T: AsEntityReg,
+    {
+        self.register_entity(T::as_entity_descriptor())
+    }
 
-    fn unregister_entity<'r, K>(&mut self, ekey: K) -> Result<EntityContainer, EcsError>
+    fn register_entity(&mut self, desc: EntityReg) -> WithResult<&mut Self, EntityIndex, EcsError>;
+
+    fn unregister_entity<C>(&mut self) -> WithResult<&mut Self, EntityContainer, EcsError>
     where
-        K: Into<EntityKeyRef<'r>>;
+        C: Components;
 
-    fn add_entity<E>(&mut self, ei: EntityIndex, value: E) -> Result<EntityId, EcsError<E>>
+    fn add_entity<E>(
+        &mut self,
+        ei: EntityIndex,
+        value: E,
+    ) -> WithResult<&mut Self, EntityId, EcsError<E>>
     where
         E: Entity;
+
+    fn remove_entity(&mut self, eid: EntityId) -> WithResult<&mut Self, (), EcsError>;
+
+    // === Resource methods ===
 
     /// Registers the resource.
     /// If the registration failed, nothing takes place and returns received value.
     /// In other words, the old resouce data won't be dropped.
-    fn register_resource(&mut self, desc: ResourceDesc) -> Result<(), EcsError<ResourceDesc>>;
+    fn register_resource(
+        &mut self,
+        desc: ResourceDesc,
+    ) -> WithResult<&mut Self, (), EcsError<ResourceDesc>>;
 
-    fn unregister_resource(&mut self, rkey: &ResourceKey)
-        -> Result<Option<Box<dyn Any>>, EcsError>;
+    fn unregister_resource<R>(&mut self) -> WithResult<&mut Self, Option<Box<dyn Any>>, EcsError>
+    where
+        R: Resource;
 }
 
 #[rustfmt::skip]
@@ -80,7 +119,7 @@ struct EcsVTable {
         unsafe fn(NonNull<u8>, &SystemId) -> Result<(), EcsError>,
 
     activate_system_inner:
-        unsafe fn(NonNull<u8>, &SystemId, InsertPos, NonZeroTick) 
+        unsafe fn(NonNull<u8>, SystemId, InsertPos, NonZeroTick) 
         -> Result<(), EcsError>,
 
     inactivate_system_inner: 
@@ -145,7 +184,7 @@ impl EcsVTable {
 
         unsafe fn activate_system_inner<W, S, const N: usize>(
             this: NonNull<u8>,
-            target: &SystemId,
+            target: SystemId,
             at: InsertPos,
             live: NonZeroTick,
         ) -> Result<(), EcsError>
@@ -344,10 +383,15 @@ impl<'ecs> Ecs<'ecs> {
 }
 
 impl EcsEntry for Ecs<'_> {
-    fn add_system<Sys>(&mut self, desc: SystemDesc<Sys>) -> Result<SystemId, EcsError<SystemData>>
+    fn add_system<T, Sys>(
+        &mut self,
+        desc: T,
+    ) -> WithResult<&mut Self, SystemId, EcsError<SystemDesc<Sys>>>
     where
+        T: Into<SystemDesc<Sys>>,
         Sys: System,
     {
+        let desc = desc.into();
         let SystemDesc {
             sys,
             private,
@@ -375,14 +419,41 @@ impl EcsEntry for Ecs<'_> {
                 assert!(must_ok.is_ok());
             }
         }
-        res
+
+        let res = res.map_err(|err| {
+            err.map_data(|sdata| {
+                let any = sdata.try_into_any().unwrap();
+                let sys = *any.downcast::<Sys>().unwrap();
+                SystemDesc {
+                    sys: Or::A(sys),
+                    private,
+                    group_index,
+                    volatile,
+                    activation,
+                }
+            })
+        });
+        WithResult::new(self, res)
     }
 
-    fn unregister_system(&mut self, sid: SystemId) -> Result<(), EcsError> {
-        unsafe {
+    fn add_once<T, Req, F>(
+        &mut self,
+        sys: T,
+    ) -> WithResult<&mut Self, SystemId, EcsError<SystemDesc<FnOnceSystem<Req, F>>>>
+    where
+        T: Into<FnOnceSystem<Req, F>>,
+        FnOnceSystem<Req, F>: System,
+    {
+        let desc = SystemDesc::new().with_once(sys);
+        self.add_system(desc)
+    }
+
+    fn unregister_system(&mut self, sid: SystemId) -> WithResult<&mut Self, (), EcsError> {
+        let res = unsafe {
             let vtable = self.vtable.as_ref();
             (vtable.unregister_system_inner)(self.this, &sid)
-        }
+        };
+        WithResult::new(self, res)
     }
 
     fn activate_system(
@@ -390,45 +461,48 @@ impl EcsEntry for Ecs<'_> {
         target: SystemId,
         at: InsertPos,
         live: NonZeroTick,
-    ) -> Result<(), EcsError> {
-        unsafe {
+    ) -> WithResult<&mut Self, (), EcsError> {
+        let res = unsafe {
             let vtable = self.vtable.as_ref();
-            (vtable.activate_system_inner)(self.this, &target, at, live)
-        }
+            (vtable.activate_system_inner)(self.this, target, at, live)
+        };
+        WithResult::new(self, res)
     }
 
-    fn inactivate_system(&mut self, sid: SystemId) -> Result<(), EcsError> {
-        unsafe {
+    fn inactivate_system(&mut self, sid: SystemId) -> WithResult<&mut Self, (), EcsError> {
+        let res = unsafe {
             let vtable = self.vtable.as_ref();
             (vtable.inactivate_system_inner)(self.this, &sid)
-        }
+        };
+        WithResult::new(self, res)
     }
 
-    fn register_entity(&mut self, desc: EntityReg) -> Result<EntityIndex, EcsError> {
-        unsafe {
+    fn register_entity(&mut self, desc: EntityReg) -> WithResult<&mut Self, EntityIndex, EcsError> {
+        let res = unsafe {
             let vtable = self.vtable.as_ref();
             (vtable.register_entity_inner)(self.this, desc)
-        }
+        };
+        WithResult::new(self, res)
     }
 
-    fn register_entity_of<T>(&mut self) -> Result<EntityIndex, EcsError>
+    fn unregister_entity<C>(&mut self) -> WithResult<&mut Self, EntityContainer, EcsError>
     where
-        T: AsEntityReg,
+        C: Components,
     {
-        self.register_entity(T::as_entity_descriptor())
-    }
-
-    fn unregister_entity<'r, K>(&mut self, ekey: K) -> Result<EntityContainer, EcsError>
-    where
-        K: Into<EntityKeyRef<'r>>,
-    {
-        unsafe {
+        let ckeys = C::sorted_keys();
+        let ekey = EntityKeyRef::Ckeys(ckeys.as_ref());
+        let res = unsafe {
             let vtable = self.vtable.as_ref();
-            (vtable.unregister_entity_inner)(self.this, ekey.into())
-        }
+            (vtable.unregister_entity_inner)(self.this, ekey)
+        };
+        WithResult::new(self, res)
     }
 
-    fn add_entity<E>(&mut self, ei: EntityIndex, value: E) -> Result<EntityId, EcsError<E>>
+    fn add_entity<E>(
+        &mut self,
+        ei: EntityIndex,
+        value: E,
+    ) -> WithResult<&mut Self, EntityId, EcsError<E>>
     where
         E: Entity,
     {
@@ -439,30 +513,61 @@ impl EcsEntry for Ecs<'_> {
             (vtable.get_entity_container_mut)(self.this, ekey)
         };
 
-        if let Some(cont) = cont {
+        let res = if let Some(cont) = cont {
             let ri = value.move_to(&mut **cont);
             Ok(EntityId::new(ei, ri))
         } else {
             let reason = debug_format!("{}", std::any::type_name::<E>());
             Err(EcsError::UnknownEntity(reason, value))
-        }
+        };
+        WithResult::new(self, res)
     }
 
-    fn register_resource(&mut self, desc: ResourceDesc) -> Result<(), EcsError<ResourceDesc>> {
-        unsafe {
+    fn remove_entity(&mut self, eid: EntityId) -> WithResult<&mut Self, (), EcsError> {
+        let ei = eid.container_index();
+        let ekey = EntityKeyRef::Index(&ei);
+
+        let cont = unsafe {
+            let vtable = self.vtable.as_ref();
+            (vtable.get_entity_container_mut)(self.this, ekey)
+        };
+
+        let res = if let Some(cont) = cont {
+            let ri = eid.row_index();
+            let is_removed = cont.remove_row(ri);
+            if is_removed {
+                Ok(())
+            } else {
+                let reason = debug_format!("failed to find an entity for {eid:?}");
+                Err(EcsError::UnknownEntity(reason, ()))
+            }
+        } else {
+            let reason = debug_format!("failed to find an entity for {eid:?}");
+            Err(EcsError::UnknownEntity(reason, ()))
+        };
+        WithResult::new(self, res)
+    }
+
+    fn register_resource(
+        &mut self,
+        desc: ResourceDesc,
+    ) -> WithResult<&mut Self, (), EcsError<ResourceDesc>> {
+        let res = unsafe {
             let vtable = self.vtable.as_ref();
             (vtable.register_resource_inner)(self.this, desc)
-        }
+        };
+        WithResult::new(self, res)
     }
 
-    fn unregister_resource(
-        &mut self,
-        rkey: &ResourceKey,
-    ) -> Result<Option<Box<dyn Any>>, EcsError> {
-        unsafe {
+    fn unregister_resource<R>(&mut self) -> WithResult<&mut Self, Option<Box<dyn Any>>, EcsError>
+    where
+        R: Resource,
+    {
+        let res = unsafe {
             let vtable = self.vtable.as_ref();
-            (vtable.unregister_resource_inner)(self.this, rkey)
-        }
+            (vtable.unregister_resource_inner)(self.this, &R::key())
+        };
+        WithResult::new(self, res)
     }
 }
 
@@ -492,9 +597,11 @@ where
 
     sched: Scheduler<W, S, N>,
 
-    shared: Arc<Shared>,
-
     vtable: EcsVTable,
+
+    shared: Arc<Shared>,
+    tx_cmd: CommandSender,
+    rx_cmd: Rc<CommandReceiver>,
 }
 
 impl<W, S, const N: usize> EcsApp<W, S, N>
@@ -504,14 +611,19 @@ where
 {
     pub fn new(workers: Vec<W>, nums: [usize; N]) -> Self {
         let shared = Arc::new(Shared::new());
+        let (tx_cmd, rx_cmd) = command_channel(thread::current());
+        let rx_cmd = Rc::new(rx_cmd);
+        let sched = Scheduler::new(workers, nums, &shared, &tx_cmd, Rc::clone(&rx_cmd));
 
         Self {
             sys_stor: SystemStorage::new(),
             ent_stor: EntityStorage::new(),
             res_stor: ResourceStorage::new(),
             cache_stor: CacheStorage::new(),
-            sched: Scheduler::new(workers, nums, &shared),
+            sched,
             shared,
+            tx_cmd,
+            rx_cmd,
             vtable: EcsVTable::new::<W, S, N>(),
         }
     }
@@ -524,7 +636,13 @@ where
         // Takes workers out from the scheduler.
         let old = mem::replace(
             &mut self.sched,
-            Scheduler::new(Vec::new(), [0; N], &self.shared),
+            Scheduler::new(
+                Vec::new(),
+                [0; N],
+                &self.shared,
+                &self.tx_cmd,
+                Rc::clone(&self.rx_cmd),
+            ),
         );
         old.take_workers()
     }
@@ -533,13 +651,23 @@ where
         LeakedEcsApp::new(self)
     }
 
-    pub fn collect_poisoned_systems(&mut self) -> Vec<(SystemData, Box<dyn Any + Send>)> {
+    pub fn collect_poisoned_systems(&mut self) -> Vec<PoisonedSystem> {
         self.sys_stor.drain_poisoned().collect()
     }
 
     #[must_use]
     pub fn run(&mut self) -> RunningEcs<'_, W, S, N> {
         RunningEcs::new(self)
+    }
+
+    pub fn execute_command<F>(&mut self, f: F) -> EcsResult<()>
+    where
+        F: FnOnce(Commander) -> CommandObject,
+    {
+        let cmdr = Commander::new(&self.shared);
+        let cmd = f(cmdr);
+        let ecs = Ecs::new(self);
+        cmd.command(ecs)
     }
 
     // TODO: doc example to test downcast error
@@ -570,23 +698,22 @@ where
         {
             // Validation procedure is as follows.
             // 1. Validates `Read`, `Write`, `ResRead`, `ResWrite`, and `EntWrite`.
-            // 2. Validates if queried "Resources" and "Entities" exist.
-            //    When it comes to "resource and entity queries",
-            //    in contrast to "component queries",
-            //    they must be known at the time of system registration.
-            //    Why? assume that clients forgot to register
-            //    required resource or entity.
-            //    Then, we can't give them to systems.
-            //    But about components, we can give empty iterator somehow.
+            // 2. Validates if queried resources exist.
+            //    When it comes to resource queries, in contrast to component or
+            //    entity queries, they must be known at the time of system
+            //    registration. Assume that clients forgot to register required
+            //    resources. Then, we can't give them to systems. But about
+            //    components or entities, we can give empty iterator somehow.
+            // 3. `EntWrite` must not overlap both `Read` and `Write`.
 
-            // 1. Validates request's `Read`, `Write`, `ResRead`, and `ResWrite`.
-            // `EntWrite` will be validated soon.
+            // 1. Validates request's `Read`, `Write`, `ResRead`, `ResWrite`,
+            // and `EntWrite` themselves.
             let rinfo = sdata.get_request_info();
             if let Err(reason) = rinfo.validate() {
                 return Err(EcsError::InvalidRequest(reason, ()));
             }
 
-            // 2. Validates queried resources.
+            // 2. Tests if we can find queries resources now.
             for rkey in rinfo.resource_keys() {
                 if !this.res_stor.contains(rkey) {
                     let reason = debug_format!("failed to find a resource `{:?}`", rkey);
@@ -594,29 +721,21 @@ where
                 }
             }
 
-            // 1. Validates request's `EntWrite`.
-            // 2. Validates queried entities.
-            let (_, r_qinfo) = rinfo.read();
-            let (_, w_qinfo) = rinfo.write();
-            let r_sels = r_qinfo.selectors();
-            let w_sels = w_qinfo.selectors();
-            let sels = r_sels.iter().chain(w_sels);
-            for ekey in rinfo.entity_keys() {
-                if let Some(cont) = this.ent_stor.get_entity_container(ekey) {
-                    for (_, sinfo) in sels.clone() {
-                        if sinfo.filter(|ckey| cont.contains_column(ckey)) {
-                            let reason = debug_format!(
-                                "entity query `{:?}` cannot be coexist with filter `{}` in `{}`, they conflict",
-                                ekey,
-                                sinfo.name(),
-                                rinfo.name(),
-                            );
-                            return Err(EcsError::InvalidRequest(reason, ()));
-                        }
-                    }
-                } else {
-                    let reason = debug_format!("failed to find an entity `{:?}`", ekey);
-                    return Err(EcsError::UnknownEntity(reason, ()));
+            // 3. `EntWrite` must not overlap both `Read` and `Write`.
+            let r_sinfos = rinfo.read().1.select_infos();
+            let w_sinfos = rinfo.write().1.select_infos();
+            for (sinfo, finfo) in r_sinfos
+                .chain(w_sinfos)
+                .flat_map(|sinfo| rinfo.filters().iter().map(move |(_, finfo)| (sinfo, finfo)))
+            {
+                if !sinfo.is_disjoint2(finfo) {
+                    let reason = debug_format!(
+                        "{} contains conflicting queries: {}, {}",
+                        rinfo.name(),
+                        sinfo.name(),
+                        finfo.name(),
+                    );
+                    return Err(EcsError::InvalidRequest(reason, ()));
                 }
             }
 
@@ -651,9 +770,9 @@ where
                 let res_read = &sdata.get_request_info().res_read().1;
                 let res_write = &sdata.get_request_info().res_write().1;
                 if res_read
-                    .rkeys()
+                    .resource_keys()
                     .iter()
-                    .chain(res_write.rkeys())
+                    .chain(res_write.resource_keys())
                     .any(|rkey| this.res_stor.is_dedicated2(rkey))
                 {
                     sflags |= SystemFlags::DEDI_SET;
@@ -679,19 +798,19 @@ where
 
     fn activate_system_inner(
         &mut self,
-        target: &SystemId,
+        target: SystemId,
         at: InsertPos,
         live: NonZeroTick,
     ) -> Result<(), EcsError> {
         // Activates the system.
-        self.sys_stor.activate(target, at, live)?;
+        self.sys_stor.activate(&target, at, live)?;
 
         // Refreshes cache item for the system.
         let sgroup = self.sys_stor.get_group_mut(target.group_index() as usize);
         // Safety: The system was successfully activated, so we definitely can
         // get the system data.
-        let sdata = unsafe { sgroup.get_active(target).unwrap_unchecked() };
-        self.cache_stor.remove_item(target, &self.ent_stor);
+        let sdata = unsafe { sgroup.get_active(&target).unwrap_unchecked() };
+        self.cache_stor.remove_item(target);
         self.cache_stor
             .create_item(sdata, &mut self.ent_stor, &mut self.res_stor);
         Ok(())
@@ -721,12 +840,8 @@ where
         &mut self,
         ekey: EntityKeyRef<'_>,
     ) -> Result<EntityContainer, EcsError> {
-        self.cache_stor.update_by_entity_unreg(
-            ekey,
-            &mut self.ent_stor,
-            &mut self.res_stor,
-            |sid: &SystemId| self.sys_stor.inactivate(sid).unwrap(),
-        );
+        self.cache_stor
+            .update_by_entity_unreg(ekey, &mut self.ent_stor, &mut self.res_stor);
         if let Some((_, cont)) = self.ent_stor.unregister(ekey) {
             Ok(cont)
         } else {
@@ -753,7 +868,7 @@ where
         rkey: &ResourceKey,
     ) -> Result<Option<Box<dyn Any>>, EcsError> {
         self.cache_stor
-            .update_by_resource_unreg(rkey, &self.ent_stor, |sid: &SystemId| {
+            .update_by_resource_unreg(rkey, |sid: &SystemId| {
                 self.sys_stor.inactivate(sid).unwrap()
             });
         match self.res_stor.unregister(rkey) {
@@ -767,20 +882,9 @@ where
     }
 
     fn process_buffered_commands(&mut self) {
-        // `ecs` borrows `Self` mutably, so we cannot access `sched` in it.
-        // So captures its address first.
-        let sched_ptr: *const Scheduler<W, S, N> = &self.sched as *const _;
-        let ecs = Ecs::new(self);
-
-        // TODO:
-        // - Removes unsafefy. Should I flip call hierarchy.
-        // - If command panics, recover from it or abort?
-        unsafe {
-            let sched = sched_ptr.as_ref().unwrap_unchecked();
-            sched.consume_command(move |cmd| {
-                let c_ecs = ecs.copy();
-                let _ = cmd.command(c_ecs);
-            });
+        while let Ok(cmd) = self.rx_cmd.try_recv() {
+            let ecs = Ecs::new(self);
+            let _ = cmd.command(ecs);
         }
     }
 
@@ -791,7 +895,13 @@ where
     ///
     /// [`cancel`]: crate::ecs::cmd::Command::cancel
     fn clear_command(&mut self) {
-        self.sched.clear_command();
+        // Blocks more commands.
+        self.rx_cmd.close();
+
+        // Cancels out all buffered commands.
+        while let Ok(cmd) = self.rx_cmd.try_recv() {
+            cmd.cancel();
+        }
     }
 
     /// Cancels out remaining systems.
@@ -809,7 +919,7 @@ where
     /// Clears dead systems with their cache items.
     fn clear_dead_system(&mut self) {
         for sdata in self.sys_stor.drain_dead() {
-            self.cache_stor.remove_item(&sdata.id(), &self.ent_stor);
+            self.cache_stor.remove_item(sdata.id());
         }
     }
 
@@ -826,15 +936,33 @@ where
     W: Work + 'static,
     S: BuildHasher + Default + 'static,
 {
-    fn add_system<Sys>(&mut self, desc: SystemDesc<Sys>) -> Result<SystemId, EcsError<SystemData>>
+    fn add_system<T, Sys>(
+        &mut self,
+        desc: T,
+    ) -> WithResult<&mut Self, SystemId, EcsError<SystemDesc<Sys>>>
     where
+        T: Into<SystemDesc<Sys>>,
         Sys: System,
     {
-        Ecs::new(self).add_system(desc)
+        let res = Ecs::new(self).add_system(desc).take();
+        WithResult::new(self, res)
     }
 
-    fn unregister_system(&mut self, sid: SystemId) -> Result<(), EcsError> {
-        Ecs::new(self).unregister_system(sid)
+    fn add_once<T, Req, F>(
+        &mut self,
+        sys: T,
+    ) -> WithResult<&mut Self, SystemId, EcsError<SystemDesc<FnOnceSystem<Req, F>>>>
+    where
+        T: Into<FnOnceSystem<Req, F>>,
+        FnOnceSystem<Req, F>: System,
+    {
+        let res = Ecs::new(self).add_once(sys).take();
+        WithResult::new(self, res)
+    }
+
+    fn unregister_system(&mut self, sid: SystemId) -> WithResult<&mut Self, (), EcsError> {
+        let res = Ecs::new(self).unregister_system(sid).take();
+        WithResult::new(self, res)
     }
 
     fn activate_system(
@@ -842,48 +970,60 @@ where
         target: SystemId,
         at: InsertPos,
         live: NonZeroTick,
-    ) -> Result<(), EcsError> {
-        Ecs::new(self).activate_system(target, at, live)
+    ) -> WithResult<&mut Self, (), EcsError> {
+        let res = Ecs::new(self).activate_system(target, at, live).take();
+        WithResult::new(self, res)
     }
 
-    fn inactivate_system(&mut self, sid: SystemId) -> Result<(), EcsError> {
-        Ecs::new(self).inactivate_system(sid)
+    fn inactivate_system(&mut self, sid: SystemId) -> WithResult<&mut Self, (), EcsError> {
+        let res = Ecs::new(self).inactivate_system(sid).take();
+        WithResult::new(self, res)
     }
 
-    fn register_entity(&mut self, desc: EntityReg) -> Result<EntityIndex, EcsError> {
-        Ecs::new(self).register_entity(desc)
+    fn register_entity(&mut self, desc: EntityReg) -> WithResult<&mut Self, EntityIndex, EcsError> {
+        let res = Ecs::new(self).register_entity(desc).take();
+        WithResult::new(self, res)
     }
 
-    fn register_entity_of<T>(&mut self) -> Result<EntityIndex, EcsError>
+    fn unregister_entity<C>(&mut self) -> WithResult<&mut Self, EntityContainer, EcsError>
     where
-        T: AsEntityReg,
+        C: Components,
     {
-        Ecs::new(self).register_entity_of::<T>()
+        let res = Ecs::new(self).unregister_entity::<C>().take();
+        WithResult::new(self, res)
     }
 
-    fn unregister_entity<'r, K>(&mut self, ekey: K) -> Result<EntityContainer, EcsError>
-    where
-        K: Into<EntityKeyRef<'r>>,
-    {
-        Ecs::new(self).unregister_entity(ekey)
-    }
-
-    fn add_entity<E>(&mut self, ei: EntityIndex, value: E) -> Result<EntityId, EcsError<E>>
+    fn add_entity<E>(
+        &mut self,
+        ei: EntityIndex,
+        value: E,
+    ) -> WithResult<&mut Self, EntityId, EcsError<E>>
     where
         E: Entity,
     {
-        Ecs::new(self).add_entity(ei, value)
+        let res = Ecs::new(self).add_entity(ei, value).take();
+        WithResult::new(self, res)
     }
 
-    fn register_resource(&mut self, desc: ResourceDesc) -> Result<(), EcsError<ResourceDesc>> {
-        Ecs::new(self).register_resource(desc)
+    fn remove_entity(&mut self, eid: EntityId) -> WithResult<&mut Self, (), EcsError> {
+        let res = Ecs::new(self).remove_entity(eid).take();
+        WithResult::new(self, res)
     }
 
-    fn unregister_resource(
+    fn register_resource(
         &mut self,
-        rkey: &ResourceKey,
-    ) -> Result<Option<Box<dyn Any>>, EcsError> {
-        Ecs::new(self).unregister_resource(rkey)
+        desc: ResourceDesc,
+    ) -> WithResult<&mut Self, (), EcsError<ResourceDesc>> {
+        let res = Ecs::new(self).register_resource(desc).take();
+        WithResult::new(self, res)
+    }
+
+    fn unregister_resource<R>(&mut self) -> WithResult<&mut Self, Option<Box<dyn Any>>, EcsError>
+    where
+        R: Resource,
+    {
+        let res = Ecs::new(self).unregister_resource::<R>().take();
+        WithResult::new(self, res)
     }
 }
 
@@ -1050,22 +1190,5 @@ where
             .sgroups
             .iter()
             .any(|sgroup| sgroup.len_active() > 0)
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct Shared {
-    ent_move: Mutex<EntMoveStorage>,
-}
-
-impl Shared {
-    fn new() -> Self {
-        Self {
-            ent_move: Mutex::new(EntMoveStorage::new()),
-        }
-    }
-
-    pub(crate) fn lock_entity_move_storage(&self) -> MutexGuard<'_, EntMoveStorage> {
-        self.ent_move.lock().unwrap()
     }
 }

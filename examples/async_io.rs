@@ -20,22 +20,13 @@ fn good_example() {
     // - Async io tasks in group 0.
     // - Compute tasks in group 1.
 
-    // Group 0.
-    ecs.add_system(SystemDesc::new().with_once(move || {
-        schedule_future(async_io_server(exit_rx));
-    }))
-    .unwrap();
-    ecs.add_system(SystemDesc::new().with_once(move || {
-        schedule_future(async_io_client(exit_tx));
-    }))
-    .unwrap();
-
-    // Group 1.
-    ecs.add_system(SystemDesc::new().with_group_index(1).with_once(|| {
-        schedule_future(async_compute());
-        schedule_future(async_compute());
-    }))
-    .unwrap();
+    ecs.add_once(move || schedule_future(async_io_server(exit_rx)))
+        .add_once(move || schedule_future(async_io_client(exit_tx)))
+        .add_system(SystemDesc::new().with_group_index(1).with_once(|| {
+            schedule_future(async_compute());
+            schedule_future(async_compute());
+        }))
+        .unwrap();
 
     print!("[GOOD example] ");
     while !ecs.run().schedule_all().wait_for_idle().is_completed() {}
@@ -51,19 +42,15 @@ fn bad_example() {
     // - Async io tasks in group 0.
     // - Compute tasks in group 0.
 
-    ecs.add_system(SystemDesc::new().with_once(move || {
-        schedule_future(async_io_server(exit_rx));
-    }))
-    .unwrap();
-    ecs.add_system(SystemDesc::new().with_once(|| {
-        schedule_future(async_compute());
-        schedule_future(async_compute());
-    }))
-    .unwrap();
-    ecs.add_system(SystemDesc::new().with_once(move || {
-        schedule_future(async_io_client(exit_tx));
-    }))
-    .unwrap();
+    ecs.add_once(move || schedule_future(async_io_server(exit_rx)))
+        .add_once(|| {
+            schedule_future(async_compute());
+            schedule_future(async_compute());
+        })
+        .add_once(move || {
+            schedule_future(async_io_client(exit_tx));
+        })
+        .unwrap();
 
     print!("[BAD example] ");
     while !ecs.run().schedule_all().wait_for_idle().is_completed() {}

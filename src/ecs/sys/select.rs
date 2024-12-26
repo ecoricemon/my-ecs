@@ -1,44 +1,165 @@
-use crate::ds::prelude::*;
-use crate::ecs::ent::{
-    component::{Component, ComponentKey, Components},
-    entity::{EntityIndex, EntityName, EntityTag},
+use crate::{
+    ds::prelude::*,
+    ecs::ent::{
+        component::{Component, ComponentKey, Components},
+        entity::{ContainEntity, Entity, EntityIndex, EntityName, EntityTag},
+        storage::EntityContainerRef,
+    },
+    impl_into_iterator_for_parallel, impl_parallel_iterator, impl_unindexed_producer,
+    util::Take,
 };
-use crate::{impl_into_iterator_for_parallel, impl_parallel_iterator, impl_unindexed_producer};
 use rayon::iter::{plumbing::Producer, IntoParallelIterator};
 use std::{
-    any,
+    any, fmt, iter,
     marker::PhantomData,
     ops::{Deref, DerefMut},
     ptr::NonNull,
     sync::Arc,
 };
 
-/// A filter to select [`Component`] array.
-/// You should fill out this form of filter.
+pub(crate) trait StoreSelectInfo: StoreFilterInfo {
+    fn contains(&self, key: &SelectKey) -> bool;
+    fn get(&self, key: &SelectKey) -> Option<&Arc<SelectInfo>>;
+    fn insert(&mut self, key: SelectKey, info: Arc<SelectInfo>);
+}
+
+pub(crate) trait StoreFilterInfo {
+    fn contains(&self, key: &FilterKey) -> bool;
+    fn get(&self, key: &FilterKey) -> Option<&Arc<FilterInfo>>;
+    fn insert(&mut self, key: FilterKey, info: Arc<FilterInfo>);
+}
+
+/// A trait for selecting a certain [`Target`](Select::Target) from entities
+/// that meet [`All`](Filter::All), [`Any`](Filter::Any), and
+/// [`None`](Filter::None) conditions.
 ///
-/// - `Target` is what `Component` you want.
-///   You will receive arrays of this `Target`.
+/// # Example
 ///
-/// - `All` is a tuple of `Component`s to select entities that have
-///   all the `Component`s.
-///   It's something like *AND* condition.
-///   But if `All` is empty, then any entities won't be rejected.
+/// ```ignore
+/// # use my_ecs::prelude::*;
 ///
-/// - `Any` is a tuple of `Component`s to select entities that have
-///   any of the `Component`s.
-///   It's something like *OR* condition.
-///   But if `Any` is empty, then any entities won't be rejected.
+/// #[derive(Component)] struct Ca;
+/// #[derive(Component)] struct Cb;
+/// #[derive(Component)] struct Cc;
+/// #[derive(Component)] struct Cd;
 ///
-/// - `None` is a tuple of `Component`s not to select entities that have
-///   any of these `Component`s.
-///   It's something like *NOR* condition.
-///   Buf if `None` is empty, then any entities won't be rejected.
+/// struct Sa;
+/// impl Select for Sa {
+///     type Target = Ca;
+///     type Filter = Fa;
+/// }
+/// struct Fa;
+/// impl Filter for Fa {
+///     type All = Cb;
+///     type Any = (Cc, Cd);
+///     type None = ();
+/// }
+///
+/// // Or simply
+/// filter!(Sb, Target = Ca, All = Cb, Any = (Cc, Cd));
+/// ```
+#[allow(private_interfaces, private_bounds)]
 pub trait Select: 'static {
     type Target: Component;
+    type Filter: Filter;
+
+    #[doc(hidden)]
+    fn key() -> SelectKey {
+        SelectKey::of::<Self>()
+    }
+
+    #[doc(hidden)]
+    fn get_info_from<S>(stor: &mut S) -> &Arc<SelectInfo>
+    where
+        S: StoreSelectInfo + StoreFilterInfo + ?Sized,
+    {
+        let key = Self::key();
+
+        if !StoreSelectInfo::contains(stor, &key) {
+            let sinfo = Arc::new(Self::info_from(stor));
+            StoreSelectInfo::insert(stor, key, sinfo);
+        }
+
+        // Safety: Inserted right before.
+        unsafe { StoreSelectInfo::get(stor, &key).unwrap_unchecked() }
+    }
+
+    #[doc(hidden)]
+    fn info_from<S>(stor: &mut S) -> SelectInfo
+    where
+        S: StoreFilterInfo + ?Sized,
+    {
+        let target = ComponentKey::of::<Self::Target>();
+        let finfo = Arc::clone(Self::Filter::get_info_from(stor));
+        let name = any::type_name::<Self>();
+        SelectInfo::new(target, finfo, name)
+    }
+}
+
+/// A trait for selecting certain entities that meet [`All`](Filter::All),
+/// [`Any`](Filter::Any), and [`None`](Filter::None) conditions.
+///
+/// # Example
+///
+/// ```ignore
+/// # use my_ecs::prelude::*;
+///
+/// #[derive(Component)] struct Ca;
+/// #[derive(Component)] struct Cb;
+/// #[derive(Component)] struct Cc;
+/// #[derive(Component)] struct Cd;
+///
+/// /// Filtering using All, Any, and None.
+/// struct Fa;
+/// impl Filter for Fa {
+///     type All = Ca;
+///     type Any = (Cb, Cc);
+///     type None = Cd;
+///     type Exact = ();
+/// }
+///
+/// // Or simply
+/// filter!(Fb, All = Ca, Any = (Cb, Cc));
+///
+/// /// Filtering using Exact.
+/// struct Fb;
+/// impl Filter for Fc {
+///     type All = ();
+///     type Any = ();
+///     type None = ();
+///     type Exact = (Ca, Cb);
+/// }
+///
+/// // Or simply
+/// filter!(Fd, Exact = (Ca, Cb));
+/// ```
+#[allow(private_interfaces, private_bounds)]
+pub trait Filter: 'static {
+    /// A [`Component`] group to select entities that contains all components in
+    /// this group. It's something like *AND* condition. But if `All` is empty,
+    /// then any entities won't be rejected.
     type All: Components;
+
+    /// A [`Component`] group to select entities that contains any components in
+    /// this group. It's something like *OR* condition. But if `Any` is empty,
+    /// then any entities won't be rejected.
     type Any: Components;
+
+    /// A [`Component`] group to select entities that don't contain any
+    /// components in this group. It's something like *NOR* condition. Buf if
+    /// `None` is empty, then any entities won't be rejected.
     type None: Components;
 
+    /// A [`Component`] group to select a specific entity that consists of
+    /// components in this group exactly.
+    type Exact: Components;
+
+    #[doc(hidden)]
+    fn key() -> FilterKey {
+        FilterKey::of::<Self>()
+    }
+
+    #[doc(hidden)]
     fn all_any_none() -> [Box<[ComponentKey]>; 3] {
         let all: Box<[ComponentKey]> = Self::All::keys().as_ref().into();
         let any: Box<[ComponentKey]> = Self::Any::keys().as_ref().into();
@@ -46,13 +167,10 @@ pub trait Select: 'static {
         [all, any, none]
     }
 
-    fn key() -> SelectKey {
-        SelectKey::of::<Self>()
-    }
-
-    fn get_info_from<S>(stor: &mut S) -> &Arc<SelectInfo>
+    #[doc(hidden)]
+    fn get_info_from<S>(stor: &mut S) -> &Arc<FilterInfo>
     where
-        S: StoreSelectInfo + ?Sized,
+        S: StoreFilterInfo + ?Sized,
     {
         let key = Self::key();
 
@@ -65,216 +183,271 @@ pub trait Select: 'static {
         unsafe { stor.get(&key).unwrap_unchecked() }
     }
 
-    fn info() -> SelectInfo {
+    #[doc(hidden)]
+    fn info() -> FilterInfo {
         let [all, any, none] = Self::all_any_none();
-        SelectInfo {
-            name: any::type_name::<Self>(),
-            target: ComponentKey::of::<Self::Target>(),
-            all,
-            any,
-            none,
-        }
+        let exact = Self::Exact::keys().as_ref().into();
+        let name = any::type_name::<Self>();
+        FilterInfo::new(all, any, none, exact, name)
     }
 }
 
-/// Disjoint selectors mean that two selectors' targets are not the same one.
-/// Table below shows the disjoint conditions.
-///
-/// | Select | Target | All   | None     | Any   |
-/// | :---:  | :---:  | :---: | :---:    | :---: |
-/// | SA     | T      | A, B  | C, D     | E, F  |
-/// | SB     | U      | ..    | ..       | ..    | // Case 1
-/// | SB     | T      | ..    | A, ..    | ..    | // Case 2
-/// | SB     | T      | ..    | B, ..    | ..    | // Case 2
-/// | SB     | T      | C, .. | ..       | ..    | // Case 3
-/// | SB     | T      | D, .. | ..       | ..    | // Case 3
-/// | SB     | T      | ..    | ..       | C     | // Case 4
-/// | SB     | T      | ..    | ..       | D     | // Case 4
-/// | SB     | T      | ..    | ..       | C, D  | // Case 4
-/// | SB     | T      | ..    | E, F, .. | ..    | // Case 5
-pub fn is_disjoint(a: &SelectInfo, b: &SelectInfo) -> bool {
-    let a_target = a.target();
-    let (a_all, a_any, a_none) = (a.all(), a.any(), a.none());
-    let b_target = b.target();
-    let (b_all, b_any, b_none) = (b.all(), b.any(), b.none());
-
-    // Case 1. Different targets.
-    if a_target != b_target {
-        return true;
-    }
-
-    // Case 2. One of `SA's All` belongs to `SB's None`.
-    if a_all.iter().any(|a| b_none.contains(a)) {
-        return true;
-    }
-
-    // Case 3. One of `SA's None` belongs to `SB's All`.
-    if a_none.iter().any(|a| b_all.contains(a)) {
-        return true;
-    }
-
-    // Case 4. `SB's Any` is a subset of `SA's None`.
-    if !b_any.is_empty() && b_any.iter().all(|b| a_none.contains(b)) {
-        return true;
-    }
-
-    // Case 5. `SA's Any` is a subset of `SB's None`.
-    if !a_any.is_empty() && a_any.iter().all(|a| b_none.contains(a)) {
-        return true;
-    }
-
-    false
-}
-
-pub trait StoreSelectInfo {
-    fn contains(&self, key: &SelectKey) -> bool;
-    fn get(&self, key: &SelectKey) -> Option<&Arc<SelectInfo>>;
-    fn insert(&mut self, key: SelectKey, info: Arc<SelectInfo>);
+/// An [`Entity`] is an exact [`Filter`].
+impl<T: Entity> Filter for T {
+    type All = ();
+    type Any = ();
+    type None = ();
+    type Exact = T;
 }
 
 /// Unique identifier for a type implementing [`Select`].
-pub type SelectKey = ATypeId<SelectKey_>;
-pub struct SelectKey_;
+pub(crate) type SelectKey = ATypeId<SelectKey_>;
+pub(crate) struct SelectKey_;
 
 /// Unique identifier for a type implementing [`Filter`].
-pub type FilterKey = ATypeId<FilterKey_>;
-pub struct FilterKey_;
+pub(crate) type FilterKey = ATypeId<FilterKey_>;
+pub(crate) struct FilterKey_;
 
-#[derive(Debug, Clone)]
-pub struct SelectInfo {
-    name: &'static str,
+#[derive(Clone)]
+pub(crate) struct SelectInfo {
     target: ComponentKey,
-    all: Box<[ComponentKey]>,
-    any: Box<[ComponentKey]>,
-    none: Box<[ComponentKey]>,
+    finfo: Arc<FilterInfo>,
+    name: &'static str,
+}
+
+impl fmt::Debug for SelectInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SelectInfo")
+            .field("name", &self.name())
+            .field("target", &self.target())
+            .field("finfo", &self.filter_info())
+            .finish()
+    }
 }
 
 impl SelectInfo {
-    pub fn name(&self) -> &'static str {
-        self.name
+    const fn new(target: ComponentKey, finfo: Arc<FilterInfo>, name: &'static str) -> Self {
+        Self {
+            target,
+            finfo,
+            name,
+        }
     }
 
-    pub fn target(&self) -> &ComponentKey {
+    pub(crate) const fn target(&self) -> &ComponentKey {
         &self.target
     }
 
-    pub fn all(&self) -> &[ComponentKey] {
+    pub(crate) const fn filter_info(&self) -> &Arc<FilterInfo> {
+        &self.finfo
+    }
+
+    pub(crate) const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    pub(crate) fn filter<F>(&self, contains: F, num_columns: usize) -> bool
+    where
+        F: Fn(&ComponentKey) -> bool,
+    {
+        contains(self.target()) && self.finfo.filter(contains, num_columns)
+    }
+
+    /// Determines that the given selector is disjoint with this selector.
+    ///
+    /// Disjoint filters mean that two filters don't overlap at all.
+    /// Table below shows the disjoint conditions.
+    /// - Two have diffrent targets.
+    /// - Two are disjoint filters.
+    pub(crate) fn is_disjoint(&self, rhs: &Self) -> bool {
+        (self.target != rhs.target) || self.finfo.is_disjoint(&rhs.finfo)
+    }
+
+    pub(crate) fn is_disjoint2(&self, rhs: &FilterInfo) -> bool {
+        self.finfo.is_disjoint(rhs)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct FilterInfo {
+    all: Box<[ComponentKey]>,
+    any: Box<[ComponentKey]>,
+    none: Box<[ComponentKey]>,
+    exact: Box<[ComponentKey]>,
+    name: &'static str,
+}
+
+impl fmt::Debug for FilterInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FilterInfo")
+            .field("name", &self.name())
+            .field("all", &self.all())
+            .field("any", &self.any())
+            .field("none", &self.none())
+            .field("exact", &self.exact())
+            .finish()
+    }
+}
+
+impl FilterInfo {
+    const fn new(
+        all: Box<[ComponentKey]>,
+        any: Box<[ComponentKey]>,
+        none: Box<[ComponentKey]>,
+        exact: Box<[ComponentKey]>,
+        name: &'static str,
+    ) -> Self {
+        Self {
+            all,
+            any,
+            none,
+            exact,
+            name,
+        }
+    }
+
+    pub(crate) const fn all(&self) -> &[ComponentKey] {
         &self.all
     }
 
-    pub fn any(&self) -> &[ComponentKey] {
+    pub(crate) const fn any(&self) -> &[ComponentKey] {
         &self.any
     }
 
-    pub fn none(&self) -> &[ComponentKey] {
+    pub(crate) const fn none(&self) -> &[ComponentKey] {
         &self.none
     }
 
-    pub fn filter<F>(&self, mut contains: F) -> bool
+    pub(crate) const fn exact(&self) -> &[ComponentKey] {
+        &self.exact
+    }
+
+    pub(crate) const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    pub(crate) fn filter<F>(&self, contains: F, num_columns: usize) -> bool
     where
-        F: FnMut(&ComponentKey) -> bool,
+        F: Fn(&ComponentKey) -> bool,
     {
         // empty iter.all() -> returns true.
         // empty iter.any() -> returns false.
 
-        contains(self.target())
-            && self.all().iter().all(&mut contains)
-            && !self.none().iter().any(&mut contains)
-            && if self.any().is_empty() {
-                true
-            } else {
-                self.any().iter().any(contains)
-            }
-    }
-}
-
-/// Selected component arryas by a [`Select`].  
-///
-// This struct contains borrowed `Select::Target` arrays. But, this struct
-// doesn't bring lifetime constraint into inside the struct although it
-// borrows component arrays. Instead, borrowed data are encapsulated by
-// `Borrowed`, which is a run-time borrow checker. In other words, component
-// arrays must be borrowed and released everytime.
-//
-// This struct is intended to be used as a cache without lifetime.
-// Cache is a data storage which lives as long as system data.
-// But system data will live indefinitely,
-// so removing lifetime helps to keep things simple.
-#[derive(Debug)]
-pub struct SelectedRaw {
-    /// [EntityTag] searched by the filter.
-    //
-    // Each system owns `SelectedRaw`, so `etags` and `col_idxs` will be
-    // duplicated between systems.
-    etags: Vec<EntityTag>,
-
-    /// Column(Component) index searched by the filter.
-    //
-    // Each system owns `SelectedRaw`, so `etags` and `col_idxs` will be
-    // duplicated between systems.
-    col_idxs: Vec<usize>,
-
-    /// Temporary buffer for the query result.
-    /// Content will be replaced for every query, but we can reuse the capacity.
-    /// Notice that this doesn't actually own [Borrowed] because this is just a temporary buffer.
-    /// Real user, system, owns it and will drop it after using it.
-    //
-    // See `request::BufferCleaner` for more details.
-    query_res: Vec<Borrowed<RawGetter>>,
-}
-
-impl SelectedRaw {
-    pub(crate) const fn new(etags: Vec<EntityTag>, col_idxs: Vec<usize>) -> Self {
-        Self {
-            etags,
-            col_idxs,
-            query_res: Vec::new(),
-        }
-    }
-
-    pub(crate) fn take(&mut self) -> (&Vec<EntityTag>, &Vec<usize>, &mut Vec<Borrowed<RawGetter>>) {
-        (&self.etags, &self.col_idxs, &mut self.query_res)
-    }
-
-    // `etags` and `col_idxs` always have the same length.
-    pub(crate) fn add(&mut self, etag: EntityTag, ci: usize) {
-        self.etags.push(etag);
-        self.col_idxs.push(ci);
-    }
-
-    // `etags` and `col_idxs` always have the same length.
-    pub(crate) fn remove(&mut self, ci: usize) -> Option<EntityTag> {
-        if let Some((i, _)) = self.col_idxs.iter().enumerate().find(|(_, &x)| x == ci) {
-            let old = self.etags.swap_remove(i);
-            self.col_idxs.swap_remove(i);
-            Some(old)
+        if !self.exact.is_empty() {
+            self.exact.len() == num_columns && self.exact.iter().all(&contains)
         } else {
-            None
+            self.all.iter().all(&contains)
+                && !self.none.iter().any(&contains)
+                && if self.any.is_empty() {
+                    true
+                } else {
+                    self.any.iter().any(contains)
+                }
         }
     }
 
-    /// Retrieve an iterator that traverses over entity and column index pair.
-    pub(crate) fn iter_index_pair<'a>(
-        etags: &'a [EntityTag],
-        col_idxs: &'a [usize],
-    ) -> impl Iterator<Item = (EntityIndex, usize)> + 'a {
-        // Self::add() guarantees that etags and col_idxs have the same length.
-        etags
-            .iter()
-            .map(|etag| etag.index())
-            .zip(col_idxs.iter().cloned())
+    /// Determines that the given filter is disjoint with this filter.
+    ///
+    /// Disjoint filters mean that two filters don't overlap at all.
+    /// Disjoint conditions are as follows.
+    pub(crate) fn is_disjoint(&self, rhs: &Self) -> bool {
+        let is_self_general = self.exact.is_empty();
+        let is_rhs_general = rhs.exact.is_empty();
+        match (is_self_general, is_rhs_general) {
+            // Exact and Exact
+            (false, false) => self.is_disjoint_exact_exact(rhs),
+            // Exact and General
+            (false, true) => rhs.is_disjoint_general_exact(self),
+            // General and Exact
+            (true, false) => self.is_disjoint_general_exact(rhs),
+            // General and General
+            (true, true) => self.is_disjoint_general_general(rhs),
+        }
     }
 
-    pub(crate) fn clear(&mut self) {
-        self.query_res.clear();
+    /// # General vs. General disjoint conditions
+    /// - X's All intersects Y's None or vice versa.
+    /// - X's Any is a subset of Y's None or vice versa.
+    ///
+    /// | Filter | All   | None     | Any   |
+    /// | :---:  | :---: | :---:    | :---: |
+    /// | FA     | A, B  | C, D     | E, F  |
+    /// | FB     | ..    | A, ..    | ..    | 1. FA::All intersects FB::None
+    /// | FB     | ..    | B, ..    | ..    | 1. FA::All intersects FB::None
+    /// | FB     | C, .. | ..       | ..    | 2. FA::None intersects FB::All
+    /// | FB     | D, .. | ..       | ..    | 2. FA::None intersects FB::All
+    /// | FB     | ..    | ..       | C     | 3. FB::Any is a subset of FA::None
+    /// | FB     | ..    | ..       | D     | 3. FB::Any is a subset of FA::None
+    /// | FB     | ..    | ..       | C, D  | 3. FB::Any is a subset of FA::None
+    /// | FB     | ..    | E, F, .. | ..    | 4. FA::Any is a subset of FB::None
+    fn is_disjoint_general_general(&self, rhs: &Self) -> bool {
+        let (a_all, a_any, a_none) = (&self.all, &self.any, &self.none);
+        let (b_all, b_any, b_none) = (&rhs.all, &rhs.any, &rhs.none);
+
+        // 1. FA::All intersects FB::None
+        if a_all.iter().any(|a| b_none.contains(a)) {
+            return true;
+        }
+
+        // 2. FA::None intersects FA::All
+        if a_none.iter().any(|a| b_all.contains(a)) {
+            return true;
+        }
+
+        // 3. FB::Any is a subset of FA::None
+        if !b_any.is_empty() && b_any.iter().all(|b| a_none.contains(b)) {
+            return true;
+        }
+
+        // 4. FA::Any is a subset of FB::None
+        if !a_any.is_empty() && a_any.iter().all(|a| b_none.contains(a)) {
+            return true;
+        }
+
+        false
     }
 
-    pub(crate) fn query_res(&self) -> &Vec<Borrowed<RawGetter>> {
-        &self.query_res
+    /// # Exact vs. filter disjoint conditions
+    ///
+    /// - Not the same one
+    fn is_disjoint_exact_exact(&self, rhs: &Self) -> bool {
+        if self.exact.len() != rhs.exact.len() {
+            return false;
+        }
+
+        self.exact.iter().any(|l| !rhs.exact.contains(l))
     }
 
-    fn entity_tags(&self) -> &Vec<EntityTag> {
-        &self.etags
+    /// # General vs. filter disjoint conditions
+    ///
+    /// | Filter | All   | None  | Any   | Exact           |
+    /// | :---:  | :---: | :---: | :---: | :--:            |
+    /// | FA     | A, B  | C, D  | E, F  |                 |
+    /// | FB     |       |       |       | not A, ...      | // Case 1
+    /// | FB     |       |       |       | not B, ...      | // Case 1
+    /// | FB     |       |       |       | C, ...          | // Case 2
+    /// | FB     |       |       |       | D, ...          | // Case 2
+    /// | FB     |       |       |       | ... except E, F | // Case 3
+    fn is_disjoint_general_exact(&self, rhs: &Self) -> bool {
+        let (a_all, a_any, a_none) = (&self.all, &self.any, &self.none);
+        let b_exact = &rhs.exact;
+
+        // Case 1. `FB` includes one not beloning `FA's All`.
+        if b_exact.iter().any(|b| !a_all.contains(b)) {
+            return true;
+        }
+
+        // Case 2. `FB` includes one of `FA's None`.
+        if b_exact.iter().any(|b| a_none.contains(b)) {
+            return true;
+        }
+
+        // Case 3. `FB` doesn't include any of `FA's Any`.
+        if a_any.iter().all(|a| !b_exact.contains(a)) {
+            return true;
+        }
+
+        false
     }
 }
 
@@ -309,12 +482,8 @@ impl<'cont, Comp: 'cont> Selected<'cont, Comp> {
     pub fn par_iter(&self) -> ParSelectedIter<'cont, Comp> {
         ParSelectedIter(self.iter())
     }
-}
 
-impl<Comp> Deref for Selected<'_, Comp> {
-    type Target = SelectedRaw;
-
-    fn deref(&self) -> &Self::Target {
+    pub(crate) fn as_raw(&self) -> &SelectedRaw {
         self.raw
     }
 }
@@ -352,15 +521,203 @@ impl<'cont, Comp: 'cont> SelectedMut<'cont, Comp> {
     }
 }
 
+#[derive(Debug)]
+pub struct FilteredMut<'stor, T: 'stor> {
+    raw: &'stor mut FilteredRaw,
+    _marker: PhantomData<T>,
+}
+
+impl<'stor, T: 'stor> FilteredMut<'stor, T> {
+    pub(crate) fn new(raw: &'stor mut FilteredRaw) -> Self {
+        Self {
+            raw,
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn iter_mut(&mut self) -> FilteredIterMut<'stor, T> {
+        FilteredIterMut::new(self)
+    }
+
+    pub(crate) fn as_raw(&self) -> &FilteredRaw {
+        self.raw
+    }
+}
+
+impl<'stor, T: Entity + 'stor> Take for FilteredMut<'stor, T> {
+    type Inner = Option<EntityContainerRef<'stor, T>>;
+
+    fn take(mut self) -> Self::Inner {
+        self.iter_mut().next()
+    }
+}
+
+/// Selected component arryas by a [`Select`].  
+///
+// This struct contains borrowed `Select::Target` arrays. But, this struct
+// doesn't bring lifetime constraint into inside the struct although it
+// borrows component arrays. Instead, borrowed data are encapsulated by
+// `Borrowed`, which is a run-time borrow checker. In other words, component
+// arrays must be borrowed and released everytime.
+//
+// This struct is intended to be used as a cache without lifetime.
+// Cache is a data storage which lives as long as system data.
+// But system data will live indefinitely,
+// so removing lifetime helps to keep things simple.
+#[derive(Debug)]
+pub(crate) struct SelectedRaw {
+    /// [EntityTag] searched by the filter.
+    //
+    // Each system owns `SelectedRaw`, so `etags` and `col_idxs` will be
+    // duplicated between systems.
+    etags: Vec<Arc<EntityTag>>,
+
+    /// Column(Component) index searched by the filter.
+    //
+    // Each system owns `SelectedRaw`, so `etags` and `col_idxs` will be
+    // duplicated between systems.
+    col_idxs: Vec<usize>,
+
+    /// Temporary buffer for the query result.
+    /// Content will be replaced for every query, but we can reuse the capacity.
+    /// Notice that this doesn't actually own [Borrowed] because this is just a temporary buffer.
+    /// Real user, system, owns it and will drop it after using it.
+    //
+    // See `request::BufferCleaner` for more details.
+    query_res: Vec<Borrowed<RawGetter>>,
+}
+
+impl SelectedRaw {
+    pub(crate) const fn new(etags: Vec<Arc<EntityTag>>, col_idxs: Vec<usize>) -> Self {
+        Self {
+            etags,
+            col_idxs,
+            query_res: Vec::new(),
+        }
+    }
+
+    pub(crate) fn take(
+        &mut self,
+    ) -> (
+        &Vec<Arc<EntityTag>>,
+        &Vec<usize>,
+        &mut Vec<Borrowed<RawGetter>>,
+    ) {
+        (&self.etags, &self.col_idxs, &mut self.query_res)
+    }
+
+    // `etags` and `col_idxs` always have the same length.
+    pub(crate) fn add(&mut self, etag: Arc<EntityTag>, ci: usize) {
+        self.etags.push(etag);
+        self.col_idxs.push(ci);
+    }
+
+    // `etags` and `col_idxs` always have the same length.
+    pub(crate) fn remove(&mut self, ei: EntityIndex, ci: usize) -> Option<Arc<EntityTag>> {
+        let ei_iter = self.etags.iter().map(|etag| etag.index());
+        let ei_ci_iter = ei_iter.zip(&self.col_idxs);
+
+        if let Some((i, _)) = ei_ci_iter
+            .enumerate()
+            .find(|(_, (item_ei, item_ci))| *item_ei == ei && **item_ci == ci)
+        {
+            let old = self.etags.swap_remove(i);
+            self.col_idxs.swap_remove(i);
+            Some(old)
+        } else {
+            None
+        }
+    }
+
+    /// Retrieve an iterator that traverses over entity and column index pair.
+    pub(crate) fn iter_index_pair<'a>(
+        etags: &'a [Arc<EntityTag>],
+        col_idxs: &'a [usize],
+    ) -> impl Iterator<Item = (EntityIndex, usize)> + 'a {
+        // Self::add() guarantees that etags and col_idxs have the same length.
+        etags
+            .iter()
+            .map(|etag| etag.index())
+            .zip(col_idxs.iter().cloned())
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.query_res.clear();
+    }
+
+    pub(crate) const fn query_res(&self) -> &Vec<Borrowed<RawGetter>> {
+        &self.query_res
+    }
+
+    const fn entity_tags(&self) -> &Vec<Arc<EntityTag>> {
+        &self.etags
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct FilteredRaw {
+    etags: Vec<Arc<EntityTag>>,
+    query_res: Vec<Borrowed<NonNull<dyn ContainEntity>>>,
+}
+
+impl FilteredRaw {
+    pub(crate) const fn new(etags: Vec<Arc<EntityTag>>) -> Self {
+        Self {
+            etags,
+            query_res: Vec::new(),
+        }
+    }
+
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn take(
+        &mut self,
+    ) -> (
+        &Vec<Arc<EntityTag>>,
+        &mut Vec<Borrowed<NonNull<dyn ContainEntity>>>,
+    ) {
+        (&self.etags, &mut self.query_res)
+    }
+
+    pub(crate) fn add(&mut self, etag: Arc<EntityTag>) {
+        self.etags.push(etag);
+    }
+
+    pub(crate) fn remove(&mut self, ei: &EntityIndex) -> Option<Arc<EntityTag>> {
+        if let Some((i, _)) = self
+            .etags
+            .iter()
+            .enumerate()
+            .find(|(_, x)| &x.index() == ei)
+        {
+            let old = self.etags.swap_remove(i);
+            Some(old)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.query_res.clear();
+    }
+
+    pub(crate) const fn query_res(&self) -> &Vec<Borrowed<NonNull<dyn ContainEntity>>> {
+        &self.query_res
+    }
+
+    const fn entity_tags(&self) -> &Vec<Arc<EntityTag>> {
+        &self.etags
+    }
+}
+
 #[derive(Debug, Clone)]
-pub struct SelectedIter<'cont, Comp> {
+pub struct SelectedIter<'cont, Comp: 'cont> {
     getter_cur: SendSyncPtr<Borrowed<RawGetter>>,
 
     getter_end: SendSyncPtr<Borrowed<RawGetter>>,
 
-    etag_cur: SendSyncPtr<EntityTag>,
+    etag_cur: SendSyncPtr<Arc<EntityTag>>,
 
-    etag_end: SendSyncPtr<EntityTag>,
+    etag_end: SendSyncPtr<Arc<EntityTag>>,
 
     _marker: PhantomData<&'cont Comp>,
 }
@@ -370,11 +727,11 @@ impl<'cont, Comp: 'cont> SelectedIter<'cont, Comp> {
     fn new(raw: &Selected<'cont, Comp>) -> Self {
         // Safety: `Selected` guarantees we're good to access those vecs.
         unsafe {
-            let getter_range = raw.query_res().as_ptr_range();
+            let getter_range = raw.as_raw().query_res().as_ptr_range();
             let getter_cur = NonNull::new_unchecked(getter_range.start.cast_mut());
             let getter_end = NonNull::new_unchecked(getter_range.end.cast_mut());
 
-            let etag_range = raw.entity_tags().as_ptr_range();
+            let etag_range = raw.as_raw().entity_tags().as_ptr_range();
             let etag_cur = NonNull::new_unchecked(etag_range.start.cast_mut());
             let etag_end = NonNull::new_unchecked(etag_range.end.cast_mut());
 
@@ -390,8 +747,8 @@ impl<'cont, Comp: 'cont> SelectedIter<'cont, Comp> {
 
     #[inline]
     pub const fn len(&self) -> usize {
-        let end = self.getter_end.as_ptr();
         let cur = self.getter_cur.as_ptr();
+        let end = self.getter_end.as_ptr();
         unsafe { end.offset_from(cur) as usize }
     }
 
@@ -431,12 +788,15 @@ impl<'cont, Comp: 'cont> SelectedIter<'cont, Comp> {
 
     unsafe fn create_item(
         getter: SendSyncPtr<Borrowed<RawGetter>>,
-        etag: SendSyncPtr<EntityTag>,
+        etag: SendSyncPtr<Arc<EntityTag>>,
     ) -> TaggedGetter<'cont, Comp> {
         let raw = **getter.as_ref();
         let getter = Getter::from_raw(raw);
-        let etag = NonNullExt::from_nonnull(etag.as_nonnull());
+
+        let etag = Arc::as_ptr(etag.as_ref()).cast_mut();
+        let etag = NonNullExt::new(etag).unwrap_unchecked();
         let etag = ManagedConstPtr::new(etag);
+
         TaggedGetter { getter, etag }
     }
 }
@@ -463,6 +823,8 @@ impl<'cont, Comp: 'cont> Iterator for SelectedIter<'cont, Comp> {
         (len, Some(len))
     }
 }
+
+impl<'cont, Comp: 'cont> iter::FusedIterator for SelectedIter<'cont, Comp> {}
 
 impl<'cont, Comp: 'cont> ExactSizeIterator for SelectedIter<'cont, Comp> {
     fn len(&self) -> usize {
@@ -588,6 +950,8 @@ impl<'cont, Comp> Iterator for SelectedIterMut<'cont, Comp> {
     }
 }
 
+impl<'cont, Comp: 'cont> iter::FusedIterator for SelectedIterMut<'cont, Comp> {}
+
 impl<'cont, Comp: 'cont> ExactSizeIterator for SelectedIterMut<'cont, Comp> {
     fn len(&self) -> usize {
         Self::len(self)
@@ -664,6 +1028,99 @@ impl_unindexed_producer!(
     "for" = ParSelectedIterMut; "item" = TaggedGetterMut<'cont, Comp>;
 );
 
+#[derive(Debug)]
+pub struct FilteredIterMut<'stor, T: 'stor> {
+    cont_cur: NonNull<Borrowed<NonNull<dyn ContainEntity>>>,
+    cont_end: NonNull<Borrowed<NonNull<dyn ContainEntity>>>,
+    etag_cur: NonNull<Arc<EntityTag>>,
+    etag_end: NonNull<Arc<EntityTag>>,
+    _marker: PhantomData<&'stor mut T>,
+}
+
+impl<'stor, T: 'stor> FilteredIterMut<'stor, T> {
+    fn new(raw: &mut FilteredMut<'stor, T>) -> Self {
+        // Safety: `FilteredMut` guarantees we're good to access those vecs.
+        unsafe {
+            let cont_range = raw.as_raw().query_res().as_ptr_range();
+            let cont_cur = NonNull::new_unchecked(cont_range.start.cast_mut());
+            let cont_end = NonNull::new_unchecked(cont_range.end.cast_mut());
+
+            let etag_range = raw.as_raw().entity_tags().as_ptr_range();
+            let etag_cur = NonNull::new_unchecked(etag_range.start.cast_mut());
+            let etag_end = NonNull::new_unchecked(etag_range.end.cast_mut());
+
+            Self {
+                cont_cur,
+                cont_end,
+                etag_cur,
+                etag_end,
+                _marker: PhantomData,
+            }
+        }
+    }
+
+    #[inline]
+    pub const fn len(&self) -> usize {
+        let cur = self.cont_cur.as_ptr();
+        let end = self.cont_end.as_ptr();
+        unsafe { end.offset_from(cur) as usize }
+    }
+
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    unsafe fn create_item(
+        mut cont: NonNull<Borrowed<NonNull<dyn ContainEntity>>>,
+        etag: NonNull<Arc<EntityTag>>,
+    ) -> EntityContainerRef<'stor, T> {
+        let etag = &**etag.as_ref();
+        let cont = cont.as_mut().as_mut();
+        EntityContainerRef::new(etag, cont)
+    }
+}
+
+impl<'stor, T: 'stor> Iterator for FilteredIterMut<'stor, T> {
+    type Item = EntityContainerRef<'stor, T>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.cont_cur < self.cont_end {
+            let getter = self.cont_cur;
+            let etag = self.etag_cur;
+            unsafe {
+                self.cont_cur = self.cont_cur.add(1);
+                self.etag_cur = self.etag_cur.add(1);
+                Some(Self::create_item(getter, etag))
+            }
+        } else {
+            None
+        }
+    }
+}
+
+impl<'stor, T: 'stor> iter::FusedIterator for FilteredIterMut<'stor, T> {}
+
+impl<'stor, T: 'stor> ExactSizeIterator for FilteredIterMut<'stor, T> {
+    fn len(&self) -> usize {
+        Self::len(self)
+    }
+}
+
+impl<'stor, T: 'stor> DoubleEndedIterator for FilteredIterMut<'stor, T> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.cont_cur < self.cont_end {
+            unsafe {
+                self.cont_end = self.cont_cur.sub(1);
+                self.etag_end = self.etag_cur.sub(1);
+                Some(Self::create_item(self.cont_end, self.etag_end))
+            }
+        } else {
+            None
+        }
+    }
+}
+
 /// Component getter with entity tag.
 ///
 /// * Component getter  
@@ -687,15 +1144,11 @@ impl<Comp> TaggedGetter<'_, Comp> {
     }
 
     pub fn entity_name(&self) -> Option<&EntityName> {
-        self.etag.name()
-    }
-
-    pub fn component_keys(&self) -> &[ComponentKey] {
-        self.etag.comp_keys()
+        self.etag.get_name()
     }
 
     pub fn component_names(&self) -> &[&'static str] {
-        self.etag.comp_names()
+        self.etag.get_component_names()
     }
 }
 
@@ -748,15 +1201,11 @@ impl<Comp> TaggedGetterMut<'_, Comp> {
     }
 
     pub fn entity_name(&self) -> Option<&EntityName> {
-        self.etag.name()
-    }
-
-    pub fn component_keys(&self) -> &[ComponentKey] {
-        self.etag.comp_keys()
+        self.etag.get_name()
     }
 
     pub fn component_names(&self) -> &[&'static str] {
-        self.etag.comp_names()
+        self.etag.get_component_names()
     }
 }
 
@@ -789,5 +1238,77 @@ impl<'cont, Comp: Send + Sync> IntoParallelIterator for TaggedGetterMut<'cont, C
 
     fn into_par_iter(self) -> Self::Iter {
         self.getter.into_par_iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[rustfmt::skip]
+    fn test_my_ecs_macros_filter() {
+        use crate as my_ecs;
+        use crate::prelude::*;
+        use crate::ecs::{
+            sys::select::Select,
+            ent::component::ComponentKey,
+        };
+
+        #[derive(Component)] struct Ca;
+        #[derive(Component)] struct Cb;
+        #[derive(Component)] struct Cc;
+        #[derive(Component)] struct Cd;
+        #[derive(Component)] struct Ce;
+        #[derive(Component)] struct Cf;
+
+        // Target only.
+        filter!(F0, Target = Ca);
+        let [all, any, none] = F0::all_any_none();
+        assert_eq!(<F0 as Select>::Target::key(), Ca::key());
+        assert!(all.is_empty());
+        assert!(any.is_empty());
+        assert!(none.is_empty());
+
+        // All only.
+        filter!(F1, All = Ca);
+        let [all, any, none] = F1::all_any_none();
+        validate_slice(&all, &[Ca::key()]);
+        assert!(any.is_empty());
+        assert!(none.is_empty());
+
+        // Any only.
+        filter!(F2, Any = Ca);
+        let [all, any, none] = F2::all_any_none();
+        assert!(all.is_empty());
+        validate_slice(&any, &[Ca::key()]);
+        assert!(none.is_empty());
+
+        // None only.
+        filter!(F3, None = Ca);
+        let [all, any, none] = F3::all_any_none();
+        assert!(all.is_empty());
+        assert!(any.is_empty());
+        validate_slice(&none, &[Ca::key()]);
+
+        // All + Any + None.
+        filter!(F4, All = (Ca, Cb), Any = (Cc, Cd), None = (Ce, Cf));
+        let [all, any, none] = F4::all_any_none();
+        validate_slice(&all, &[Ca::key(), Cb::key()]);
+        validate_slice(&any, &[Cc::key(), Cd::key()]);
+        validate_slice(&none, &[Ce::key(), Cf::key()]);
+
+        // Target + All + Any + None.
+        filter!(F5, Target = Ca, All = Cb, Any = Cc, None = Cd);
+        let [all, any, none] = F5::all_any_none();
+        assert_eq!(<F5 as Select>::Target::key(), Ca::key());
+        validate_slice(&all, &[Cb::key()]);
+        validate_slice(&any, &[Cc::key()]);
+        validate_slice(&none, &[Cd::key()]);
+
+        fn validate_slice(a: &[ComponentKey], b: &[ComponentKey]) {
+            assert_eq!(a.len(), b.len());
+            for (va, vb) in a.iter().zip(b) {
+                assert_eq!(va, vb);
+            }
+        }
     }
 }

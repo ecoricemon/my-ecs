@@ -56,8 +56,10 @@ where
 
     pub(super) fn dequeue(&mut self, wait: &WaitIndices) {
         // Dequeues component read & write requests from their wait queues.
-        dequeue_comp(&mut self.ent_queues, wait.read.iter().cloned());
-        dequeue_comp(&mut self.ent_queues, wait.write.iter().cloned());
+        let wait_read_iter = wait.read.iter().map(|(ei, ci)| (ei.index(), *ci));
+        let wait_write_iter = wait.write.iter().map(|(ei, ci)| (ei.index(), *ci));
+        dequeue_comp(&mut self.ent_queues, wait_read_iter);
+        dequeue_comp(&mut self.ent_queues, wait_write_iter);
 
         // Dequeues resource read & write requests from their wait queues.
         dequeue_res(&mut self.res_queues, wait.res_read.iter().cloned());
@@ -125,16 +127,18 @@ where
         let mut res = true;
 
         // Enqueues component read & write requests into their wait queues.
+        let wait_read_iter = wait.read.iter().map(|(ei, ci)| (ei.index(), *ci));
+        let wait_write_iter = wait.write.iter().map(|(ei, ci)| (ei.index(), *ci));
         res &= enqueue_comp(
             &mut self.ent_queues,
             RW::Read,
-            wait.read.iter().cloned(),
+            wait_read_iter,
             &mut retry.read,
         );
         res &= enqueue_comp(
             &mut self.ent_queues,
             RW::Write,
-            wait.write.iter().cloned(),
+            wait_write_iter,
             &mut retry.write,
         );
 
@@ -395,11 +399,11 @@ pub(super) enum RW {
 pub(super) struct WaitIndices {
     /// Wait queue index pairs to read-only components.
     /// Each pair is the same as entity container index and a specific column index.
-    pub(super) read: DedupVec<(usize, usize), false>,
+    pub(super) read: DedupVec<(EntityIndex, usize), false>,
 
     /// Wait queue index pairs to writable components.
     /// Each pair is the same as entity container index and a specific column index.
-    pub(super) write: DedupVec<(usize, usize), false>,
+    pub(super) write: DedupVec<(EntityIndex, usize), false>,
 
     /// Wait queue indices to read-only resources.
     pub(super) res_read: DedupVec<usize, false>,

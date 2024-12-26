@@ -440,7 +440,7 @@ impl GlobalSignal {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct CommandSender {
+pub(crate) struct CommandSender {
     inner: ParkingSender<CommandObject>,
     open: Arc<Mutex<bool>>,
 }
@@ -457,26 +457,26 @@ impl CommandSender {
 }
 
 #[derive(Debug)]
-pub(super) struct CommandReceiver {
+pub(crate) struct CommandReceiver {
     inner: ParkingReceiver<CommandObject>,
     open: Arc<Mutex<bool>>,
 }
 
 impl CommandReceiver {
-    pub(super) fn has(&self) -> bool {
+    pub(crate) fn has(&self) -> bool {
         self.inner.has()
     }
 
-    pub(super) fn try_recv(&self) -> Result<CommandObject, TryRecvError> {
+    pub(crate) fn try_recv(&self) -> Result<CommandObject, TryRecvError> {
         self.inner.try_recv()
     }
 
-    pub(super) fn close(&self) {
+    pub(crate) fn close(&self) {
         *self.open.lock().unwrap() = false;
     }
 }
 
-pub(super) fn command_channel(th: Thread) -> (CommandSender, CommandReceiver) {
+pub(crate) fn command_channel(th: Thread) -> (CommandSender, CommandReceiver) {
     let (tx, rx) = parking_channel(th);
     let open = Arc::new(Mutex::new(true));
     let c_open = Arc::clone(&open);

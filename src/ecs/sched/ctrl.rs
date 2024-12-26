@@ -10,7 +10,8 @@ use crate::{
     ecs::{
         cache::{CacheItem, RefreshCacheStorage},
         cmd::{Command, CommandObject},
-        entry::{Ecs, Shared},
+        entry::Ecs,
+        share::Shared,
         stat,
         sys::system::{RawSystemCycleIter, SystemCycleIter, SystemData, SystemGroup, SystemId},
         wait::WaitQueues,
@@ -32,6 +33,7 @@ use std::{
     ops::Deref,
     pin::Pin,
     ptr::NonNull,
+    rc::Rc,
     sync::Arc,
     task::Poll,
     thread::{self, Thread},
@@ -60,11 +62,7 @@ pub(crate) struct Scheduler<W, S, const N: usize> {
     rx_msg: ParkingReceiver<Message>,
 
     /// Channel receving commands from sub workers.
-    rx_cmd: CommandReceiver,
-
-    /// Transmit channels will be cloned and distributed to sub workers.
-    _tx_msg: ParkingSender<Message>,
-    _tx_cmd: CommandSender,
+    rx_cmd: Rc<CommandReceiver>,
 }
 
 impl<W, S, const N: usize> Scheduler<W, S, N> {
@@ -98,23 +96,6 @@ impl<W, S, const N: usize> Scheduler<W, S, N> {
         &mut self.waits
     }
 
-    pub(crate) fn clear_command(&self) {
-        // Blocks more commands.
-        self.rx_cmd.close();
-
-        // Cancels out all buffered commands.
-        self.consume_command(|cmd| cmd.cancel());
-    }
-
-    pub(crate) fn consume_command<F>(&self, mut f: F)
-    where
-        F: FnMut(CommandObject),
-    {
-        while let Ok(cmd) = self.rx_cmd.try_recv() {
-            f(cmd);
-        }
-    }
-
     fn work_one(&mut self) {
         if let Some(task) = self.dedi.pop_front() {
             // NOTE: Panics can occur here.
@@ -139,16 +120,19 @@ where
     W: Work + 'static,
     S: BuildHasher + Default + 'static,
 {
-    pub(crate) fn new(mut workers: Vec<W>, nums: [usize; N], shared: &Arc<Shared>) -> Self {
+    pub(crate) fn new(
+        mut workers: Vec<W>,
+        nums: [usize; N],
+        shared: &Arc<Shared>,
+        tx_cmd: &CommandSender,
+        rx_cmd: Rc<CommandReceiver>,
+    ) -> Self {
         assert_eq!(workers.len(), nums.iter().sum::<usize>());
 
         let pending_limit: usize = workers.len();
         let nor_pendings = array::from_fn(|_| Pending::new(pending_limit));
         let dedi_pendings = array::from_fn(|_| Pending::new(pending_limit));
-
-        // Message and command channels.
         let (tx_msg, rx_msg) = comm::parking_channel(thread::current());
-        let (tx_cmd, rx_cmd) = comm::command_channel(thread::current());
 
         let wgroups = array::from_fn(|i| {
             // Splits off left piece from entire worker array.
@@ -156,7 +140,7 @@ where
             mem::swap(&mut workers, &mut piece);
 
             // Creates sub context group and initializes it.
-            let mut group = WorkGroup::new(i as u16, piece, &tx_msg, &tx_cmd, shared);
+            let mut group = WorkGroup::new(i as u16, piece, &tx_msg, tx_cmd, shared);
             group.initialize(&rx_msg);
             group
         });
@@ -170,8 +154,6 @@ where
             dedi: VecDeque::new(),
             rx_msg,
             rx_cmd,
-            _tx_msg: tx_msg,
-            _tx_cmd: tx_cmd,
         }
     }
 

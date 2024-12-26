@@ -2,7 +2,7 @@ use super::{
     component::{Component, ComponentKey},
     entity::{
         ContainEntity, Entity, EntityId, EntityIndex, EntityKey, EntityKeyKind, EntityKeyRef,
-        EntityName, EntityTypeId,
+        EntityName, EntityTag,
     },
 };
 use crate::ecs::EcsError;
@@ -54,9 +54,6 @@ pub(crate) struct EntityStorage<S> {
     /// Optional mapping from [`EntityName`] to [`EntityIndex`].
     name_to_index: HashMap<EntityName, EntityIndex, S>,
 
-    /// Optional mapping from [`EntityTypeId`] to [`EntityIndex`].
-    type_to_index: HashMap<EntityTypeId, EntityIndex, S>,
-
     /// Generation of each entity container. The generation is when the
     /// container is registered to this storage.
     ent_gens: Vec<u32>,
@@ -74,7 +71,6 @@ where
         Self {
             map: GroupMap::new(),
             name_to_index: HashMap::default(),
-            type_to_index: HashMap::default(),
             ent_gens: Vec::new(),
             gen: 1,
         }
@@ -106,8 +102,9 @@ where
             let res = match to {
                 EntityKeyKind::Name => {
                     // Safety: Infallible.
-                    let name = unsafe { this.map.get_group(ei).unwrap_unchecked().0.name()? };
-                    EntityKey::Name(name.clone())
+                    let (cont, _) = unsafe { this.map.get_group(ei).unwrap_unchecked() };
+                    let name = cont.get_tag().get_name()?.clone();
+                    EntityKey::Name(name)
                 }
                 EntityKeyKind::Index => {
                     let ei = EntityIndex::new(GenIndex::new(
@@ -209,47 +206,53 @@ where
     /// container index. If you want to change entity information, you must
     /// remove if first. See [`Self::unregister_entity`]. Also, this method
     /// doesn't overwrite component information.
-    pub(crate) fn register(&mut self, desc: EntityReg) -> Result<EntityIndex, EcsError> {
+    pub(crate) fn register(&mut self, mut desc: EntityReg) -> Result<EntityIndex, EcsError> {
         if desc.is_empty() {
             let reason = debug_format!(
                 "failed to register an entity: `{:?}` has no components",
-                desc.cont.name
+                desc.get_name()
             );
             return Err(EcsError::InvalidEntity(reason, ()));
         }
 
-        let ename = desc.cont.name.clone();
-        let ety = desc.cont.ty().cloned();
-        let index = match self.map.add_group(desc) {
-            Ok(index) => index,
+        let gkey = desc
+            .get_key_info_pairs()
+            .iter()
+            .map(|(ckey, _)| *ckey)
+            .collect::<Vec<_>>();
+        let index = self.map.next_index(&*gkey);
+        let ei = EntityIndex::new(GenIndex::new(index as u32, self.gen));
+        desc.set_index(ei);
+
+        let ename = desc.get_name().cloned();
+        match self.map.add_group(desc) {
+            Ok(i) => {
+                debug_assert_eq!(i, index);
+                self.gen += 1;
+
+                // Adds mapping.
+                if let Some(name) = ename {
+                    self.name_to_index.insert(name, ei);
+                }
+
+                // Writes current generation on the slot.
+                while self.ent_gens.len() <= index {
+                    self.ent_gens.push(0);
+                }
+                self.ent_gens[index] = ei.generation();
+
+                Ok(ei)
+            }
             Err(desc) => {
                 let (_cont, _) = self.map.get_group2(&desc.group_key).unwrap();
                 let reason = debug_format!(
                     "failed to register an entity: two entities `{:?}` and `{:?}` are the same",
                     ename,
-                    _cont.name()
+                    _cont.get_tag().get_name()
                 );
-                return Err(EcsError::InvalidEntity(reason, ()));
+                Err(EcsError::InvalidEntity(reason, ()))
             }
-        };
-        let ei = EntityIndex::new(GenIndex::new(index as u32, self.gen));
-        self.gen += 1;
-
-        // Adds mapping.
-        if let Some(name) = ename {
-            self.name_to_index.insert(name, ei);
         }
-        if let Some(ty) = ety {
-            self.type_to_index.insert(ty, ei);
-        }
-
-        // Writes current generation on the slot.
-        while self.ent_gens.len() <= index {
-            self.ent_gens.push(0);
-        }
-        self.ent_gens[index] = ei.generation();
-
-        Ok(ei)
     }
 
     /// Unregister entity and tries to unregister corresponding components as well.
@@ -278,11 +281,8 @@ where
 
             // Removes mapping.
             if let Some((_ckeys, cont)) = ckeys_cont.as_ref() {
-                if let Some(name) = cont.name() {
+                if let Some(name) = cont.get_tag().get_name() {
                     this.name_to_index.remove(name);
-                }
-                if let Some(ty) = cont.ty() {
-                    this.type_to_index.remove(ty);
                 }
             }
 
@@ -306,16 +306,12 @@ where
             S: BuildHasher + Default,
         {
             match key {
+                EntityKeyRef::Ckeys(ckeys) => this.map.get_group_index(ckeys),
+                EntityKeyRef::Index(ei) => this.is_valid_index(ei).then_some(ei.index()),
                 EntityKeyRef::Name(name) => {
                     let ei = this.name_to_index.get(name)?;
                     this.is_valid_index(ei).then_some(ei.index())
                 }
-                EntityKeyRef::Index(ei) => this.is_valid_index(ei).then_some(ei.index()),
-                EntityKeyRef::Type(ty) => {
-                    let ei = this.type_to_index.get(ty)?;
-                    this.is_valid_index(ei).then_some(ei.index())
-                }
-                EntityKeyRef::Ckeys(ckeys) => this.map.get_group_index(ckeys),
             }
         }
     }
@@ -326,9 +322,11 @@ where
     //
     // Allows dead_code for test.
     #[allow(dead_code)]
-    pub(crate) unsafe fn get_ptr(&self, ei: usize) -> Option<NonNull<dyn ContainEntity>> {
-        let ptr = self.map.get_group(ei)?.0.cont.as_ref() as *const dyn ContainEntity;
-        NonNull::new(ptr.cast_mut())
+    pub(crate) unsafe fn get_ptr(&self, ei: &EntityIndex) -> Option<NonNull<dyn ContainEntity>> {
+        let ekey = EntityKeyRef::from(ei);
+        let cont = self.get_entity_container(ekey)?;
+        let ptr = cont.cont_ptr.get_unchecked();
+        Some(*ptr)
     }
 
     fn is_valid_index(&self, ei: &EntityIndex) -> bool {
@@ -346,22 +344,48 @@ where
 }
 
 /// A registration descriptor of an entity for [`EntityStorage`].
-#[derive(Debug)]
 pub struct EntityReg {
-    cont: EntityContainer,
-    key_info: Vec<(ComponentKey, TypeInfo)>,
+    name: Option<EntityName>,
+    index: Option<EntityIndex>,
+    cont: Box<dyn ContainEntity>,
+    key_info_pairs: Vec<(ComponentKey, TypeInfo)>,
+}
+
+impl fmt::Debug for EntityReg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EntityReg")
+            .field("name", &self.get_name())
+            .field("index", &self.get_index())
+            .field("key_info_pairs", &self.get_key_info_pairs())
+            .finish_non_exhaustive()
+    }
 }
 
 impl EntityReg {
-    pub fn new(
-        name: Option<EntityName>,
-        ty: Option<EntityTypeId>,
-        cont: Box<dyn ContainEntity>,
-    ) -> Self {
-        Self {
-            cont: EntityContainer::new(name, ty, cont),
-            key_info: Vec::new(),
+    pub fn new(name: Option<EntityName>, mut cont: Box<dyn ContainEntity>) -> Self {
+        // Removes remaining columns.
+        for ci in (0..cont.num_columns()).rev() {
+            cont.remove_column(ci);
         }
+
+        Self {
+            name,
+            index: None,
+            cont,
+            key_info_pairs: Vec::new(),
+        }
+    }
+
+    pub(crate) const fn get_name(&self) -> Option<&EntityName> {
+        self.name.as_ref()
+    }
+
+    pub(crate) const fn get_index(&self) -> Option<&EntityIndex> {
+        self.index.as_ref()
+    }
+
+    pub(crate) const fn get_key_info_pairs(&self) -> &Vec<(ComponentKey, TypeInfo)> {
+        &self.key_info_pairs
     }
 
     pub fn add_component_of<C: Component>(&mut self) {
@@ -369,44 +393,57 @@ impl EntityReg {
     }
 
     pub fn add_component(&mut self, tinfo: TypeInfo) {
-        self.key_info.push((ComponentKey::from(&tinfo), tinfo));
+        let pair = (ComponentKey::from(&tinfo), tinfo);
+        self.key_info_pairs.push(pair);
     }
 
     fn is_empty(&self) -> bool {
-        self.key_info.is_empty()
+        self.key_info_pairs.is_empty()
+    }
+
+    fn set_index(&mut self, index: EntityIndex) {
+        self.index = Some(index);
     }
 
     fn finish(self) -> GroupDesc<Arc<[ComponentKey]>, EntityContainer, ComponentKey, TypeInfo> {
         let Self {
+            name,
+            index,
             mut cont,
-            mut key_info,
+            mut key_info_pairs,
         } = self;
+        let index = index.unwrap();
 
-        // Sorts.
-        let old_len = key_info.len();
-        key_info.sort_unstable_by_key(|(key, _)| *key);
-        key_info.dedup_by_key(|(key, _)| *key);
+        // Sorts by component key.
+        let old_len = key_info_pairs.len();
+        key_info_pairs.sort_unstable_by_key(|(key, _)| *key);
+        key_info_pairs.dedup_by_key(|(key, _)| *key);
         assert_eq!(
-            key_info.len(),
+            key_info_pairs.len(),
             old_len,
             "entity cannot have duplicated components"
         );
 
-        // Completes container.
-        let mut cnames = Vec::new();
+        // Puts sorted component columns in the container.
         let mut ckeys = Vec::new();
-        for (ckey, tinfo) in key_info.iter() {
-            cont.cont.add_column(*tinfo);
+        let mut cnames = Vec::new();
+        for (ckey, tinfo) in key_info_pairs.iter() {
             cnames.push(tinfo.name);
             ckeys.push(*ckey);
+            cont.add_column(*tinfo);
         }
-        cont.ckeys = ckeys.into();
-        cont.cnames = cnames.into();
+        let ckeys: Arc<[ComponentKey]> = ckeys.into();
+        let cnames: Box<[&'static str]> = cnames.into();
+
+        // Creates `EntityContainer` which is more info-rich.
+        let tag = EntityTag::new(index, name, Arc::clone(&ckeys), cnames);
+        let tag = Arc::new(tag);
+        let cont = EntityContainer::new(tag, cont);
 
         GroupDesc {
-            group_key: Arc::clone(&cont.ckeys),
+            group_key: ckeys,
             group_value: cont,
-            items: key_info,
+            items: key_info_pairs,
         }
     }
 }
@@ -422,80 +459,39 @@ impl DescribeGroup<Arc<[ComponentKey]>, EntityContainer, ComponentKey, TypeInfo>
 /// A struct including entity information and its container.
 /// The container holds component data without concrete type information.
 pub struct EntityContainer {
-    /// Optionally provided name of an entity contianer.
-    name: Option<EntityName>,
-
-    /// Optional type of the entity.
-    /// Statically declared entities have this property.
-    ty: Option<EntityTypeId>,
+    tag: Arc<EntityTag>,
 
     /// Container that including components for the entity.
     cont: Box<dyn ContainEntity>,
 
     /// Pointer to the `dyn ContainEntity`.
     cont_ptr: SimpleHolder<NonNull<dyn ContainEntity>>,
-
-    /// Sorted component keys.
-    ///
-    /// Note that this is sorted, so that index may be different with colum
-    /// index used in [`Self::cont`].
-    ckeys: Arc<[ComponentKey]>,
-
-    /// Included component names.
-    cnames: Box<[&'static str]>,
 }
 
 impl fmt::Debug for EntityContainer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EntityContainer")
-            .field("name", &self.name)
-            .field("ty", &self.ty)
+            .field("tag", &self.get_tag())
             .field("cont_ptr", &self.cont_ptr)
-            .field("ckeys", &self.ckeys)
-            .field("cnames", &self.cnames)
             .finish_non_exhaustive()
     }
 }
 
 impl EntityContainer {
-    pub(crate) fn new(
-        name: Option<EntityName>,
-        ty: Option<EntityTypeId>,
-        mut cont: Box<dyn ContainEntity>,
-    ) -> Self {
+    pub(crate) fn new(tag: Arc<EntityTag>, mut cont: Box<dyn ContainEntity>) -> Self {
         // Safety: Infallible
-        let ptr = unsafe { NonNull::new_unchecked(&mut *cont as *mut _) };
-
-        // Removes remaining columns.
-        for ci in (0..cont.num_columns()).rev() {
-            let old_tinfo = cont.remove_column(ci);
-            debug_assert!(old_tinfo.is_some());
-        }
+        let cont_ptr = unsafe { NonNull::new_unchecked(&mut *cont as *mut _) };
+        let cont_ptr = SimpleHolder::new(cont_ptr);
 
         Self {
-            name,
-            ty,
+            tag,
             cont,
-            cont_ptr: SimpleHolder::new(ptr),
-            ckeys: [].into(),
-            cnames: [].into(),
+            cont_ptr,
         }
     }
 
-    pub(crate) fn name(&self) -> Option<&EntityName> {
-        self.name.as_ref()
-    }
-
-    pub(crate) fn ty(&self) -> Option<&EntityTypeId> {
-        self.ty.as_ref()
-    }
-
-    pub(crate) fn component_keys(&self) -> &Arc<[ComponentKey]> {
-        &self.ckeys
-    }
-
-    pub(crate) fn component_names(&self) -> &[&'static str] {
-        &self.cnames
+    pub(crate) const fn get_tag(&self) -> &Arc<EntityTag> {
+        &self.tag
     }
 
     pub(crate) fn borrow(&self) -> BorrowResult<NonNull<dyn ContainEntity>> {
@@ -557,28 +553,36 @@ impl DerefMut for EntityContainer {
     }
 }
 
-#[derive(Debug)]
-pub struct TypedEntityContainer<'buf, E> {
-    ei: EntityIndex,
-    ptr: NonNull<dyn ContainEntity>,
-    _marker: PhantomData<&'buf mut E>,
+pub struct EntityContainerRef<'buf, T> {
+    etag: &'buf EntityTag,
+    cont: &'buf mut dyn ContainEntity,
+    _marker: PhantomData<&'buf mut T>,
 }
 
-impl<E: Entity> TypedEntityContainer<'_, E> {
-    /// # Safety
-    ///
-    /// Given pointer must be valid.
-    pub(crate) unsafe fn new(ei: EntityIndex, ptr: NonNull<dyn ContainEntity>) -> Self {
+impl<T> fmt::Debug for EntityContainerRef<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EntityContainerRef")
+            .field("etag", &self.get_entity_tag())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'buf, T> EntityContainerRef<'buf, T> {
+    pub(crate) fn new(etag: &'buf EntityTag, cont: &'buf mut dyn ContainEntity) -> Self {
         Self {
-            ei,
-            ptr,
+            etag,
+            cont,
             _marker: PhantomData,
         }
     }
 
+    pub const fn get_entity_tag(&self) -> &EntityTag {
+        self.etag
+    }
+
     /// Returns number of items.
     pub fn len(&self) -> usize {
-        self.as_ref().len()
+        self.cont.len()
     }
 
     /// Returns `true` if the entity container is empty.
@@ -588,37 +592,42 @@ impl<E: Entity> TypedEntityContainer<'_, E> {
 
     /// Returns capacity if the entity container supports gauging capacity.
     /// Otherwise, returns number of items, which is equal to
-    /// [`TypedEntityContainer::len`].
+    /// [`EntityContainerRef::len`].
     pub fn capacity(&self) -> usize {
-        self.as_ref().capacity()
+        self.cont.capacity()
+    }
+
+    /// Returns number of component columns.
+    pub fn num_columns(&self) -> usize {
+        self.cont.num_columns()
+    }
+
+    /// Returns `true` if all components in the entity container are [`Default`].
+    pub fn is_default(&self) -> bool {
+        (0..self.num_columns()).all(|ci| {
+            // Safety: Infallible.
+            let tinfo = unsafe { self.cont.get_column_info(ci).unwrap_unchecked() };
+            tinfo.is_default
+        })
+    }
+
+    /// Returns `true` if all components in the entity container are [`Clone`].
+    pub fn is_clone(&self) -> bool {
+        (0..self.num_columns()).all(|ci| {
+            // Safety: Infallible.
+            let tinfo = unsafe { self.cont.get_column_info(ci).unwrap_unchecked() };
+            tinfo.is_clone
+        })
     }
 
     /// Reserves extra `additional` capacity if the entity container supports to
     /// do so. Otherwise, nothing takes place.
     pub fn reserve(&mut self, additional: usize) {
-        self.as_mut().reserve(additional);
+        self.cont.reserve(additional);
     }
 
     pub fn shrink_to_fit(&mut self) {
-        self.as_mut().shrink_to_fit();
-    }
-
-    /// Resizes the entity container to the new length by cloning the given
-    /// value.
-    ///
-    /// Resizing occurs column by column.
-    ///
-    /// # Panics
-    ///
-    /// Panics if any components of the entity are not [`Clone`].
-    pub fn resize(&mut self, new_len: usize, value: E) {
-        for ci in 0..E::num_components() {
-            // Safety: All columns are resized.
-            unsafe {
-                self.as_mut()
-                    .resize_column(ci, new_len, value.component_ptr(ci));
-            }
-        }
+        self.cont.shrink_to_fit();
     }
 
     /// Retrieves borrowed getter for a certain component column.
@@ -626,8 +635,8 @@ impl<E: Entity> TypedEntityContainer<'_, E> {
     /// If the component type doens't belong to the entity or the column was
     /// borrowed mutably in the past and not returned yet, returns None.
     pub fn get_column_of<C: Component>(&self) -> Option<Borrowed<Getter<'_, C>>> {
-        let ci = self.as_ref().get_column_index(&TypeId::of::<C>())?;
-        self.as_ref().borrow_column(ci).ok().map(|col| {
+        let ci = self.cont.get_column_index(&TypeId::of::<C>())?;
+        self.cont.borrow_column(ci).ok().map(|col| {
             // Safety: We got the column index from the type, so the type is correct.
             col.map(|raw_getter| unsafe { Getter::from_raw(raw_getter) })
         })
@@ -638,18 +647,41 @@ impl<E: Entity> TypedEntityContainer<'_, E> {
     /// If the component type doens't belong to the entity or the column was
     /// borrowed in the past and not returned yet, returns None.
     pub fn get_column_mut_of<C: Component>(&mut self) -> Option<Borrowed<GetterMut<'_, C>>> {
-        let ci = self.as_ref().get_column_index(&TypeId::of::<C>())?;
-        self.as_mut().borrow_column_mut(ci).ok().map(|col| {
+        let ci = self.cont.get_column_index(&TypeId::of::<C>())?;
+        self.cont.borrow_column_mut(ci).ok().map(|col| {
             // Safety: We got the column index from the type, so the type is correct.
             col.map(|raw_getter| unsafe { GetterMut::from_raw(raw_getter) })
         })
     }
 
+    /// Removes an entity for the given entity id from the entity container.
+    pub fn remove(&mut self, eid: &EntityId) {
+        if eid.container_index() == self.get_entity_tag().index() {
+            if let Some(vi) = self.cont.to_value_index(eid.row_index()) {
+                self.remove_by_value_index(vi);
+            }
+        }
+    }
+
+    /// Removes an entity for the given value index from the entity container.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the given value index is out of bounds.
+    pub fn remove_by_value_index(&mut self, vi: usize) {
+        self.cont.remove_row_by_value_index(vi);
+    }
+}
+
+impl<T> EntityContainerRef<'_, T>
+where
+    T: Entity,
+{
     /// Returns a struct holding shared references to components that belong
     /// to an entity for the given entity id.
     ///
     /// If it failed to find an enitty using the given entity id, returns
-    /// `None`. See [`TypedEntityContainer::get_by_value_index`] for more
+    /// `None`. See [`EntityContainerRef::get_by_value_index`] for more
     /// details.
     ///
     /// # Examples
@@ -664,14 +696,15 @@ impl<E: Entity> TypedEntityContainer<'_, E> {
     /// #[derive(Component, Debug)]
     /// struct Ca(i32);
     ///
-    /// fn system(mut ew: EntWrite<Ea>) {
+    /// fn system(ew: EntWrite<Ea>) {
+    ///     let mut ew = ew.take().unwrap();
     ///     let eid = ew.add(Ea { ca: Ca(0) });
     ///     println!("{:?}", ew.get(&eid).unwrap());
     /// }
     /// ```
-    pub fn get(&self, eid: &EntityId) -> Option<E::Ref<'_>> {
-        if eid.container_index() == self.ei {
-            let vi = self.as_ref().to_value_index(eid.row_index())?;
+    pub fn get(&self, eid: &EntityId) -> Option<T::Ref<'_>> {
+        if eid.container_index() == self.get_entity_tag().index() {
+            let vi = self.cont.to_value_index(eid.row_index())?;
             Some(self.get_by_value_index(vi))
         } else {
             None
@@ -682,7 +715,7 @@ impl<E: Entity> TypedEntityContainer<'_, E> {
     /// to an entity for the given entity id.
     ///
     /// If it failed to find an enitty using the given entity id, returns
-    /// `None`. See [`TypedEntityContainer::get_mut_by_value_index`] for more
+    /// `None`. See [`EntityContainerRef::get_mut_by_value_index`] for more
     /// details.
     ///
     /// # Examples
@@ -697,16 +730,17 @@ impl<E: Entity> TypedEntityContainer<'_, E> {
     /// #[derive(Component, Debug)]
     /// struct Ca(i32);
     ///
-    /// fn system(mut ew: EntWrite<Ea>) {
+    /// fn system(ew: EntWrite<Ea>) {
+    ///     let mut ew = ew.take().unwrap();
     ///     let eid = ew.add(Ea { ca: Ca(0) });
     ///     let ea = ew.get_mut(&eid).unwrap();
     ///     *ea.ca = Ca(42);
     ///     println!("{:?}", ew.get(&eid).unwrap());
     /// }
     /// ```
-    pub fn get_mut(&mut self, eid: &EntityId) -> Option<E::Mut<'_>> {
-        if eid.container_index() == self.ei {
-            let vi = self.as_ref().to_value_index(eid.row_index())?;
+    pub fn get_mut(&mut self, eid: &EntityId) -> Option<T::Mut<'_>> {
+        if eid.container_index() == self.get_entity_tag().index() {
+            let vi = self.cont.to_value_index(eid.row_index())?;
             Some(self.get_mut_by_value_index(vi))
         } else {
             None
@@ -738,14 +772,15 @@ impl<E: Entity> TypedEntityContainer<'_, E> {
     /// struct Ca(i32);
     ///
     /// fn system(ew: EntWrite<Ea>) {
+    ///     let ew = ew.take().unwrap();
     ///     for vi in 0..ew.len() {
     ///         println!("{:?}", ew.get_by_value_index(vi));
     ///     }
     /// }
     /// ```
-    pub fn get_by_value_index(&self, vi: usize) -> E::Ref<'_> {
+    pub fn get_by_value_index(&self, vi: usize) -> T::Ref<'_> {
         // Panics here.
-        E::get_ref_from(self.as_ref(), vi)
+        T::get_ref_from(self.cont, vi)
     }
 
     /// Returns a struct holding mutable references to components that belong
@@ -772,7 +807,8 @@ impl<E: Entity> TypedEntityContainer<'_, E> {
     /// #[derive(Component, Debug)]
     /// struct Ca(i32);
     ///
-    /// fn system(mut ew: EntWrite<Ea>) {
+    /// fn system(ew: EntWrite<Ea>) {
+    ///     let mut ew = ew.take().unwrap();
     ///     for vi in 0..ew.len() {
     ///         let ea = ew.get_mut_by_value_index(vi);
     ///         *ea.ca = Ca(42);
@@ -780,48 +816,60 @@ impl<E: Entity> TypedEntityContainer<'_, E> {
     ///     }
     /// }
     /// ```
-    pub fn get_mut_by_value_index(&mut self, vi: usize) -> E::Mut<'_> {
+    pub fn get_mut_by_value_index(&mut self, vi: usize) -> T::Mut<'_> {
         // Panics here.
-        E::get_mut_from(self.as_mut(), vi)
+        T::get_mut_from(self.cont, vi)
     }
 
     /// Inserts an entity to the entity container then returns entity id of the
     /// inserted entity.
     ///
-    /// It's encouraged to use combination of [`TypedEntityContainer::resize`]
-    /// and [`TypedEntityContainer::get_column_mut_of`] when you need to add
+    /// It's encouraged to use combination of [`EntityContainerRef::resize`]
+    /// and [`EntityContainerRef::get_column_mut_of`] when you need to add
     /// lots of entites at once. It's more cache-friendly so it would be faster
     /// than calling to this method many times.
-    pub fn add(&mut self, entity: E) -> EntityId {
-        let ri = entity.move_to(self.as_mut());
-        EntityId::new(self.ei, ri)
+    pub fn add(&mut self, value: T) -> EntityId {
+        let ei = self.get_entity_tag().index();
+        let ri = value.move_to(self.cont);
+        EntityId::new(ei, ri)
     }
 
-    /// * `vi` - Value index. See [`ContainEntity`] document.
+    /// Removes an entity for the given entity id from the entity container
+    /// then returns the entity.
+    pub fn take(&mut self, eid: &EntityId) -> Option<T> {
+        if eid.container_index() == self.get_entity_tag().index() {
+            let vi = self.cont.to_value_index(eid.row_index())?;
+            Some(self.take_by_value_index(vi))
+        } else {
+            None
+        }
+    }
+
+    /// Removes an entity for the given value index from the entity container
+    /// then returns the entity.
     ///
     /// # Panics
     ///
     /// Panics if the given value index is out of bounds.
-    pub fn remove_by_value_index(&mut self, vi: usize) -> E {
-        E::take_from(self.as_mut(), vi)
+    pub fn take_by_value_index(&mut self, vi: usize) -> T {
+        T::take_from(self.cont, vi)
     }
 
-    /// * `vi` - Value index. See [`ContainEntity`] document.
+    /// Resizes the entity container to the new length by cloning the given
+    /// value.
+    ///
+    /// Resizing occurs column by column.
     ///
     /// # Panics
     ///
-    /// Panics if the given value index is out of bounds.
-    pub fn drop_by_value_index(&mut self, vi: usize) {
-        self.as_mut().remove_row_by_value_index(vi);
-    }
-
-    fn as_ref(&self) -> &dyn ContainEntity {
-        // Safety: Warning in the constructor.
-        unsafe { self.ptr.as_ref() }
-    }
-
-    fn as_mut(&mut self) -> &mut dyn ContainEntity {
-        // Safety: Warning in the constructor.
-        unsafe { self.ptr.as_mut() }
+    /// Panics if any components of the entity are not [`Clone`].
+    pub fn resize(&mut self, new_len: usize, value: T) {
+        for ci in 0..T::num_components() {
+            // Safety: All columns are resized.
+            unsafe {
+                self.cont
+                    .resize_column(ci, new_len, value.component_ptr(ci));
+            }
+        }
     }
 }

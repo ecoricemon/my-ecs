@@ -4,20 +4,16 @@ use super::{
         ResQueryInfo, ResQueryKey, ResQueryMut, StoreEntQueryInfo, StoreQueryInfo,
         StoreResQueryInfo,
     },
-    select::{self, SelectInfo, SelectKey, SelectedRaw, StoreSelectInfo},
-};
-use crate::{
-    debug_format,
-    ds::prelude::*,
-    ecs::{
-        ent::entity::{ContainEntity, EntityIndex, EntityKey},
-        resource::ResourceKey,
+    select::{
+        FilterInfo, FilterKey, FilteredRaw, SelectInfo, SelectKey, SelectedRaw, StoreFilterInfo,
+        StoreSelectInfo,
     },
-    DefaultHasher,
 };
+use crate::{debug_format, ds::prelude::*, ecs::resource::ResourceKey, DefaultHasher};
 use std::{
     any,
     collections::HashMap,
+    fmt,
     hash::BuildHasher,
     marker::PhantomData,
     ptr::NonNull,
@@ -50,6 +46,9 @@ pub(crate) struct RequestInfoStorage<S> {
 
     /// [`SelectKey`] -> [`SelectInfo`].
     sinfo: HashMap<SelectKey, Arc<SelectInfo>, S>,
+
+    /// [`FilterKey`] -> [`FilterInfo`].
+    finfo: HashMap<FilterKey, Arc<FilterInfo>, S>,
 }
 
 impl<S> RequestInfoStorage<S>
@@ -63,6 +62,7 @@ where
             rqinfo: HashMap::default(),
             eqinfo: HashMap::default(),
             sinfo: HashMap::default(),
+            finfo: HashMap::default(),
         }
     }
 }
@@ -99,6 +99,12 @@ where
     #[allow(dead_code)]
     pub(crate) fn get_select_info(&self, key: &SelectKey) -> Option<&Arc<SelectInfo>> {
         StoreSelectInfo::get(self, key)
+    }
+
+    // for future use.
+    #[allow(dead_code)]
+    pub(crate) fn get_filter_info(&self, key: &FilterKey) -> Option<&Arc<FilterInfo>> {
+        StoreFilterInfo::get(self, key)
     }
 
     fn remove(&mut self, key: &RequestKey) {
@@ -293,12 +299,30 @@ where
     }
 }
 
+impl<S> StoreFilterInfo for RequestInfoStorage<S>
+where
+    S: BuildHasher,
+{
+    fn contains(&self, key: &FilterKey) -> bool {
+        self.finfo.contains_key(key)
+    }
+
+    fn get(&self, key: &FilterKey) -> Option<&Arc<FilterInfo>> {
+        self.finfo.get(key)
+    }
+
+    fn insert(&mut self, key: FilterKey, info: Arc<FilterInfo>) {
+        self.finfo.insert(key, info);
+    }
+}
+
 /// A single request is about needs for all sorts of components, resources,
 /// and entity containers.
 /// In other words, a request is a combination of [`Query`]s, [`ResQuery`]s,
 /// and queries for entity containers.
 /// They must be requested at once in order to prevent dead lock.
 /// You can make a request by implementing this trait and put it in a system.
+#[allow(private_interfaces, private_bounds)]
 pub trait Request: 'static {
     /// Read-only access [`Query`] consisting of [`Filter`]s.
     /// Read-only access helps us execute systems simultaneously.
@@ -330,14 +354,12 @@ pub trait Request: 'static {
     /// [`Entity`]: super::super::ent::entity::Entity
     type EntWrite: EntQueryMut;
 
+    #[doc(hidden)]
     fn key() -> RequestKey {
         RequestKey::of::<Self>()
     }
-}
 
-/// [`Request`], but not exposed to clients.
-/// This trait is implemented and used in the crate only.
-pub(crate) trait PrivateRequest: Request {
+    #[doc(hidden)]
     fn get_info_from<S>(stor: &mut S) -> &Arc<RequestInfo>
     where
         S: StoreRequestInfo + ?Sized,
@@ -353,10 +375,12 @@ pub(crate) trait PrivateRequest: Request {
         unsafe { StoreRequestInfo::get(stor, &key).unwrap_unchecked() }
     }
 
+    #[doc(hidden)]
     fn info_from<S>(stor: &mut S) -> RequestInfo
     where
         S: StoreRequestInfo + ?Sized,
     {
+        // TODO: create new()
         RequestInfo {
             name: any::type_name::<Self>(),
             read: (
@@ -382,8 +406,6 @@ pub(crate) trait PrivateRequest: Request {
         }
     }
 }
-
-impl<T: Request> PrivateRequest for T {}
 
 /// Blanket implementation of [`Request`] for tuples of queries.
 impl<R, W, RR, RW, EW> Request for (R, W, RR, RW, EW)
@@ -443,54 +465,65 @@ pub(crate) trait StoreRequestInfo:
 }
 
 /// Unique identifier for a type implementing [`Request`].
-pub type RequestKey = ATypeId<RequestKey_>;
-pub struct RequestKey_;
+pub(crate) type RequestKey = ATypeId<RequestKey_>;
+pub(crate) struct RequestKey_;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct RequestInfo {
-    name: &'static str,
     read: (QueryKey, Arc<QueryInfo>),
     write: (QueryKey, Arc<QueryInfo>),
     res_read: (ResQueryKey, Arc<ResQueryInfo>),
     res_write: (ResQueryKey, Arc<ResQueryInfo>),
     ent_write: (EntQueryKey, Arc<EntQueryInfo>),
+    name: &'static str,
+}
+
+impl fmt::Debug for RequestInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RequestInfo")
+            .field("name", &self.name())
+            .field("read", &self.read())
+            .field("write", &self.write())
+            .field("res_read", &self.res_read())
+            .field("res_write", &self.res_write())
+            .field("ent_write", &self.ent_write())
+            .finish()
+    }
 }
 
 impl RequestInfo {
-    // For future use
-    #[allow(dead_code)]
-    pub(crate) fn name(&self) -> &'static str {
-        self.name
-    }
-
-    pub(crate) fn read(&self) -> &(QueryKey, Arc<QueryInfo>) {
+    pub(crate) const fn read(&self) -> &(QueryKey, Arc<QueryInfo>) {
         &self.read
     }
 
-    pub(crate) fn write(&self) -> &(QueryKey, Arc<QueryInfo>) {
+    pub(crate) const fn write(&self) -> &(QueryKey, Arc<QueryInfo>) {
         &self.write
     }
 
-    pub(crate) fn res_read(&self) -> &(ResQueryKey, Arc<ResQueryInfo>) {
+    pub(crate) const fn res_read(&self) -> &(ResQueryKey, Arc<ResQueryInfo>) {
         &self.res_read
     }
 
-    pub(crate) fn res_write(&self) -> &(ResQueryKey, Arc<ResQueryInfo>) {
+    pub(crate) const fn res_write(&self) -> &(ResQueryKey, Arc<ResQueryInfo>) {
         &self.res_write
     }
 
-    pub(crate) fn ent_write(&self) -> &(EntQueryKey, Arc<EntQueryInfo>) {
+    pub(crate) const fn ent_write(&self) -> &(EntQueryKey, Arc<EntQueryInfo>) {
         &self.ent_write
+    }
+
+    pub(crate) const fn name(&self) -> &'static str {
+        self.name
     }
 
     pub(crate) fn resource_keys(&self) -> impl Iterator<Item = &ResourceKey> {
         let read = self.res_read().1.as_ref();
         let write = self.res_write().1.as_ref();
-        read.rkeys().iter().chain(write.rkeys())
+        read.resource_keys().iter().chain(write.resource_keys())
     }
 
-    pub(crate) fn entity_keys(&self) -> impl Iterator<Item = &EntityKey> {
-        self.ent_write().1.as_ref().ekeys().iter()
+    pub(crate) fn filters(&self) -> &[(FilterKey, Arc<FilterInfo>)] {
+        self.ent_write().1.as_ref().filters()
     }
 
     /// Determines whether the request info is valid or not in terms of
@@ -510,7 +543,7 @@ impl RequestInfo {
         for i in 0..w_sels.len() {
             // Doesn't overlap other write?
             for j in i + 1..w_sels.len() {
-                if !select::is_disjoint(&w_sels[i].1, &w_sels[j].1) {
+                if !w_sels[i].1.is_disjoint(&w_sels[j].1) {
                     let errmsg = debug_format!(
                         "`{}` and `{}` are not disjoint in request `{}`",
                         w_sels[i].1.name(),
@@ -522,7 +555,7 @@ impl RequestInfo {
             }
             // Doesn't overlap read?
             for (_, r_sel) in r_sels.iter() {
-                if !select::is_disjoint(&w_sels[i].1, r_sel) {
+                if !w_sels[i].1.is_disjoint(r_sel) {
                     let errmsg = debug_format!(
                         "`{}` and `{}` are not disjoint in request `{}`",
                         w_sels[i].1.name(),
@@ -537,8 +570,8 @@ impl RequestInfo {
         // 2. Write resource query doesn't overlap other resource queries?
         let (_, r_rqinfo) = self.res_read();
         let (_, w_rqinfo) = self.res_write();
-        let r_keys = r_rqinfo.rkeys();
-        let w_keys = w_rqinfo.rkeys();
+        let r_keys = r_rqinfo.resource_keys();
+        let w_keys = w_rqinfo.resource_keys();
         for i in 0..w_keys.len() {
             // Doesn't overlap other write?
             for j in i + 1..w_keys.len() {
@@ -610,7 +643,7 @@ pub struct SystemBuffer {
     pub(crate) res_write: Vec<Borrowed<ManagedMutPtr<u8>>>,
 
     /// Buffer for writable borrowed entity container for the system's request.
-    pub(crate) ent_write: Vec<(EntityIndex, Borrowed<NonNull<dyn ContainEntity>>)>,
+    pub(crate) ent_write: Box<[FilteredRaw]>,
 }
 
 // We're going to send this buffer to other threads with a system implementation.
@@ -626,7 +659,7 @@ impl SystemBuffer {
             write: [].into(),
             res_read: Vec::new(),
             res_write: Vec::new(),
-            ent_write: Vec::new(),
+            ent_write: [].into(),
         }
     }
 
@@ -644,7 +677,9 @@ impl SystemBuffer {
         }
         self.res_read.clear();
         self.res_write.clear();
-        self.ent_write.clear();
+        for ent_write in self.ent_write.iter_mut() {
+            ent_write.clear();
+        }
     }
 }
 

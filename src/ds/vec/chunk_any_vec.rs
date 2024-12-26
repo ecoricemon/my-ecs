@@ -287,6 +287,22 @@ impl ChunkAnyVec {
 
     /// # Safety
     ///
+    /// `write` must write correct type on given buffer.
+    pub unsafe fn push_with<F>(&mut self, write: F)
+    where
+        F: FnOnce(*mut u8),
+    {
+        self.reserve(1);
+
+        let (ci, _) = self.index_2d(self.len());
+        self.chunks[ci].push_with(write);
+
+        // Safety: Infallible.
+        unsafe { self.set_len(self.len().checked_add(1).unwrap()) };
+    }
+
+    /// # Safety
+    ///
     /// Type of the value `T` must be the same as the type the vector knows.
     pub unsafe fn push<T: 'static>(&mut self, mut value: T) {
         debug_assert!(self.is_type_of(&TypeId::of::<T>()));

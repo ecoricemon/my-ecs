@@ -22,39 +22,38 @@ fn main() {
     let num_workers = pool.len();
     let mut ecs = Ecs::default(pool, [num_workers]);
 
-    // Puts in numbers.
-    ecs.register_entity_of::<Ea>().unwrap();
-    ecs.add_system(SystemDesc::new().with_once(|mut ew: EntWrite<Ea>| {
-        ew.resize(NUM as usize, Ea { a: Ca(0) });
-        let mut col = ew.get_column_mut_of::<Ca>().unwrap();
-        for (ca, val) in col.iter_mut().zip(START..=END) {
-            ca.0 = val;
-        }
-    }))
-    .unwrap();
+    ecs.register_entity_of::<Ea>()
+        // Puts in some numbers.
+        .add_once(|ew: EntWrite<Ea>| {
+            let mut ew = ew.take().unwrap();
+            ew.resize(NUM as usize, Ea { a: Ca(0) });
+            let mut col = ew.get_column_mut_of::<Ca>().unwrap();
+            for (ca, val) in col.iter_mut().zip(START..=END) {
+                ca.0 = val;
+            }
+        })
+        // Computes in parallel.
+        .add_once(move |r: Read<Fa>| {
+            let start = Instant::now();
 
-    // Computes in parallel.
-    ecs.add_system(SystemDesc::new().with_once(move |r: Read<Fa>| {
-        let start = Instant::now();
+            // Computes sum using rayon's parallel iterator. Visit this link to see
+            // what rayon is. https://github.com/rayon-rs/rayon
+            let mut sum = 0_i64;
+            for getter in r.iter() {
+                sum += getter.par_iter().into_ecs_par().map(|ca| ca.0).sum::<i64>();
+            }
+            assert_eq!(sum, SUM);
 
-        // Computes sum using rayon's parallel iterator. Visit this link to see
-        // what rayon is. https://github.com/rayon-rs/rayon
-        let mut sum = 0_i64;
-        for getter in r.iter() {
-            sum += getter.par_iter().into_ecs_par().map(|ca| ca.0).sum::<i64>();
-        }
-        assert_eq!(sum, SUM);
-
-        println!(
-            "Summation took {:?} with parallel iterator on {num_workers} workers.",
-            start.elapsed()
-        );
-    }))
-    .unwrap();
-    ecs.run().schedule_all();
+            println!(
+                "Summation took {:?} with parallel iterator on {num_workers} workers.",
+                start.elapsed()
+            );
+        })
+        .run()
+        .schedule_all();
 
     // For the sake of comparison, computes in sequential as well.
-    ecs.add_system(SystemDesc::new().with_once(|r: Read<Fa>| {
+    ecs.add_once(|r: Read<Fa>| {
         let start = Instant::now();
 
         // Computes sum using rust sequential iterator.
@@ -65,7 +64,7 @@ fn main() {
             "Summation took {:?} with sequential iterator.",
             start.elapsed()
         );
-    }))
-    .unwrap();
-    ecs.run().schedule_all();
+    })
+    .run()
+    .schedule_all();
 }

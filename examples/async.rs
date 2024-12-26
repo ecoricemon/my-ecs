@@ -7,10 +7,7 @@ fn main() {
     let mut ecs = Ecs::default(WorkerPool::with_len(3), [3]);
 
     // Schedules a future using once system.
-    ecs.add_system(SystemDesc::new().with_once(|| {
-        schedule_future(register_map());
-    }))
-    .unwrap();
+    ecs.add_once(|| schedule_future(register_map())).unwrap();
 
     // Waits until all tasks are executed completely.
     while !ecs.run().schedule_all().wait_for_idle().is_completed() {}
@@ -34,17 +31,17 @@ async fn register_map() -> EcsResult<impl Command> {
         // Registers map resource.
         let map = Map::new(&map_data);
         ecs.register_resource(ResourceDesc::new().with_owned(map))
+            .take()
             .map_err(EcsError::without_data)?;
 
         // Appends a system that uses the map.
-        ecs.add_system(SystemDesc::new().with_once(show_map))?;
+        ecs.add_once(show_map).take()?;
         Ok(())
     })
 }
 
 fn show_map(rr: ResRead<Map>) {
-    let map = rr.take();
-    map.print();
+    rr.print();
 }
 
 #[derive(Resource)]

@@ -4,10 +4,8 @@ use super::{
     sched::ctrl::{SUB_CONTEXT, WORKER_ID},
     sys::{
         request::{Request, Response, SystemBuffer},
-        storage::SystemDesc,
         system::{
-            InsertPos, Invoke, NonZeroTick, PrivateSystem, System, SystemData, SystemId,
-            SystemState,
+            InsertPos, Invoke, NonZeroTick, System, SystemData, SystemDesc, SystemId, SystemState,
         },
     },
     worker::Message,
@@ -205,7 +203,7 @@ impl<Req: Request> Command for RequestLockCommand<Req> {
             .with_activation(NonZeroTick::MIN, InsertPos::Front)
             .with_group_index(self.group_index)
             .with_data(sdata);
-        ecs.add_system(desc)?;
+        ecs.add_system(desc).take()?;
         Ok(())
     }
 
@@ -253,7 +251,7 @@ impl<Req: Request> System for RequestLockSystem<Req> {
 
     fn run(&mut self, _resp: Response<'_, Self::Request>) {}
 
-    fn _run_private(&mut self, sid: SystemId, buf: ManagedMutPtr<SystemBuffer>) {
+    fn run_private(&mut self, sid: SystemId, buf: ManagedMutPtr<SystemBuffer>) {
         let Some(lock_ptr) = self.lock_ptr.take() else {
             return;
         };

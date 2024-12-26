@@ -156,6 +156,24 @@ where
     IK: Hash + Eq + Clone,
     S: BuildHasher + Default,
 {
+    /// Returns an index that will be returned when the next
+    /// [`add_group`](Self::add_group) or
+    /// [`add_group_from_desc`](Self::add_group_from_desc) is called.
+    pub fn next_index<Q>(&self, key: &Q) -> usize
+    where
+        GK: std::borrow::Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.groups.next_index(key)
+    }
+
+    pub fn add_group(
+        &mut self,
+        desc: impl DescribeGroup<GK, GV, IK, IV>,
+    ) -> Result<usize, GroupDesc<GK, GV, IK, IV>> {
+        self.add_group_from_desc(desc.into_group_and_items())
+    }
+
     pub fn add_group_from_desc(
         &mut self,
         desc: GroupDesc<GK, GV, IK, IV>,
@@ -199,13 +217,6 @@ where
         }
 
         Ok(group_index)
-    }
-
-    pub fn add_group(
-        &mut self,
-        desc: impl DescribeGroup<GK, GV, IK, IV>,
-    ) -> Result<usize, GroupDesc<GK, GV, IK, IV>> {
-        self.add_group_from_desc(desc.into_group_and_items())
     }
 
     pub fn remove_group(&mut self, index: usize) -> Option<(GK, GV)> {
@@ -344,6 +355,20 @@ where
 
     pub fn contains_index(&self, index: usize) -> bool {
         index < self.values.len() && self.values.is_occupied(index)
+    }
+
+    /// Returns an index that will be returned when the next
+    /// [`insert`](Self::insert) is called.
+    pub fn next_index<Q>(&self, key: &Q) -> usize
+    where
+        K: std::borrow::Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        if let Some(index) = self.map.get(key) {
+            *index
+        } else {
+            self.values.next_index()
+        }
     }
 
     /// Inserts `value` with `key`.

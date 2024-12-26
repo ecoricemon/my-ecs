@@ -236,12 +236,14 @@ fn try_schedule(pool: WorkerPool) -> WorkerPool {
     // Registers and inserts entities.
     ecs.register_entity_of::<Ea>().unwrap();
     ecs.register_entity_of::<Eb>().unwrap();
-    ecs.add_system(SystemDesc::new().with_once(|mut ew: EntWrite<Ea>| {
+    ecs.add_system(SystemDesc::new().with_once(|ew: EntWrite<Ea>| {
+        let mut ew = ew.take().unwrap();
         ew.add(Ea { a: Ca(1) });
         ew.add(Ea { a: Ca(2) });
     }))
     .unwrap();
-    ecs.add_system(SystemDesc::new().with_once(|mut ew: EntWrite<Eb>| {
+    ecs.add_system(SystemDesc::new().with_once(|ew: EntWrite<Eb>| {
+        let mut ew = ew.take().unwrap();
         ew.add(Eb {
             a: Ca(3),
             b: Cb(10),
@@ -286,8 +288,7 @@ fn try_schedule(pool: WorkerPool) -> WorkerPool {
     // === Internal struct and functions ===
 
     /// Increases `Ca` by 1.
-    fn inc_ca(w: Write<Fa>) {
-        let mut w = w.take();
+    fn inc_ca(mut w: Write<Fa>) {
         w.iter_mut().flatten().for_each(|ca| ca.0 += 1);
 
         let mut vals: Vec<i64> = w.iter().flatten().map(|ca| ca.0).collect();
@@ -296,8 +297,7 @@ fn try_schedule(pool: WorkerPool) -> WorkerPool {
     }
 
     /// Decreases `Ca` by 1.
-    fn dec_ca(w: Write<Fa>) {
-        let mut w = w.take();
+    fn dec_ca(mut w: Write<Fa>) {
         w.iter_mut().flatten().for_each(|ca| ca.0 -= 1);
 
         let mut vals: Vec<i64> = w.iter().flatten().map(|ca| ca.0).collect();
@@ -370,7 +370,8 @@ fn try_command(pool: WorkerPool) -> WorkerPool {
             ecs.add_system(SystemDesc::new().with_system(move || {
                 let mut c = c_count.lock().unwrap();
                 *c += 1;
-            }))?;
+            }))
+            .take()?;
             Ok(())
         };
         schedule_command(CommandObject::Boxed(Box::new(cmd)));
@@ -402,7 +403,8 @@ fn try_parallel_task(pool: WorkerPool) -> WorkerPool {
 
     // Registers and inserts entities.
     ecs.register_entity_of::<Ea>().unwrap();
-    ecs.add_system(SystemDesc::new().with_once(|mut ew: EntWrite<Ea>| {
+    ecs.add_system(SystemDesc::new().with_once(|ew: EntWrite<Ea>| {
+        let mut ew = ew.take().unwrap();
         ew.resize(NUM as usize, Ea { a: Ca(0) });
         let mut col = ew.get_column_mut_of::<Ca>().unwrap();
         for (ca, val) in col.iter_mut().zip(START..=END) {
@@ -489,7 +491,8 @@ fn try_recover_from_panic(pool: WorkerPool) -> (WorkerPool, i32) {
 
     // Registers and inserts entities.
     ecs.register_entity_of::<Ea>().unwrap();
-    ecs.add_system(SystemDesc::new().with_once(|mut ew: EntWrite<Ea>| {
+    ecs.add_system(SystemDesc::new().with_once(|ew: EntWrite<Ea>| {
+        let mut ew = ew.take().unwrap();
         for val in START..=END {
             ew.add(Ea { a: Ca(val) });
         }
@@ -503,7 +506,6 @@ fn try_recover_from_panic(pool: WorkerPool) -> (WorkerPool, i32) {
     // Registers systems.
     let ok_sys = |r: Read<Fa>, mut rw: ResWrite<Ra>| {
         rw.0.push('x');
-        let r = r.take();
         let sum: i64 = r.iter().flatten().map(|ca| ca.0).sum();
         assert_eq!(sum, SUM);
     };
@@ -523,7 +525,7 @@ fn try_recover_from_panic(pool: WorkerPool) -> (WorkerPool, i32) {
     let poisoned = ecs.collect_poisoned_systems();
 
     assert_eq!(poisoned.len(), 1);
-    assert_eq!(sid_fail, poisoned[0].0.id());
+    assert_eq!(sid_fail, poisoned[0].id());
 
     ecs.run().schedule_all();
 
@@ -533,7 +535,6 @@ fn try_recover_from_panic(pool: WorkerPool) -> (WorkerPool, i32) {
     assert!(ecs.inactivate_system(sid_ok_b).is_ok());
 
     ecs.add_system(SystemDesc::new().with_once(|rr: ResRead<Ra>| {
-        let rr = rr.take();
         assert_eq!(rr.0.len(), 4);
     }))
     .unwrap();
@@ -554,7 +555,8 @@ fn try_recover_from_panic_in_parallel_task(pool: WorkerPool) -> (WorkerPool, i32
 
     // Registers and inserts entities.
     ecs.register_entity_of::<Ea>().unwrap();
-    ecs.add_system(SystemDesc::new().with_once(|mut ew: EntWrite<Ea>| {
+    ecs.add_system(SystemDesc::new().with_once(|ew: EntWrite<Ea>| {
+        let mut ew = ew.take().unwrap();
         for val in START..=END {
             ew.add(Ea { a: Ca(val) });
         }
@@ -566,10 +568,8 @@ fn try_recover_from_panic_in_parallel_task(pool: WorkerPool) -> (WorkerPool, i32
         .unwrap();
 
     // Registers systems.
-    let ok_sys = |r: Read<Fa>, rw: ResWrite<Ra>| {
-        let rw = rw.take();
+    let ok_sys = |r: Read<Fa>, mut rw: ResWrite<Ra>| {
         rw.0.push('x');
-        let r = r.take();
         let sum: i64 = r.iter().flatten().map(|ca| ca.0).sum();
         assert_eq!(sum, SUM);
     };
@@ -607,7 +607,7 @@ fn try_recover_from_panic_in_parallel_task(pool: WorkerPool) -> (WorkerPool, i32
     let poisoned = ecs.collect_poisoned_systems();
 
     assert_eq!(poisoned.len(), 1);
-    assert_eq!(sid_fail, poisoned[0].0.id());
+    assert_eq!(sid_fail, poisoned[0].id());
 
     ecs.run().schedule_all();
 
@@ -617,7 +617,6 @@ fn try_recover_from_panic_in_parallel_task(pool: WorkerPool) -> (WorkerPool, i32
     assert!(ecs.inactivate_system(sid_ok_b).is_ok());
 
     ecs.add_system(SystemDesc::new().with_once(|rr: ResRead<Ra>| {
-        let rr = rr.take();
         assert_eq!(rr.0.len(), 4);
     }))
     .unwrap();

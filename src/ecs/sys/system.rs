@@ -4,12 +4,10 @@ use super::{
         Write,
     },
     request::{
-        PrivateRequest, Request, RequestInfo, RequestKey, Response, StoreRequestInfo, SystemBuffer,
-        RINFO_STOR,
+        Request, RequestInfo, RequestKey, Response, StoreRequestInfo, SystemBuffer, RINFO_STOR,
     },
 };
-use crate::ecs::EcsError;
-use crate::{debug_format, ds::prelude::*};
+use crate::{debug_format, ds::prelude::*, ecs::EcsError, util::Or};
 use std::{
     any::{self, Any},
     borrow,
@@ -17,6 +15,7 @@ use std::{
     fmt,
     hash::{self, BuildHasher},
     marker::PhantomData,
+    mem,
     num::NonZeroU64,
     ops::{Deref, DerefMut},
     ptr::NonNull,
@@ -24,6 +23,72 @@ use std::{
 };
 
 use SystemState::*;
+
+// Clients can define their systems with some data. And we're going to send
+// those systems to other workers, so it's good to add `Send` bound to the trait
+// for safety.
+#[allow(private_interfaces, private_bounds)]
+pub trait System: Send + 'static {
+    type Request: Request;
+
+    fn run(&mut self, resp: Response<'_, Self::Request>);
+
+    #[doc(hidden)]
+    #[allow(unused_variables)]
+    fn run_private(&mut self, sid: SystemId, buf: ManagedMutPtr<SystemBuffer>) {}
+
+    #[allow(unused_variables)]
+    fn on_transition(&mut self, from: SystemState, to: SystemState) {}
+
+    /// This name may change in the future.
+    /// Use this name as debugging information only.
+    fn name() -> &'static str {
+        any::type_name::<Self>()
+    }
+
+    #[doc(hidden)]
+    fn key() -> SystemKey {
+        SystemKey::of::<Self>()
+    }
+
+    #[doc(hidden)]
+    fn into_data(self) -> SystemData
+    where
+        Self: Sized + 'static,
+    {
+        let boxed = Box::new(self);
+        // Safety: Infallible.
+        let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
+        Self::_create_data(ptr, SystemFlags::OWNED_SET)
+    }
+
+    #[doc(hidden)]
+    unsafe fn create_data(ptr: NonNull<dyn Invoke + Send>) -> SystemData
+    where
+        Self: Sized + 'static,
+    {
+        Self::_create_data(ptr, SystemFlags::OWNED_RESET)
+    }
+
+    #[doc(hidden)]
+    fn _create_data(invoker: NonNull<dyn Invoke + Send>, flags: SystemFlags) -> SystemData {
+        let mut stor = RINFO_STOR.lock().unwrap();
+        let rinfo = Arc::clone(Self::Request::get_info_from(&mut *stor));
+        drop(stor);
+
+        SystemData {
+            id: SystemId::dummy(),
+            flags,
+            invoker,
+            info: Arc::new(SystemInfo::new(
+                Self::name(),
+                Self::key(),
+                Self::Request::key(),
+                rinfo,
+            )),
+        }
+    }
+}
 
 /// A system group that will be invoked together in a cycle by scheduler.
 ///
@@ -67,7 +132,7 @@ pub(crate) struct SystemGroup<S> {
     dead: Vec<SystemData>,
 
     /// Poisoned state systems.
-    poisoned: Vec<(SystemData, Box<dyn Any + Send>)>,
+    poisoned: Vec<PoisonedSystem>,
 
     /// Volatile systems will be removed permanently instead of moving to inactive list.
     /// For instance, setup system and FnOnce system are volatile.
@@ -305,7 +370,8 @@ where
             let reason = debug_format!("tried to poison a not (in)active system");
             return Err(EcsError::UnknownSystem(reason, payload));
         };
-        self.poisoned.push((sdata, payload));
+        let poisoned = PoisonedSystem::from_system_data(sdata, payload);
+        self.poisoned.push(poisoned);
         Ok(())
     }
 
@@ -368,11 +434,9 @@ where
     }
 
     /// Removes the whole systems in [`Poisoned`] state.
-    pub(crate) fn drain_poisoned(
-        &mut self,
-    ) -> std::vec::Drain<'_, (SystemData, Box<dyn Any + Send>)> {
-        for (sdata, _) in self.poisoned.iter() {
-            self.volatile.remove(&sdata.id());
+    pub(crate) fn drain_poisoned(&mut self) -> std::vec::Drain<'_, PoisonedSystem> {
+        for poisoned in self.poisoned.iter() {
+            self.volatile.remove(&poisoned.id());
         }
         self.poisoned.drain(..)
     }
@@ -622,73 +686,6 @@ where
     }
 }
 
-// Clients can define their systems with some data. And we're going to send
-// those systems to other workers, so it's good to add `Send` bound to the trait
-// for safety.
-pub trait System: Send + 'static {
-    type Request: Request;
-
-    fn run(&mut self, resp: Response<'_, Self::Request>);
-
-    /// This method is intended for private-use only.
-    //
-    // Can we hide this method from client code?
-    #[allow(unused_variables)]
-    fn _run_private(&mut self, sid: SystemId, buf: ManagedMutPtr<SystemBuffer>) {}
-
-    #[allow(unused_variables)]
-    fn on_transition(&mut self, from: SystemState, to: SystemState) {}
-
-    /// This name may change in the future.
-    /// Use this name as debugging information only.
-    fn name() -> &'static str {
-        any::type_name::<Self>()
-    }
-}
-
-pub(crate) trait PrivateSystem: System {
-    fn key() -> SystemKey {
-        SystemKey::of::<Self>()
-    }
-
-    fn into_data(self) -> SystemData
-    where
-        Self: Sized + 'static,
-    {
-        let boxed = Box::new(self);
-        // Safety: Infallible.
-        let ptr = unsafe { NonNull::new_unchecked(Box::into_raw(boxed)) };
-        Self::_create_data(ptr, SystemFlags::OWNED_SET)
-    }
-
-    unsafe fn create_data(ptr: NonNull<dyn Invoke + Send>) -> SystemData
-    where
-        Self: Sized + 'static,
-    {
-        Self::_create_data(ptr, SystemFlags::OWNED_RESET)
-    }
-
-    fn _create_data(invoker: NonNull<dyn Invoke + Send>, flags: SystemFlags) -> SystemData {
-        let mut stor = RINFO_STOR.lock().unwrap();
-        let rinfo = Arc::clone(Self::Request::get_info_from(&mut *stor));
-        drop(stor);
-
-        SystemData {
-            id: SystemId::dummy(),
-            flags,
-            invoker,
-            info: Arc::new(SystemInfo::new(
-                Self::name(),
-                Self::key(),
-                Self::Request::key(),
-                rinfo,
-            )),
-        }
-    }
-}
-
-impl<T: System> PrivateSystem for T {}
-
 /// Empty system.
 impl System for () {
     type Request = ();
@@ -696,8 +693,8 @@ impl System for () {
 }
 
 /// Unique identifier for a type implementing [`System`].
-pub type SystemKey = ATypeId<SystemKey_>;
-pub struct SystemKey_;
+pub(crate) type SystemKey = ATypeId<SystemKey_>;
+pub(crate) struct SystemKey_;
 
 /// Globally unique system identification determined by [`SystemGroup`].
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
@@ -746,6 +743,12 @@ impl SystemId {
     }
 }
 
+impl Default for SystemId {
+    fn default() -> Self {
+        Self::dummy()
+    }
+}
+
 impl fmt::Display for SystemId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "({}, {})", self.group_index, self.system_index)
@@ -758,7 +761,7 @@ impl fmt::Display for SystemId {
 /// in terms of [`Send`] and [`Sync`] even if it contains raw pointers in it.
 /// But if clients use this struct on their own purposes, they must keep that in
 /// mind.
-pub struct SystemData {
+pub(crate) struct SystemData {
     /// Unique id for a system.
     id: SystemId,
 
@@ -783,6 +786,22 @@ pub struct SystemData {
 // - Which means system data is looked like Rust primitive types from its users.
 unsafe impl Send for SystemData {}
 unsafe impl Sync for SystemData {}
+
+impl SystemData {
+    pub(crate) fn try_into_any(self) -> Option<Box<dyn Any + Send>> {
+        if self.flags.is_owned() {
+            // Safety: Checked.
+            let boxed = unsafe { Box::from_raw(self.invoker.as_ptr()) };
+
+            // We don't call drop.
+            mem::forget(self);
+
+            Some(boxed.into_any())
+        } else {
+            None
+        }
+    }
+}
 
 impl Drop for SystemData {
     fn drop(&mut self) {
@@ -825,7 +844,7 @@ impl borrow::Borrow<SystemId> for SystemData {
 }
 
 impl SystemData {
-    pub const fn id(&self) -> SystemId {
+    pub(crate) const fn id(&self) -> SystemId {
         self.id
     }
 
@@ -859,6 +878,53 @@ impl SystemData {
 
     pub(crate) unsafe fn task_ptr(&mut self) -> ManagedMutPtr<dyn Invoke + Send> {
         ManagedMutPtr::new(NonNullExt::new_unchecked(self.invoker.as_ptr()))
+    }
+}
+
+#[derive(Debug)]
+pub struct PoisonedSystem {
+    id: SystemId,
+    name: &'static str,
+    data: Option<Box<dyn Any + Send>>,
+    err_payload: Box<dyn Any + Send>,
+}
+
+impl PoisonedSystem {
+    const fn new(
+        id: SystemId,
+        name: &'static str,
+        data: Option<Box<dyn Any + Send>>,
+        err_payload: Box<dyn Any + Send>,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            data,
+            err_payload,
+        }
+    }
+
+    fn from_system_data(sdata: SystemData, err_payload: Box<dyn Any + Send>) -> Self {
+        let id = sdata.id;
+        let name = sdata.info().name;
+        let data = sdata.try_into_any();
+        Self::new(id, name, data, err_payload)
+    }
+
+    pub fn id(&self) -> SystemId {
+        self.id
+    }
+
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+
+    pub fn take_data(&mut self) -> Option<Box<dyn Any + Send>> {
+        self.data.take()
+    }
+
+    pub fn into_error_payload(self) -> Box<dyn Any + Send> {
+        self.err_payload
     }
 }
 
@@ -965,11 +1031,158 @@ impl Drop for SystemInfo {
     }
 }
 
+pub struct SystemDesc<Sys> {
+    /// System itself. Clients cannot put `SystemData` in, which is only allowed
+    /// to the crate.
+    pub(crate) sys: Or<Sys, SystemData>,
+
+    /// Whether the system is private system or not. Private system is a kind of
+    /// systems which is used internally.
+    pub(crate) private: bool,
+
+    /// Group index of the system.
+    pub group_index: u16,
+
+    /// Whether the system is volatile or not. A volatile system will be
+    /// discarded from memory after get executed as much as its lifetime.
+    /// Unlike volatile system, non-volatile system will move to inactivate
+    /// state instead of being discarded.
+    pub volatile: bool,
+
+    /// Lifetime and insert position in an active system cycle.  
+    /// - Lifetime(live): Determines how long the system should be executed.
+    ///   Whenever client schedules ecs, lifetime of executed system decreases
+    ///   by 1 conceptually.
+    /// - Insert position: Active systems get executed in an order. Client can
+    ///   designate where the system locates. [`InsertPos::Front`] means the
+    ///   first position in the order, while [`InsertPos::Back`] means the last
+    ///   position in the order. Of course, client can put the system in the
+    ///   middle of the order by [`InsertPos::After`].
+    pub activation: Option<(NonZeroTick, InsertPos)>,
+}
+
+impl<Sys> fmt::Debug for SystemDesc<Sys> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SystemDesc")
+            .field("private", &self.private)
+            .field("group_index", &self.group_index)
+            .field("volatile", &self.volatile)
+            .field("activation", &self.activation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<Sys> SystemDesc<Sys>
+where
+    Sys: System,
+{
+    pub fn with_system<T, OutSys>(self, sys: T) -> SystemDesc<OutSys>
+    where
+        T: Into<SystemBond<OutSys>>,
+        OutSys: System,
+    {
+        let sys: SystemBond<OutSys> = sys.into();
+
+        SystemDesc::<OutSys> {
+            sys: Or::A(sys.into_inner()),
+            private: self.private,
+            group_index: self.group_index,
+            volatile: self.volatile,
+            activation: self.activation,
+        }
+    }
+
+    pub fn with_once<T, Req, F>(self, sys: T) -> SystemDesc<FnOnceSystem<Req, F>>
+    where
+        T: Into<FnOnceSystem<Req, F>>,
+        FnOnceSystem<Req, F>: System,
+    {
+        let activation = if let Some((_live, pos)) = self.activation {
+            Some((NonZeroTick::MIN, pos))
+        } else {
+            None
+        };
+
+        SystemDesc::<FnOnceSystem<Req, F>> {
+            sys: Or::A(sys.into()),
+            private: self.private,
+            group_index: self.group_index,
+            volatile: self.volatile,
+            activation,
+        }
+    }
+
+    pub fn with_group_index(self, index: u16) -> Self {
+        Self {
+            group_index: index,
+            ..self
+        }
+    }
+
+    pub fn with_volatile(self, volatile: bool) -> Self {
+        Self { volatile, ..self }
+    }
+
+    pub fn with_activation(self, live: NonZeroTick, insert_at: InsertPos) -> Self {
+        Self {
+            activation: Some((live, insert_at)),
+            ..self
+        }
+    }
+
+    // Clients are only able to put in systems, not system data.
+    pub fn take_system(self) -> Sys {
+        match self.sys {
+            Or::A(sys) => sys,
+            Or::B(_sdata) => panic!(),
+        }
+    }
+
+    pub(crate) fn with_data(self, sdata: SystemData) -> SystemDesc<()> {
+        SystemDesc::<()> {
+            sys: Or::B(sdata),
+            private: self.private,
+            group_index: self.group_index,
+            volatile: self.volatile,
+            activation: self.activation,
+        }
+    }
+
+    pub(crate) fn with_private(self, private: bool) -> Self {
+        Self { private, ..self }
+    }
+}
+
+impl SystemDesc<()> {
+    pub const fn new() -> Self {
+        Self {
+            sys: Or::A(()),
+            private: false,
+            group_index: 0,
+            volatile: true,
+            activation: Some((NonZeroTick::MAX, InsertPos::Back)),
+        }
+    }
+}
+
+impl Default for SystemDesc<()> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: System> From<T> for SystemDesc<T> {
+    fn from(value: T) -> Self {
+        SystemDesc::new().with_system(value)
+    }
+}
+
 /// Object safe trait for the [`System`].
 pub(crate) trait Invoke {
     fn invoke(&mut self, buf: &mut SystemBuffer);
     fn invoke_private(&mut self, sid: SystemId, buf: ManagedMutPtr<SystemBuffer>);
     fn on_transition(&mut self, from: SystemState, to: SystemState);
+    fn into_any(self: Box<Self>) -> Box<dyn Any + Send>;
 }
 
 impl<S: System> Invoke for S {
@@ -978,11 +1191,15 @@ impl<S: System> Invoke for S {
     }
 
     fn invoke_private(&mut self, sid: SystemId, buf: ManagedMutPtr<SystemBuffer>) {
-        self._run_private(sid, buf);
+        self.run_private(sid, buf);
     }
 
     fn on_transition(&mut self, from: SystemState, to: SystemState) {
         self.on_transition(from, to);
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn Any + Send> {
+        self
     }
 }
 
@@ -1199,6 +1416,29 @@ mod impl_for_fn_system {
                     Self(value.into())
                 }
             }
+
+            // FnMut<..> -> SystemDesc<..>
+            impl<F $(,$r)? $(,$w)? $(,$rr)? $(,$rw)? $(,$ew)?> 
+                From<F> for 
+                SystemDesc<FnSystem<$req_with_placeholder, F>>
+            where
+                F: FnMut(
+                    $(Read<$r>,)?
+                    $(Write<$w>,)?
+                    $(ResRead<$rr>,)?
+                    $(ResWrite<$rw>,)?
+                    $(EntWrite<$ew>,)?
+                ) + Send + 'static,
+                $($r: Query,)?
+                $($w: QueryMut,)?
+                $($rr: ResQuery,)?
+                $($rw: ResQueryMut,)?
+                $($ew: EntQueryMut,)?
+            {
+                fn from(value: F) -> Self {
+                    SystemDesc::new().with_system(value)
+                }
+            }
         };
     }
 
@@ -1253,7 +1493,6 @@ mod impl_for_fn_system {
 // That's why we need a type to bond 'struct' and 'closure' together.
 // Conversions of 'struct' and 'closure' are as follows.
 // - FnMut -> FnSystem: System (for blanket impl) -> SystemBond
-// - FnMut ----------------------------------------> SystemBond
 // - Struct: System -------------------------------> SystemBond
 //
 // So, we can modify our function like this,

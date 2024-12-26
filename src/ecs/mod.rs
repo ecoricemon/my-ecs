@@ -5,6 +5,7 @@ pub mod entry;
 pub mod lock;
 pub mod resource;
 pub mod sched;
+pub(crate) mod share;
 pub mod sys;
 pub mod wait;
 pub mod web;
@@ -18,7 +19,7 @@ pub mod prelude {
     pub use super::cmd::{self, schedule_command, Command, CommandObject};
     pub use super::entry::{Ecs, EcsApp, EcsEntry, EcsExt, LeakedEcsApp, RunningEcs};
     pub use super::lock::request_lock;
-    pub use super::resource::{Resource, ResourceDesc, ResourceKey};
+    pub use super::resource::{Resource, ResourceDesc};
     pub use super::stat;
     #[cfg(target_arch = "wasm32")]
     pub use super::web::{set_panic_hook_once, web_panic_hook};
