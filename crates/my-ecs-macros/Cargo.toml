@@ -1,0 +1,21 @@
+[package]
+name = "my-ecs-macros"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A procedural macro for my-ecs crate"
+repository = "https://github.com/ecoricemon/my-ecs"
+license = "Apache-2.0 OR MIT"
+
+[lib]
+proc-macro = true
+doctest = false
+
+[dependencies]
+syn = { workspace = true, features = [
+  "full",
+  "derive",
+  "extra-traits"
+]}
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
