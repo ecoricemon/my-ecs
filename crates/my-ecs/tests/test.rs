@@ -427,7 +427,7 @@ fn test_async_abort() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn repeat_test_async_abort() {
-    use my_ecs::{util::call_timeout, prelude::type_name};
+    use my_ecs::{prelude::type_name, util::call_timeout};
     use std::env;
 
     if let Ok(_) = env::var("REPEAT") {

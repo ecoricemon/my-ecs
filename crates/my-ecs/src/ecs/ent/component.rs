@@ -1,5 +1,5 @@
 use my_ecs_macros::repeat_macro;
-use my_ecs_util::ds::{FnDefaultRaw, unimpl_default, FnCloneRaw, unimpl_clone, TypeInfo, ATypeId};
+use my_ecs_util::ds::{ATypeId, FnCloneRaw, FnDefaultRaw, TypeInfo, unimpl_clone, unimpl_default};
 
 /// Ordinary rust types.
 pub trait Component: Send + Sync + Sized + 'static {

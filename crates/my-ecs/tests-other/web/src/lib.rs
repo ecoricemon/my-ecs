@@ -766,7 +766,7 @@ fn try_recover_from_panic_in_parallel_task(pool: WorkerPool) -> (WorkerPool, i32
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod non_web_test {
     use super::*;
-    use my_ecs::{util::call_timeout, prelude::type_name};
+    use my_ecs::{prelude::type_name, util::call_timeout};
     use std::env;
 
     #[test]

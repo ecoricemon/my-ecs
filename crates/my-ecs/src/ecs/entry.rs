@@ -22,8 +22,8 @@ use super::{
     },
     worker::Work,
 };
-use my_ecs_util::{Or, With, WithResult, debug_format};
 use my_ecs_macros::repeat_macro;
+use my_ecs_util::{Or, With, WithResult, debug_format};
 use std::{
     any::Any,
     error::Error,

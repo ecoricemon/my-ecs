@@ -1,5 +1,8 @@
 use super::component::{ComponentKey, Components};
-use my_ecs_util::{With, ds::{BorrowResult, RawGetter, TypeInfo}};
+use my_ecs_util::{
+    With,
+    ds::{BorrowResult, RawGetter, TypeInfo},
+};
 use std::{any::TypeId, fmt, mem, mem::MaybeUninit, ops::Deref, ptr::NonNull, sync::Arc};
 
 /// A set of components.

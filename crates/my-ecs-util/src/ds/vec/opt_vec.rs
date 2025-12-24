@@ -602,10 +602,11 @@ where
     /// ```
     pub fn truncate(&mut self, len: usize) {
         for index in len..self.values.len() {
-            if self.values.pop().is_none() {
+            if self.values[index].is_none() {
                 self.vacancies.remove(&index);
             }
         }
+        self.values.truncate(len);
     }
 
     /// Removes vacant slots from the end of the vector, then shrinks capacity

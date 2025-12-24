@@ -20,8 +20,8 @@ use crate::{
         worker::{Message, PanicMessage, Work, WorkerId},
     },
 };
-use my_ecs_util::Or;
 use crossbeam_deque as cb;
+use my_ecs_util::Or;
 use std::{
     any::Any,
     cell::{Cell, UnsafeCell},

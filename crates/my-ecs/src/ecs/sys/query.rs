@@ -2,11 +2,11 @@ use super::select::{
     FilterInfo, FilterKey, FilteredRaw, SelectInfo, SelectKey, SelectedRaw, StoreSelectInfo,
 };
 use crate::ecs::resource::ResourceKey;
+use my_ecs_macros::repeat_macro;
 use my_ecs_util::{
     TakeRecur,
     ds::{ATypeId, Borrowed, ManagedConstPtr, ManagedMutPtr, NonNullExt},
 };
-use my_ecs_macros::repeat_macro;
 use std::{
     fmt,
     ops::{Deref, DerefMut},

@@ -17,7 +17,10 @@ use crate::ecs::{
     sys::request::Request,
     worker::Message,
 };
-use my_ecs_util::{debug_format, ds::{AnyVec, UnsafeFuture}};
+use my_ecs_util::{
+    debug_format,
+    ds::{AnyVec, UnsafeFuture},
+};
 use std::{
     cmp,
     collections::{HashMap, hash_map::Entry},

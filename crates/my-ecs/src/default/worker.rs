@@ -250,7 +250,10 @@ mod non_web {
 mod web {
     use super::*;
     use crate::{ecs::prelude::*, util::web};
-    use my_ecs_util::{ds::{ManagedConstPtr, NonNullExt}, str};
+    use my_ecs_util::{
+        ds::{ManagedConstPtr, NonNullExt},
+        str,
+    };
     use std::{
         cell::RefCell,
         collections::VecDeque,
