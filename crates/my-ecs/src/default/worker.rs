@@ -1,8 +1,7 @@
 //! Provides [`Work`](crate::ecs::worker::Work) implementations and worker pool.
 //!
-//! If build target is native, the module exposes worker type which based on
-//! [`std::thread::Thread`]. While the build target is web, the module exposes
-//! web worker instead.
+//! If build target is native, the module exposes worker type based on [`std::thread::Thread`].
+//! On the other hand, the module exposes web worker instead if the build target is wasm.
 
 /// Common interface for worker pool implementations.
 pub trait AsWorkerPool<W>: From<Vec<W>> + Into<Vec<W>> {
@@ -18,12 +17,11 @@ pub trait AsWorkerPool<W>: From<Vec<W>> + Into<Vec<W>> {
     /// ```
     fn new() -> Self;
 
-    /// Creates worker pool with workers as many as number of available logical
-    /// cpus.
+    /// Creates worker pool with workers as many as number of available logical cpus.
     ///
-    /// Number of logical cpus depends on platform which this crate runs on.
-    /// This method guarantees the returned worker pool to have at least one
-    /// worker in it even if it failed to get the number of logical cpus.
+    /// Number of logical cpus depends on platform which this crate runs on. This method guarantees
+    /// the returned worker pool to have at least one worker in it even if it failed to get the
+    /// number of logical cpus.
     ///
     /// # Examples
     ///
@@ -93,10 +91,10 @@ pub use web::*;
 #[cfg(not(target_arch = "wasm32"))]
 mod non_web {
     use super::*;
-    use crate::{ds::ManagedConstPtr, ecs::prelude::*};
+    use crate::{ecs::prelude::*, utils::ds::ManagedConstPtr};
+    use crossbeam_channel::Sender;
     use std::{
         fmt,
-        sync::mpsc::{self, Sender},
         thread::{Builder, JoinHandle},
     };
 
@@ -121,7 +119,7 @@ mod non_web {
             for _ in 0..len {
                 let worker = WorkerBuilder::new(&name).spawn().unwrap();
                 this.append(worker);
-                my_ecs_util::str::increase_rnumber(&mut name);
+                my_utils::str::increase_rnumber(&mut name);
             }
 
             this
@@ -198,7 +196,7 @@ mod non_web {
 
     impl Worker {
         fn spawn(builder: WorkerBuilder) -> Result<Self, std::io::Error> {
-            let (tx, rx) = mpsc::channel::<Option<ManagedConstPtr<SubContext>>>();
+            let (tx, rx) = crossbeam_channel::unbounded::<Option<ManagedConstPtr<SubContext>>>();
             let join_handle = builder.inner.spawn(move || {
                 while let Some(cx) = rx.recv().unwrap() {
                     SubContext::execute(cx);
@@ -250,10 +248,11 @@ mod non_web {
 mod web {
     use super::*;
     use crate::{ecs::prelude::*, util::web};
-    use my_ecs_util::{
+    use my_utils::{
         ds::{ManagedConstPtr, NonNullExt},
         str,
     };
+    use once_cell::sync::OnceCell;
     use std::{
         cell::RefCell,
         collections::VecDeque,
@@ -265,8 +264,8 @@ mod web {
         pin::Pin,
         rc::Rc,
         sync::{
-            Arc, OnceLock,
             atomic::{AtomicBool, Ordering},
+            Arc,
         },
     };
     use wasm_bindgen::prelude::*;
@@ -354,8 +353,7 @@ mod web {
             }
         }
 
-        /// Creates a [`WorkerBuilder`] with the given name of initialization
-        /// function.
+        /// Creates a [`WorkerBuilder`] with the given name of initialization function.
         ///
         /// Default initialization function is 'mainOnMessage'.
         pub fn with_init(self, init: &'a str) -> Self {
@@ -378,11 +376,10 @@ mod web {
 
     /// Main worker handle.
     ///
-    /// Main worker is a web worker that is parent of other sub workers. Main
-    /// worker is responsible for communication with window context, spawning
-    /// sub workers, creating ecs instance, and running ecs. You can think of
-    /// main worker as main thread where 'main' function runs on native
-    /// environment.
+    /// Main worker is a web worker that is parent of other sub workers. Main worker is responsible
+    /// for communication with window context, spawning sub workers, creating ecs instance, and
+    /// running ecs. You can think of main worker as main thread where 'main' function runs on
+    /// native environment.
     ///
     /// # Common worker hierarchy
     ///
@@ -390,9 +387,8 @@ mod web {
     ///
     /// # Why we need main worker
     ///
-    /// Ecs instance blocks sometimes to wait for messages from sub workers. But
-    /// browsers doesn't allow us to block on window context. So we need an
-    /// extra web worker.
+    /// Ecs instance blocks sometimes to wait for messages from sub workers. But browsers doesn't
+    /// allow us to block on window context. So we need an extra web worker.
     #[derive(Debug)]
     #[repr(transparent)]
     pub struct MainWorker {
@@ -408,8 +404,8 @@ mod web {
 
         /// Spawns sub workers as many as the given number on the main worker.
         ///
-        /// Sub workers are behind the main worker so that you cannot
-        /// communicate with them directly.
+        /// Sub workers are behind the main worker so that you cannot communicate with them
+        /// directly.
         ///
         /// # Examples
         ///
@@ -425,7 +421,8 @@ mod web {
                 |arg| {
                     let num: f64 = arg.unchecked_into_f64();
                     let num = num as usize;
-                    JS_MAIN_CX.with_borrow_mut(|cx| {
+                    JS_MAIN_CX.with(|cx| {
+                        let mut cx = cx.borrow_mut();
                         for _ in 0..num {
                             str::increase_rnumber(&mut cx.child_name);
                             let worker = WorkerBuilder::new(&cx.child_name).spawn().unwrap();
@@ -439,8 +436,8 @@ mod web {
 
         /// Sends the main worker a function that initializes ecs instance.
         ///
-        /// The main worker will execute the function and store the returned ecs
-        /// instance once it's ready.
+        /// The main worker will execute the function and store the returned ecs instance once it's
+        /// ready.
         ///
         /// # Examples
         ///
@@ -450,7 +447,7 @@ mod web {
         /// let main = MainWorkerBuilder::new().spawn().unwrap();
         /// main.init_app(|pool| {
         ///     let num_workers = pool.len();
-        ///     Ecs::default(pool, [num_workers])
+        ///     Ecs::create(pool, [num_workers])
         /// });
         /// ```
         pub fn init_app<F, R>(&self, f: F)
@@ -468,7 +465,8 @@ mod web {
                 let arg = DynFnOnceCodec::encode_into_array(f);
                 this.delegate(
                     |arg| {
-                        JS_MAIN_CX.with_borrow_mut(|cx| {
+                        JS_MAIN_CX.with(|cx| {
+                            let mut cx = cx.borrow_mut();
                             let arg: js_sys::Uint32Array = arg.unchecked_into();
                             // Safety: `arg` is `f`.
                             unsafe {
@@ -486,9 +484,8 @@ mod web {
 
         /// Sends the main worker a function that accesses ecs instance.
         ///
-        /// But if main worker doesn't have ecs instance, the function will be
-        /// dropped without execution. Don't forget to call
-        /// [`MainWorker::init_app`] beforehand.
+        /// But if main worker doesn't have ecs instance, the function will be dropped without
+        /// execution. Don't forget to call [`MainWorker::init_app`] beforehand.
         ///
         /// # Examples
         ///
@@ -499,7 +496,7 @@ mod web {
         ///
         /// main.init_app(|pool| {
         ///     let num_workers = pool.len();
-        ///     Ecs::default(pool, [num_workers])
+        ///     Ecs::create(pool, [num_workers])
         /// });
         ///
         /// main.with_app(|app| { /* ... */ });
@@ -517,7 +514,8 @@ mod web {
                 let arg = DynFnOnceCodec::encode_into_array(f);
                 this.delegate(
                     |arg| {
-                        JS_MAIN_CX.with_borrow_mut(|cx| {
+                        JS_MAIN_CX.with(|cx| {
+                            let mut cx = cx.borrow_mut();
                             let arg: js_sys::Uint32Array = arg.unchecked_into();
                             // Safety: `arg` is `f`.
                             unsafe {
@@ -535,15 +533,13 @@ mod web {
 
         /// Executes the given future on the main worker using JS runtime.
         ///
-        /// This method doesn't block, but the main worker stacks other
-        /// requested functions rather than executing them until the given
-        /// future is completed.
+        /// This method doesn't block, but the main worker stacks other requested functions rather
+        /// than executing them until the given future is completed.
         ///
-        /// Web APIs which return `Promise` should be called carefully. They
-        /// eagerly put tasks to JS runtime queue, and the tasks cannot make
-        /// more progress while Rust wasm holds CPU. That means that Rust wasm
-        /// should stop its processing to complete JS `Promise`. In other words,
-        /// Rust wasm cannot wait to be woken up by `Promise`.
+        /// Web APIs which return `Promise` should be called carefully. They eagerly put tasks to JS
+        /// runtime queue, and the tasks cannot make more progress while Rust wasm holds CPU. That
+        /// means that Rust wasm should stop its processing to complete JS `Promise`. In other
+        /// words, Rust wasm cannot wait to be woken up by `Promise`.
         ///
         /// # Examples
         ///
@@ -556,7 +552,7 @@ mod web {
         ///
         /// main.init_app(|pool| {
         ///     let num_workers = pool.len();
-        ///     Ecs::default(pool, [num_workers])
+        ///     Ecs::create(pool, [num_workers])
         /// });
         ///
         /// main.with_app_await(|app| async {
@@ -578,7 +574,8 @@ mod web {
 
                 // Resumes the main worker, so that it can consume buffered
                 // functions.
-                JS_MAIN_CX.with_borrow_mut(|cx| {
+                JS_MAIN_CX.with(|cx| {
+                    let mut cx = cx.borrow_mut();
                     cx.resume();
                     cx.consume_if_ready();
                 });
@@ -594,7 +591,8 @@ mod web {
                 let arg = DynFnOnceCodec::encode_into_array(f);
                 this.delegate(
                     |arg| {
-                        JS_MAIN_CX.with_borrow_mut(|cx| {
+                        JS_MAIN_CX.with(|cx| {
+                            let mut cx = cx.borrow_mut();
                             let arg: js_sys::Uint32Array = arg.unchecked_into();
                             // Safety: `arg` is `f`.
                             unsafe {
@@ -609,8 +607,7 @@ mod web {
             }
         }
 
-        /// Sends the main worker a function to call it on the main worker
-        /// context.
+        /// Sends the main worker a function to call it on the main worker context.
         ///
         /// The function will be called once the main worker is ready.
         pub fn delegate(&self, f: fn(arg: JsValue), arg: JsValue) {
@@ -620,7 +617,8 @@ mod web {
 
     impl Drop for MainWorker {
         fn drop(&mut self) {
-            JS_MAIN_CX.with_borrow_mut(|cx| {
+            JS_MAIN_CX.with(|cx| {
+                let mut cx = cx.borrow_mut();
                 cx.pool.clear();
             });
         }
@@ -680,7 +678,10 @@ mod web {
 
         static CONSUME_IF_READY: RefCell<Closure<dyn FnMut()>> = RefCell::new(
             Closure::new(|| {
-                JS_MAIN_CX.with_borrow_mut(|cx| cx.consume_if_ready());
+                JS_MAIN_CX.with(|cx| {
+                    let mut cx = cx.borrow_mut();
+                    cx.consume_if_ready()
+                });
             })
         );
     }
@@ -691,15 +692,15 @@ mod web {
         WithEcsAwait(DynFnOnceExt<EcsExt<'static>, Pin<Box<dyn Future<Output = ()>>>>),
     }
 
-    my_ecs_util::impl_from_for_enum!(
+    my_utils::impl_from_for_enum!(
         "outer" = FnOnMain; "var" = InitEcs;
         "inner" = DynFnOnceExt<WorkerPool, LeakedEcsApp>
     );
-    my_ecs_util::impl_from_for_enum!(
+    my_utils::impl_from_for_enum!(
         "outer" = FnOnMain; "var" = WithEcs;
         "inner" = DynFnOnceExt<EcsExt<'static>, ()>
     );
-    my_ecs_util::impl_from_for_enum!(
+    my_utils::impl_from_for_enum!(
         "outer" = FnOnMain; "var" = WithEcsAwait;
         "inner" = DynFnOnceExt<EcsExt<'static>, Pin<Box<dyn Future<Output = ()>>>>
     );
@@ -736,7 +737,8 @@ mod web {
             // If child workers are not ready yet, we need to give CPU to JS
             // runtime.
             if !self.is_ready() {
-                CONSUME_IF_READY.with_borrow(|ready_run| {
+                CONSUME_IF_READY.with(|ready_run| {
+                    let ready_run = ready_run.borrow();
                     const WAIT_MS: i32 = 10;
                     let cb = ready_run.as_ref().unchecked_ref();
                     let global = web::worker_global();
@@ -850,8 +852,7 @@ mod web {
             self
         }
 
-        /// Creates a new [`WorkerBuilder`] with the given name of
-        /// initialization function.
+        /// Creates a new [`WorkerBuilder`] with the given name of initialization function.
         pub const fn with_init(mut self, init: &'a str) -> Self {
             self.init = init;
             self
@@ -877,11 +878,9 @@ mod web {
         /// Worker name. You can see this name in browser's dev tool.
         name: Box<str>,
 
-        /// Callback for worker's first response, which is a notification of
-        /// the worker's readiness.
+        /// Callback for worker's first response, which is a notification of the worker's readiness.
         ///
-        /// The callback will be replaced with [`Worker::on_message`] once it
-        /// called.
+        /// The callback will be replaced with [`Worker::on_message`] once it called.
         _on_ready: Closure<dyn FnMut()>,
 
         /// Callback for worker response.
@@ -922,8 +921,7 @@ mod web {
             // Sets 'WBG_INIT' if it wasn't set yet.
             let wasm_init = WBG_INIT.get_or_init(|| DEFAULT_WBG_INIT.to_owned());
 
-            // TODO: For now, we assume that wasm use shared memory.
-            // Initializes the worker.
+            // TODO: For now, we assume that wasm use shared memory. Initializes the worker.
             use js_sys::{Object, Reflect};
             let msg = Object::new();
             Reflect::set(&msg, &"module".into(), &wasm_bindgen::module())?;
@@ -948,8 +946,7 @@ mod web {
             self.handle.clone()
         }
 
-        /// Returns true if the worker has been fully initialized and ready to
-        /// process messages.
+        /// Returns true if the worker has been fully initialized and ready to process messages.
         pub fn is_ready(&self) -> bool {
             self.ready.load(Ordering::Relaxed)
         }
@@ -1000,8 +997,8 @@ mod web {
         }
     }
 
-    /// Clients can modify init function of wasm glue JS file before they call [`Worker::spawn`].
-    /// If you don't set this value, [`DEFAULT_WBG_INIT`] will be set as default value.
+    /// Clients can modify init function of wasm glue JS file before they call [`Worker::spawn`]. If
+    /// you don't set this value, [`DEFAULT_WBG_INIT`] will be set as default value.
     ///
     /// # Example
     ///
@@ -1012,23 +1009,20 @@ mod web {
     /// crate::WBG_INIT.set("_".to_owned()).unwrap();
     /// Worker::spawn("worker", 0).unwrap();
     /// ```
-    pub static WBG_INIT: OnceLock<String> = OnceLock::new();
+    pub static WBG_INIT: OnceCell<String> = OnceCell::new();
 
-    /// wasm-bindgen will generate "__wbg_init" as default export function.
-    /// But, I expect that it will be exported as 'default'.
+    /// wasm-bindgen will generate "__wbg_init" as default export function. But, I expect that it
+    /// will be exported as 'default'.
     pub const DEFAULT_WBG_INIT: &str = "default";
 
     pub const DEFAULT_WORKER_SCRIPT: &str = include_str!("worker.js");
 
-    // Some bundlers could warn about circular dependency caused by worker
-    // due to the cycle that looks like
-    // "Rust wasm - (bind) -> worker.js -> (import) -> wasm".
+    // Some bundlers could warn about circular dependency caused by worker due to the cycle that
+    // looks like "Rust wasm - (bind) -> worker.js -> (import) -> wasm".
     //
-    // But, if the worker JS file is substituted with a created object,
-    // we can avoid the warning.
+    // But, if the worker JS file is substituted with a created object, we can avoid the warning.
     //
-    // However, in that case, we need to set bundler to cooperate with the
-    // created worker object.
+    // However, in that case, we need to set bundler to cooperate with the created worker object.
     // For instance, in Vite(v5.4.2), you may need following settings.
     //
     // build: {
@@ -1038,8 +1032,8 @@ mod web {
     //       //    * wasm glue module will be imported in worker context.
     //       //    * In worker context, we can't access something like document.
     //       // 2. To preserve indirectly used exports.
-    //       //    * Rollup doesn't know that we're going to access some exported
-    //       //      objects, workerOnMessage for instance, in wasm code.
+    //       //    * Rollup doesn't know that we're going to access some exported objects,
+    //       //      workerOnMessage for instance, in wasm code.
     //       //    * So we need to make Rollup not to drop those objects.
     //       //
     //       // First of all, we need to make a new entry point for wasm.
@@ -1068,11 +1062,10 @@ mod web {
     extern "C" {
         /// URL of wasm glue JS file.
         //
-        // We need this URL of wasm glue JS file in order to import it dynamically in workers.
-        // So that workers can share the same wasm module and memory.
-        // But note that bundler may evaluate "import.meta.url" statically during bundling,
-        // which is not what we want, we need to evaluate it at runtime.
-        // Therefore, you need to configure your bundler not to do it.
+        // We need this URL of wasm glue JS file in order to import it dynamically in workers. So
+        // that workers can share the same wasm module and memory. But note that bundler may
+        // evaluate "import.meta.url" statically during bundling, which is not what we want, we need
+        // to evaluate it at runtime. Therefore, you need to configure your bundler not to do it.
         // (e.g. Webpack does it basically, but Vite(v5.1.6) doesn't do it)
         #[wasm_bindgen(thread_local_v2, js_namespace = ["import", "meta"], js_name = url)]
         static IMPORT_META_URL: JsValue;
@@ -1106,10 +1099,9 @@ mod web {
 
     /// Message event header.
     ///
-    /// Inner value will be transmuted into f64 and vice versa. You must
-    /// guarantee that f64 representation is not Nan (or Inf). If so,
-    /// someone(maybe JS) can change its bit expression into something else with
-    /// just preserving the meaning, Nan or Inf or something like that.
+    /// Inner value will be transmuted into f64 and vice versa. You must guarantee that f64
+    /// representation is not Nan (or Inf). If so, someone(maybe JS) can change its bit expression
+    /// into something else with just preserving the meaning, Nan or Inf or something like that.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct MessageHeader(pub u64);
 
@@ -1144,16 +1136,13 @@ mod web {
     struct MessageFn {
         /// Function pointer.
         //
-        // NOTE: We cannot turn an address into f64 directly.
-        // Address could be 'inf' or 'nan' in f64 representation.
-        // See https://en.wikipedia.org/wiki/IEEE_754-1985
-        // Those numbers will keep the meaning of 'inf' or 'nan' though,
-        // they can be freely different number in perspective of bit.
-        // So we put this value in Uint32Array.
+        // NOTE: We cannot turn an address into f64 directly. Address could be 'inf' or 'nan' in f64
+        // representation. See https://en.wikipedia.org/wiki/IEEE_754-1985
+        // Those numbers will keep the meaning of 'inf' or 'nan' though, they can be freely
+        // different number in perspective of bit. So we put this value in Uint32Array.
         //
-        // According to googling, OSes use 48-bit address space on 64 bit machines.
-        // Even if so, it could be dangerous to convert addresses to f64
-        // when OSes fill preceding bits to 1.
+        // According to googling, OSes use 48-bit address space on 64 bit machines. Even if so, it
+        // could be dangerous to convert addresses to f64 when OSes fill preceding bits to 1.
         f: fn(arg: JsValue),
     }
 
@@ -1244,13 +1233,12 @@ mod web {
         /// Undefined behavior if the given data is not a valid function pointer.
         //
         // Why we don't return `fn(Arg) -> R` like encode_into_array().
-        // - Imagine we're returning `fn(Arg) -> R`.
-        //   If caller designated `&i32` to `Arg` and `()` to `R`,
-        //   then return type will be `fn(&'x i32)`, where 'x is defined by the caller.
-        //   Then, caller can call `fn(&'x i32)` directly, but cannot do other things
-        //   like pushing the function pointer into `Vec<for<'a> fn(&'a i32)>`.
-        //   Because the Vec requires `for<'a>`, which is quite generic,
-        //   but caller can't convert 'x, which is less generic, into `for<'a>`.
+        // - Imagine we're returning `fn(Arg) -> R`. If caller designated `&i32` to `Arg` and `()`
+        //   to `R`, then return type will be `fn(&'x i32)`, where 'x is defined by the caller.
+        //   Then, caller can call `fn(&'x i32)` directly, but cannot do other things like pushing
+        //   the function pointer into `Vec<for<'a> fn(&'a i32)>`. Because the Vec requires
+        //   `for<'a>`, which is quite generic, but caller can't convert 'x, which is less generic,
+        //   into `for<'a>`.
         // - Therefore, generic is not sufficient.
         #[inline]
         unsafe fn decode_from_array(arr: &js_sys::Uint32Array) -> fn() {
@@ -1299,8 +1287,8 @@ mod web {
 
         /// # Safety
         ///
-        /// Undefined behavior if the given data is not a valid [`DynFnOnce`].
-        /// Also, return value must be cast as the original type.
+        /// Undefined behavior if the given data is not a valid [`DynFnOnce`]. Also, return value
+        /// must be cast as the original type.
         #[inline]
         unsafe fn decode_from_array(arr: &js_sys::Uint32Array) -> DynFnOnceExt<(), ()> {
             let mut buf: [u32; Self::len()] = [0; Self::len()];
@@ -1310,8 +1298,8 @@ mod web {
 
         /// # Safety
         ///
-        /// Undefined behavior if the given data is not a valid [`DynFnOnce`].
-        /// Also, return value must be cast as the original type.
+        /// Undefined behavior if the given data is not a valid [`DynFnOnce`]. Also, return value
+        /// must be cast as the original type.
         #[inline]
         const unsafe fn decode(encoded: [u32; Self::len()]) -> DynFnOnceExt<(), ()> {
             let f = unsafe { Self { dst: encoded }.src };

@@ -1,8 +1,8 @@
 [package]
 name = "my-ecs-macros"
 version = "0.1.1"
-edition = "2024"
-rust-version = "1.85"
+edition = "2021"
+rust-version = "1.65"
 description = "A procedural macro for my-ecs crate"
 repository = "https://github.com/ecoricemon/my-ecs"
 license = "Apache-2.0 OR MIT"

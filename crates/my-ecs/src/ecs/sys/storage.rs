@@ -1,23 +1,19 @@
 use super::system::{PoisonedSystem, SystemGroup, SystemId};
 use crate::{
-    MAX_GROUP,
     ecs::{
-        EcsError,
         sys::system::{InsertPos, SystemData, Tick},
+        EcsError,
     },
+    MAX_GROUP,
 };
-use my_ecs_util::ds::Array;
-use std::hash::BuildHasher;
+use my_utils::ds::Array;
 
 #[derive(Debug)]
-pub(crate) struct SystemStorage<S> {
-    pub(crate) sgroups: Array<SystemGroup<S>, MAX_GROUP>,
+pub(crate) struct SystemStorage {
+    pub(crate) sgroups: Array<SystemGroup, MAX_GROUP>,
 }
 
-impl<S> SystemStorage<S>
-where
-    S: BuildHasher + Default + 'static,
-{
+impl SystemStorage {
     pub(crate) fn new(num_groups: usize) -> Self {
         assert!(num_groups <= MAX_GROUP);
 
@@ -33,7 +29,7 @@ where
         self.sgroups.len()
     }
 
-    pub(crate) fn get_group_mut(&mut self, gi: usize) -> &mut SystemGroup<S> {
+    pub(crate) fn get_group_mut(&mut self, gi: usize) -> &mut SystemGroup {
         &mut self.sgroups[gi]
     }
 

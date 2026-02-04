@@ -3,9 +3,9 @@ use super::select::{
 };
 use crate::ecs::resource::ResourceKey;
 use my_ecs_macros::repeat_macro;
-use my_ecs_util::{
-    TakeRecur,
+use my_utils::{
     ds::{ATypeId, Borrowed, ManagedConstPtr, ManagedMutPtr, NonNullExt},
+    TakeRecur,
 };
 use std::{
     fmt,
@@ -13,25 +13,24 @@ use std::{
     sync::Arc,
 };
 
-pub(crate) trait StoreQueryInfo: StoreSelectInfo {
+pub trait StoreQueryInfo: StoreSelectInfo {
     fn contains(&self, key: &QueryKey) -> bool;
     fn get(&self, key: &QueryKey) -> Option<&Arc<QueryInfo>>;
     fn insert(&mut self, key: QueryKey, info: Arc<QueryInfo>);
 }
 
-pub(crate) trait StoreResQueryInfo {
+pub trait StoreResQueryInfo {
     fn contains(&self, key: &ResQueryKey) -> bool;
     fn get(&self, key: &ResQueryKey) -> Option<&Arc<ResQueryInfo>>;
     fn insert(&mut self, key: ResQueryKey, info: Arc<ResQueryInfo>);
 }
 
-pub(crate) trait StoreEntQueryInfo: StoreSelectInfo {
+pub trait StoreEntQueryInfo: StoreSelectInfo {
     fn contains(&self, key: &EntQueryKey) -> bool;
     fn get(&self, key: &EntQueryKey) -> Option<&Arc<EntQueryInfo>>;
     fn insert(&mut self, key: EntQueryKey, info: Arc<EntQueryInfo>);
 }
 
-#[allow(private_interfaces, private_bounds)]
 pub trait Query: 'static {
     type Output<'buf>;
 
@@ -65,7 +64,6 @@ pub trait Query: 'static {
     }
 }
 
-#[allow(private_interfaces, private_bounds)]
 pub trait QueryMut: 'static {
     type Output<'buf>;
 
@@ -99,7 +97,6 @@ pub trait QueryMut: 'static {
     }
 }
 
-#[allow(private_interfaces, private_bounds)]
 pub trait ResQuery: 'static {
     type Output<'buf>;
 
@@ -131,7 +128,6 @@ pub trait ResQuery: 'static {
     }
 }
 
-#[allow(private_interfaces, private_bounds)]
 pub trait ResQueryMut: 'static {
     type Output<'buf>;
 
@@ -161,7 +157,6 @@ pub trait ResQueryMut: 'static {
     }
 }
 
-#[allow(private_interfaces, private_bounds)]
 pub trait EntQueryMut: 'static {
     type Output<'buf>;
 
@@ -196,8 +191,8 @@ pub trait EntQueryMut: 'static {
 
 /// Read request for a set of components.
 ///
-/// This is a part of a system request, clients need to declare the whole system
-/// request. Take a look at [`request`](crate::prelude::request).
+/// This is a part of a system request, clients need to declare the whole system request. Take a
+/// look at [`request`](crate::prelude::request).
 #[repr(transparent)]
 pub struct Read<'buf, R: Query>(pub(crate) R::Output<'buf>);
 
@@ -228,8 +223,8 @@ where
 
 /// Write request for a set of components.
 ///
-/// This is a part of a system request, clients need to declare the whole system
-/// request. Take a look at [`request`](crate::prelude::request).
+/// This is a part of a system request, clients need to declare the whole system request. Take a
+/// look at [`request`](crate::prelude::request).
 #[repr(transparent)]
 pub struct Write<'buf, W: QueryMut>(pub(crate) W::Output<'buf>);
 
@@ -266,8 +261,8 @@ where
 
 /// Read request for a set of resources.
 ///
-/// This is a part of a system request, clients need to declare the whole system
-/// request. Take a look at [`request`](crate::prelude::request).
+/// This is a part of a system request, clients need to declare the whole system request. Take a
+/// look at [`request`](crate::prelude::request).
 #[repr(transparent)]
 pub struct ResRead<'buf, RR: ResQuery>(pub(crate) RR::Output<'buf>);
 
@@ -298,8 +293,8 @@ where
 
 /// Write request for a set of resources.
 ///
-/// This is a part of a system request, clients need to declare the whole system
-/// request. Take a look at [`request`](crate::prelude::request).
+/// This is a part of a system request, clients need to declare the whole system request. Take a
+/// look at [`request`](crate::prelude::request).
 #[repr(transparent)]
 pub struct ResWrite<'buf, RW: ResQueryMut>(pub(crate) RW::Output<'buf>);
 
@@ -336,8 +331,8 @@ where
 
 /// Write request for a set of entity container.
 ///
-/// This is a part of a system request, clients need to declare the whole system
-/// request. Take a look at [`request`](crate::prelude::request).
+/// This is a part of a system request, clients need to declare the whole system request. Take a
+/// look at [`request`](crate::prelude::request).
 #[repr(transparent)]
 pub struct EntWrite<'buf, EW: EntQueryMut>(pub(crate) EW::Output<'buf>);
 
@@ -373,19 +368,19 @@ where
 }
 
 /// Unique identifier for a type implementing [`Query`] or [`QueryMut`].
-pub(crate) type QueryKey = ATypeId<QueryKey_>;
-pub(crate) struct QueryKey_;
+pub type QueryKey = ATypeId<QueryKey_>;
+pub struct QueryKey_;
 
 /// Unique identifier for a type implementing [`ResQuery`] or [`ResQueryMut`].
-pub(crate) type ResQueryKey = ATypeId<ResQueryKey_>;
-pub(crate) struct ResQueryKey_;
+pub type ResQueryKey = ATypeId<ResQueryKey_>;
+pub struct ResQueryKey_;
 
 /// Unique identifier for a type implementing [`EntQueryMut`].
-pub(crate) type EntQueryKey = ATypeId<EntQueryKey_>;
-pub(crate) struct EntQueryKey_;
+pub type EntQueryKey = ATypeId<EntQueryKey_>;
+pub struct EntQueryKey_;
 
 #[derive(Clone)]
-pub(crate) struct QueryInfo {
+pub struct QueryInfo {
     sels: Box<[(SelectKey, Arc<SelectInfo>)]>,
     name: &'static str,
 }
@@ -420,7 +415,7 @@ impl QueryInfo {
 }
 
 #[derive(Clone)]
-pub(crate) struct ResQueryInfo {
+pub struct ResQueryInfo {
     rkeys: Box<[ResourceKey]>,
     name: &'static str,
 }
@@ -449,7 +444,7 @@ impl ResQueryInfo {
 }
 
 #[derive(Clone)]
-pub(crate) struct EntQueryInfo {
+pub struct EntQueryInfo {
     filters: Box<[(FilterKey, Arc<FilterInfo>)]>,
     name: &'static str,
 }
@@ -492,7 +487,6 @@ macro_rules! impl_query {
         // Implements `Query` for (A0, A1, ...).
         paste! {
             #[allow(unused_parens)]
-            #[allow(private_interfaces, private_bounds)]
             impl<$([<A $i>]: Select),*> Query for ( $([<A $i>]),* ) {
                 type Output<'buf> = ( $(Selected<'buf, [<A $i>]::Target>),* );
 
@@ -516,9 +510,8 @@ macro_rules! impl_query {
 
                     #[allow(clippy::unused_unit)]
                     ( $(
-                        // Splitting slice via `split_first_mut` is quite tiresome task.
-                        // Anyway, we're connecting lifetime from each input to output,
-                        // so no problem.
+                        // Splitting slice via `split_first_mut` is quite tiresome task. Anyway,
+                        // we're connecting lifetime from each input to output, so no problem.
                         // Safety: Infallible.
                         {
                             let x: *mut SelectedRaw = &mut buf[$i] as *mut _;
@@ -533,7 +526,6 @@ macro_rules! impl_query {
         // Implements `QueryMut` for (A0, A1, ...).
         paste! {
             #[allow(unused_parens)]
-            #[allow(private_interfaces, private_bounds)]
             impl<$([<A $i>]: Select),*> QueryMut for ( $([<A $i>]),* ) {
                 type Output<'buf> = ( $(SelectedMut<'buf, [<A $i>]::Target>),* );
 
@@ -557,9 +549,8 @@ macro_rules! impl_query {
 
                     #[allow(clippy::unused_unit)]
                     ( $(
-                        // Splitting slice via `split_first_mut` is quite tiresome task.
-                        // Anyway, we're connecting lifetime from each input to output,
-                        // so no problem.
+                        // Splitting slice via `split_first_mut` is quite tiresome task. Anyway,
+                        // we're connecting lifetime from each input to output, so no problem.
                         // Safety: Infallible.
                         {
                             let x: *mut SelectedRaw = &mut buf[$i] as *mut _;
@@ -574,7 +565,8 @@ macro_rules! impl_query {
 }
 repeat_macro!(impl_query, ..=8);
 
-/// Implements the trait [`ResQuery`] and [`ResQueryMut`] for an anonymous tuple of [`Resource`](super::resource::Resource)s.
+/// Implements the trait [`ResQuery`] and [`ResQueryMut`] for an anonymous tuple of
+/// [`Resource`](super::resource::Resource)s.
 macro_rules! impl_res_query {
     ($n:expr, $($i:expr),*) => {const _: () = {
         #[allow(unused_imports)]
@@ -583,7 +575,7 @@ macro_rules! impl_res_query {
                 sys::query::{ResQuery, ResQueryInfo},
                 resource::Resource,
             },
-            ds::{Borrowed, ManagedConstPtr, ManagedMutPtr, TypeIdExt},
+            utils::ds::{Borrowed, ManagedConstPtr, ManagedMutPtr, TypeIdExt},
         };
         use std::any::type_name;
         use paste::paste;
@@ -591,7 +583,6 @@ macro_rules! impl_res_query {
         // Implements `ResQuery` for (A0, A1, ...).
         paste! {
             #[allow(unused_parens)]
-            #[allow(private_interfaces, private_bounds)]
             impl<$([<A $i>]: Resource),*> ResQuery for ( $([<A $i>]),* ) {
                 type Output<'buf> = ( $( &'buf [<A $i>] ),* );
 
@@ -604,9 +595,8 @@ macro_rules! impl_res_query {
                 fn convert(_buf: &mut Vec<Borrowed<ManagedConstPtr<u8>>>) -> Self::Output<'_> {
                     debug_assert_eq!($n, _buf.len());
 
-                    // Managed pointer may have type info in it.
-                    // But resource pointer must have the type info.
-                    // So we can check if the pointers are correctly given.
+                    // Managed pointer may have type info in it. But resource pointer must have the
+                    // type info. So we can check if the pointers are correctly given.
                     #[cfg(feature = "check")]
                     {
                         $(
@@ -623,8 +613,7 @@ macro_rules! impl_res_query {
                     #[allow(clippy::unused_unit)]
                     ( $( {
                         let ptr: NonNullExt<[<A $i>]> = _buf[$i].as_nonnullext().cast();
-                        // Safety: Infallible, Plus output is bounded by input's
-                        // 'buf lifetime
+                        // Safety: Infallible, Plus output is bounded by input's 'buf lifetime
                         unsafe { ptr.as_ref() } // &'buf mut A#
                     } ),* )
                 }
@@ -634,7 +623,6 @@ macro_rules! impl_res_query {
         // Implements `ResQueryMut` for (A0, A1, ...).
         paste!{
             #[allow(unused_parens)]
-            #[allow(private_interfaces, private_bounds)]
             impl<$([<A $i>]: Resource),*> ResQueryMut for ( $([<A $i>]),* ) {
                 type Output<'buf> = ( $( &'buf mut [<A $i>] ),* );
 
@@ -647,9 +635,8 @@ macro_rules! impl_res_query {
                 fn convert(_buf: &mut Vec<Borrowed<ManagedMutPtr<u8>>>) -> Self::Output<'_> {
                     debug_assert_eq!($n, _buf.len());
 
-                    // Managed pointer may have type info in it.
-                    // But resource pointer must have the type info.
-                    // So we can check if the pointers are correctly given.
+                    // Managed pointer may have type info in it. But resource pointer must have the
+                    // type info. So we can check if the pointers are correctly given.
                     #[cfg(feature = "check")]
                     { $(
                         let ptr: NonNullExt<_> = _buf[$i].as_nonnullext();
@@ -664,8 +651,7 @@ macro_rules! impl_res_query {
                     #[allow(clippy::unused_unit)]
                     ( $( {
                         let mut ptr: NonNullExt<[<A $i>]> = _buf[$i].as_nonnullext().cast();
-                        // Safety: Infallible, Plus output is bounded by input's
-                        // 'buf lifetime
+                        // Safety: Infallible, Plus output is bounded by input's 'buf lifetime
                         unsafe { ptr.as_mut() } // &'buf mut A#
                     } ),* )
                 }
@@ -675,7 +661,8 @@ macro_rules! impl_res_query {
 }
 repeat_macro!(impl_res_query, ..=8);
 
-/// Implements the trait [`EntQueryMut`] for an anonymous tuple of [`ContainEntity`](super::entity::ContainEntity)s.
+/// Implements the trait [`EntQueryMut`] for an anonymous tuple of
+/// [`ContainEntity`](super::entity::ContainEntity)s.
 macro_rules! impl_ent_query {
     ($n:expr, $($i:expr),*) => {const _: () = {
         #[allow(unused_imports)]
@@ -690,7 +677,7 @@ macro_rules! impl_ent_query {
                     storage::EntityContainerRef
                 },
             },
-            ds::Borrowed,
+            utils::ds::Borrowed,
         };
         use std::any::type_name;
         use paste::paste;
@@ -698,7 +685,6 @@ macro_rules! impl_ent_query {
         // Implements `EntQueryMut` for (A0, A1, ...).
         paste! {
             #[allow(unused_parens)]
-            #[allow(private_interfaces, private_bounds)]
             impl<$([<A $i>]: Filter),*> EntQueryMut for ( $([<A $i>]),* ) {
                 type Output<'buf> = ( $(FilteredMut<'buf, [<A $i>]>),* );
 
@@ -721,9 +707,8 @@ macro_rules! impl_ent_query {
 
                     #[allow(clippy::unused_unit)]
                     ( $(
-                        // Splitting slice via `split_first_mut` is quite tiresome task.
-                        // Anyway, we're connecting lifetime from each input to output,
-                        // so no problem.
+                        // Splitting slice via `split_first_mut` is quite tiresome task. Anyway,
+                        // we're connecting lifetime from each input to output, so no problem.
                         // Safety: Infallible.
                         {
                             let x: *mut FilteredRaw = &mut buf[$i] as *mut _;

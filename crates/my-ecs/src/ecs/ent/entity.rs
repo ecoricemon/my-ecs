@@ -1,18 +1,16 @@
 use super::component::{ComponentKey, Components};
-use my_ecs_util::{
-    With,
+use my_utils::{
     ds::{BorrowResult, RawGetter, TypeInfo},
+    With,
 };
 use std::{any::TypeId, fmt, mem, mem::MaybeUninit, ops::Deref, ptr::NonNull, sync::Arc};
 
 /// A set of components.
 ///
-/// Implementing this trait is not mandatory, but by doing so, the crate can
-/// provide you more easy to use APIs. Plus, there is a derive macro that have
-/// the same name, which help you implement this trait. As a consequence, it's
-/// encouraged to implement this trait by the derive macro about entity types
-/// that you know.
-#[allow(private_interfaces)]
+/// Implementing this trait is not mandatory, but by doing so, the crate can provide you more easy
+/// to use APIs. Plus, there is a derive macro that have the same name, which help you implement
+/// this trait. As a consequence, it's encouraged to implement this trait by the derive macro about
+/// entity types that you know.
 pub trait Entity: Components + Send + 'static {
     type Ref<'cont>;
     type Mut<'cont>;
@@ -33,14 +31,13 @@ pub trait Entity: Components + Send + 'static {
     ///
     /// # Safety
     ///
-    /// Must be implemented correctly. Other methods depend on this offset with
-    /// unsafe blocks.
+    /// Must be implemented correctly. Other methods depend on this offset with unsafe blocks.
     const OFFSETS_BY_FIELD_INDEX: &'static [usize];
 
     /// Turns field index into column index.
     ///
-    /// This function could be called frequently, so that it's recommended to
-    /// cache the mapping from field index to column index in a way.
+    /// This function could be called frequently, so that it's recommended to cache the mapping from
+    /// field index to column index in a way.
     ///
     /// # Field index
     ///
@@ -48,19 +45,18 @@ pub trait Entity: Components + Send + 'static {
     ///
     /// # Column index
     ///
-    /// Column index is a terminology used in [`ContainEntity`]. In short, it is
-    /// an index sorted by [`ComponentKey`].
+    /// Column index is a terminology used in [`ContainEntity`]. In short, it is an index sorted by
+    /// [`ComponentKey`].
     ///
     /// # Safety
     ///
-    /// Must be implemented correctly. Other methods depend on this offset with
-    /// unsafe blocks.
+    /// Must be implemented correctly. Other methods depend on this offset with unsafe blocks.
     fn field_to_column_index(fi: usize) -> usize;
 
     /// Turns column index into field index.
     ///
-    /// This function would be called infrequently, so that simple
-    /// implementations would be good enough.
+    /// This function would be called infrequently, so that simple implementations would be good
+    /// enough.
     fn column_to_field_index(ci: usize) -> usize {
         // Safety: Field index matches column index 1 by 1.
         unsafe {
@@ -70,18 +66,16 @@ pub trait Entity: Components + Send + 'static {
         }
     }
 
-    /// Returns a struct holding shared references to components that belong
-    /// to an entity for the given value index.
+    /// Returns a struct holding shared references to components that belong to an entity for the
+    /// given value index.
     ///
-    /// Note, however, that entity is not stored as it is. It is split up into
-    /// its components then stored in each component container. That means
-    /// collecting those references like this function is inefficient because it
-    /// requires random access to memory.
+    /// Note, however, that entity is not stored as it is. It is split up into its components then
+    /// stored in each component container. That means collecting those references like this
+    /// function is inefficient because it requires random access to memory.
     ///
-    /// `derive(Entity)` macro gives us a similar struct to `Self`. You can
-    /// access each field via dot operator. Plus, it implements [`Debug`], so
-    /// that you can see how the entity looks like. But it will show some
-    /// components only that implement `Debug`. See examples below.
+    /// `derive(Entity)` macro gives us a similar struct to `Self`. You can access each field via
+    /// dot operator. Plus, it implements [`Debug`], so that you can see how the entity looks like.
+    /// But it will show some components only that implement `Debug`. See examples below.
     ///
     /// # Panics
     ///
@@ -91,7 +85,6 @@ pub trait Entity: Components + Send + 'static {
     ///
     /// ```
     /// use my_ecs::prelude::*;
-    /// use std::hash::RandomState;
     ///
     /// #[derive(Entity, Debug, PartialEq)]
     /// struct Ea {
@@ -103,7 +96,7 @@ pub trait Entity: Components + Send + 'static {
     /// #[derive(Component, Debug, PartialEq)]
     /// struct Cb(String);
     ///
-    /// let mut cont: SparseSet<RandomState> = SparseSet::new();
+    /// let mut cont = SparseSet::new();
     /// Ea::register_to(&mut cont);
     /// Ea { ca: Ca(42), cb: Cb("cb".to_owned()) }.move_to(&mut cont);
     ///
@@ -114,18 +107,16 @@ pub trait Entity: Components + Send + 'static {
     /// ```
     fn get_ref_from<Cont: ContainEntity + ?Sized>(cont: &Cont, vi: usize) -> Self::Ref<'_>;
 
-    /// Returns a struct holding mutable references to components that belong
-    /// to an entity for the given value index.
+    /// Returns a struct holding mutable references to components that belong to an entity for the
+    /// given value index.
     ///
-    /// Note, however, that entity is not stored as it is. It is split up into
-    /// its components then stored in each component container. That means
-    /// collecting those references like this function is inefficient because it
-    /// requires random access to memory.
+    /// Note, however, that entity is not stored as it is. It is split up into its components then
+    /// stored in each component container. That means collecting those references like this
+    /// function is inefficient because it requires random access to memory.
     ///
-    /// `derive(Entity)` macro gives us a similar struct to `Self`. You can
-    /// access each field via dot operator. Plus, it implements [`Debug`], so
-    /// that you can see how the entity looks like. But it will show some
-    /// components only that implement `Debug`. See examples below.
+    /// `derive(Entity)` macro gives us a similar struct to `Self`. You can access each field via
+    /// dot operator. Plus, it implements [`Debug`], so that you can see how the entity looks like.
+    /// But it will show some components only that implement `Debug`. See examples below.
     ///
     /// # Panics
     ///
@@ -135,7 +126,6 @@ pub trait Entity: Components + Send + 'static {
     ///
     /// ```
     /// use my_ecs::prelude::*;
-    /// use std::hash::RandomState;
     ///
     /// #[derive(Entity, Debug, PartialEq)]
     /// struct Ea {
@@ -147,7 +137,7 @@ pub trait Entity: Components + Send + 'static {
     /// #[derive(Component, Debug, PartialEq)]
     /// struct Cb(String);
     ///
-    /// let mut cont: SparseSet<RandomState> = SparseSet::new();
+    /// let mut cont = SparseSet::new();
     /// Ea::register_to(&mut cont);
     /// Ea { ca: Ca(1), cb: Cb("2".to_owned()) }.move_to(&mut cont);
     ///
@@ -167,8 +157,8 @@ pub trait Entity: Components + Send + 'static {
 
     /// Returns entity key of the entity type.
     //
-    // TODO: Arc is not shared with the Arc inside of entity container.
-    // But we need to generate sorted component keys as an entity key.
+    // TODO: Arc is not shared with the Arc inside of entity container. But we need to generate
+    // sorted component keys as an entity key.
     #[doc(hidden)]
     fn key() -> EntityKey {
         let ckeys: Arc<[ComponentKey]> = (0..Self::num_components())
@@ -185,8 +175,7 @@ pub trait Entity: Components + Send + 'static {
         Self::LEN
     }
 
-    /// Returns a pointer to a component in this entity for the given field
-    /// index.
+    /// Returns a pointer to a component in this entity for the given field index.
     ///
     /// # Panics
     ///
@@ -216,19 +205,17 @@ pub trait Entity: Components + Send + 'static {
         }
     }
 
-    /// Moves the entity to an entity container then returns row index to the
-    /// moved entity.
+    /// Moves the entity to an entity container then returns row index to the moved entity.
     ///
     /// # How to move
     ///
-    /// Use [`AddEntity::begin_add_row`], [`AddEntity::add_value`], and
-    /// [`AddEntity::end_add_row`], then forget self.
+    /// Use [`AddEntity::begin_add_row`], [`AddEntity::add_value`], and [`AddEntity::end_add_row`],
+    /// then forget self.
     ///
     /// # Examples
     ///
     /// ```
     /// use my_ecs::prelude::*;
-    /// use std::hash::RandomState;
     ///
     /// #[derive(Entity, Debug, PartialEq)]
     /// struct Ea {
@@ -240,7 +227,7 @@ pub trait Entity: Components + Send + 'static {
     /// #[derive(Component, Debug, PartialEq)]
     /// struct Cb(String);
     ///
-    /// let mut cont: SparseSet<RandomState> = SparseSet::new();
+    /// let mut cont = SparseSet::new();
     /// Ea::register_to(&mut cont);
     /// Ea { ca: Ca(42), cb: Cb("cb".to_owned()) }.move_to(&mut cont);
     /// assert_eq!(cont.len(), 1);
@@ -266,11 +253,10 @@ pub trait Entity: Components + Send + 'static {
         unsafe { cont.end_add_row() }
     }
 
-    /// Removes an entity for the given value index from an entity container
-    /// then returns the entity.
+    /// Removes an entity for the given value index from an entity container then returns the
+    /// entity.
     ///
-    /// See [`ContainEntity`] document when you need to know what value index
-    /// is.
+    /// See [`ContainEntity`] document when you need to know what value index is.
     ///
     /// # Panics
     ///
@@ -280,7 +266,6 @@ pub trait Entity: Components + Send + 'static {
     ///
     /// ```
     /// use my_ecs::prelude::*;
-    /// use std::hash::RandomState;
     ///
     /// #[derive(Entity, Debug, PartialEq)]
     /// struct Ea {
@@ -292,7 +277,7 @@ pub trait Entity: Components + Send + 'static {
     /// #[derive(Component, Debug, PartialEq)]
     /// struct Cb(String);
     ///
-    /// let mut cont: SparseSet<RandomState> = SparseSet::new();
+    /// let mut cont = SparseSet::new();
     /// Ea::register_to(&mut cont);
     /// Ea { ca: Ca(42), cb: Cb("cb".to_owned()) }.move_to(&mut cont);
     /// let e = Ea::take_from(&mut cont, 0);
@@ -324,36 +309,33 @@ pub trait Entity: Components + Send + 'static {
 
 /// A trait for collecting heterogeneous component types.
 ///
-/// In this trait, each component type is gathered in each component column and
-/// all columns have the same length so that it looks like 2d matrix.
+/// In this trait, each component type is gathered in each component column and all columns have the
+/// same length so that it looks like 2d matrix.
 ///
-/// When it comes to in & out types, this trait has intentionally raw pointer
-/// parameters not to use generic for object safety. So that you can hold
-/// various sorts of entity container in a single variable.
+/// When it comes to in & out types, this trait has intentionally raw pointer parameters not to use
+/// generic for object safety. So that you can hold various sorts of entity container in a single
+/// variable.
 ///
 /// # Index system
 ///
 /// There are three index systems for this trait.
 ///
-/// The first one is 'column index' which is for pointing a certain component
-/// column. When you add or remove component column from an entity container,
-/// you will get or need this column index. Column indices starts with 0 and
-/// increases by 1 as you put in a component column. To avoid confusion, column
-/// must be added in a sorted order by [`ComponentKey`].
+/// The first one is 'column index' which is for pointing a certain component column. When you add
+/// or remove component column from an entity container, you will get or need this column index.
+/// Column indices starts with 0 and increases by 1 as you put in a component column. To avoid
+/// confusion, column must be added in a sorted order by [`ComponentKey`].
 ///
-/// The second and third index systems are related to pointing a certain entity
-/// in an entity container. In other words, you need one of those index systems
-/// when you need access to a single entity.
+/// The second and third index systems are related to pointing a certain entity in an entity
+/// container. In other words, you need one of those index systems when you need access to a single
+/// entity.
 ///
-/// Second one is 'row index' which is a kind of outer index for each entity.
-/// You will get this row index when you put your entity in an entity container.
-/// Also, you can remove an entity using the row index. Row indices may not be
-/// in order and not consecutive.
+/// Second one is 'row index' which is a kind of outer index for each entity. You will get this row
+/// index when you put your entity in an entity container. Also, you can remove an entity using the
+/// row index. Row indices may not be in order and not consecutive.
 ///
-/// The last one is 'value index' which is inner index for each entity. In
-/// contrast to former one, value indices are in order and consecutive like
-/// indices on a slice. Plus, all component columns follows the same value
-/// indices in an entity container.
+/// The last one is 'value index' which is inner index for each entity. In contrast to former one,
+/// value indices are in order and consecutive like indices on a slice. Plus, all component columns
+/// follows the same value indices in an entity container.
 ///
 /// Take a look at example below.
 ///
@@ -370,7 +352,7 @@ pub trait Entity: Components + Send + 'static {
 ///
 /// ```
 /// use my_ecs::prelude::*;
-/// use std::{hash::RandomState, ptr::NonNull};
+/// use std::ptr::NonNull;
 ///
 /// #[derive(Entity)]
 /// struct Entity {
@@ -382,7 +364,7 @@ pub trait Entity: Components + Send + 'static {
 /// #[derive(Component)]
 /// struct Cb(i32);
 ///
-/// let mut cont: SparseSet<RandomState> = SparseSet::new();
+/// let mut cont = SparseSet::new();
 ///
 /// // Adds component columns.
 /// let ci_a = cont.add_column(tinfo!(Ca)).unwrap();
@@ -391,10 +373,14 @@ pub trait Entity: Components + Send + 'static {
 /// // Adds component values for the entity.
 /// cont.begin_add_row();
 /// let ri = unsafe {
-///     let ptr = NonNull::new(&mut Ca(4) as *mut Ca as *mut u8).unwrap();
+///     let mut value = Ca(4);
+///     let ptr = NonNull::new(&mut value as *mut Ca as *mut u8).unwrap();
 ///     cont.add_value(ci_a, ptr);
-///     let ptr = NonNull::new(&mut Cb(2) as *mut Cb as *mut u8).unwrap();
+///
+///     let mut value = Cb(2);
+///     let ptr = NonNull::new(&mut value as *mut Cb as *mut u8).unwrap();
 ///     cont.add_value(ci_b, ptr);
+///
 ///     cont.end_add_row()
 /// };
 /// assert_eq!(cont.len(), 1);
@@ -420,32 +406,27 @@ pub trait Entity: Components + Send + 'static {
 // Must object safe.
 #[allow(clippy::len_without_is_empty)]
 pub trait ContainEntity: RegisterComponent + BorrowComponent + AddEntity {
-    /// Creates a new entity container that has the same component types without
-    /// component values.
+    /// Creates a new entity container that has the same component types without component values.
     ///
-    /// In other words, the copied container doesn't have any entities in it. So
-    /// it's empty.
+    /// In other words, the copied container doesn't have any entities in it. So it's empty.
     ///
     /// # Examples
     ///
     /// ```
     /// use my_ecs::prelude::*;
-    /// use std::{hash::RandomState, ptr::NonNull, any::TypeId};
+    /// use std::{ptr::NonNull, any::TypeId};
     ///
-    /// #[derive(Entity)]
-    /// struct Entity {
-    ///     a: Ca,
-    /// }
     /// #[derive(Component)]
     /// struct Ca(i32);
     ///
-    /// let mut cont: SparseSet<RandomState> = SparseSet::new();
+    /// let mut cont = SparseSet::new();
     /// let ci = cont.add_column(tinfo!(Ca)).unwrap();
     ///
     /// // Adds component values for an entity.
     /// cont.begin_add_row();
     /// unsafe {
-    ///     let ptr = NonNull::new(&mut Ca(0) as *mut Ca as *mut u8).unwrap();
+    ///     let mut value = Ca(0);
+    ///     let ptr = NonNull::new(&mut value as *mut Ca as *mut u8).unwrap();
     ///     cont.add_value(ci, ptr);
     ///     cont.end_add_row();
     /// }
@@ -457,8 +438,8 @@ pub trait ContainEntity: RegisterComponent + BorrowComponent + AddEntity {
     /// ```
     fn create_twin(&self) -> Box<dyn ContainEntity>;
 
-    /// Retrieves an entity for the given component column index and row index
-    /// from the entity container.
+    /// Retrieves an entity for the given component column index and row index from the entity
+    /// container.
     ///
     /// If one of two indices is out of bounds, returns `None`.
     fn get_item_mut(&mut self, ci: usize, ri: usize) -> Option<NonNull<u8>>;
@@ -472,8 +453,8 @@ pub trait ContainEntity: RegisterComponent + BorrowComponent + AddEntity {
 
     /// Returns capacity of the entity container.
     ///
-    /// But if entity container doesn't support getting capacity, it returns
-    /// number of entities instead.
+    /// But if entity container doesn't support getting capacity, it returns number of entities
+    /// instead.
     ///
     /// # Examples
     ///
@@ -482,14 +463,13 @@ pub trait ContainEntity: RegisterComponent + BorrowComponent + AddEntity {
 
     /// May reserve at least `additional` extra capacity.
     ///
-    /// This method doesn't guarantee definite extension of capacity. It depends
-    /// on implementations.
+    /// This method doesn't guarantee definite extension of capacity. It depends on implementations.
     ///
     /// # Examples
     ///
     /// ```
     /// use my_ecs::prelude::*;
-    /// use std::{hash::RandomState, ptr::NonNull, any::TypeId};
+    /// use std::{ptr::NonNull, any::TypeId};
     ///
     /// #[derive(Entity)]
     /// struct Entity {
@@ -499,7 +479,7 @@ pub trait ContainEntity: RegisterComponent + BorrowComponent + AddEntity {
     /// struct Ca(i32);
     ///
     /// // SparseSet supports capacity.
-    /// let mut cont: SparseSet<RandomState> = SparseSet::new();
+    /// let mut cont = SparseSet::new();
     /// cont.add_column(tinfo!(Ca)).unwrap();
     /// assert_eq!(cont.capacity(), 0);
     ///
@@ -513,8 +493,8 @@ pub trait ContainEntity: RegisterComponent + BorrowComponent + AddEntity {
 
     /// May shrink capacity of the entity container as much as possible.
     ///
-    /// This method doesn't guarantee definite removal of extra capacity. It
-    /// depends on implementations.
+    /// This method doesn't guarantee definite removal of extra capacity. It depends on
+    /// implementations.
     ///
     /// # Examples
     ///
@@ -530,10 +510,9 @@ pub trait ContainEntity: RegisterComponent + BorrowComponent + AddEntity {
     /// # Safety
     ///
     /// Undefined behavior if
-    /// - Pointer to a value `val_ptr` is not a valid pointer for the column's
-    ///   type.
-    /// - After calling this method on columns in an entity container, any of
-    ///   columns doesn't have the same length.
+    /// - Pointer to a value `val_ptr` is not a valid pointer for the column's type.
+    /// - After calling this method on columns in an entity container, any of columns doesn't have
+    ///   the same length.
     unsafe fn resize_column(&mut self, ci: usize, new_len: usize, val_ptr: NonNull<u8>);
 }
 
@@ -543,27 +522,24 @@ pub trait ContainEntity: RegisterComponent + BorrowComponent + AddEntity {
 //
 // Must object safe.
 pub trait RegisterComponent {
-    /// Adds a component column to the entity container then returns column
-    /// index.
+    /// Adds a component column to the entity container then returns column index.
     ///
-    /// But the entity container failed to add new entity for some reason,
-    /// returns `None`. You can get [`TypeInfo`] from any static types using
-    /// [`tinfo`](crate::tinfo) macro.
+    /// But the entity container failed to add new entity for some reason, returns `None`. You can
+    /// get [`TypeInfo`] from any static types using [`tinfo`](crate::tinfo) macro.
     ///
-    /// Column index is guaranteed to be increased one by one from zero
-    /// whenever you call this method, which means you can get column index
-    /// from order you added components.
+    /// Column index is guaranteed to be increased one by one from zero whenever you call this
+    /// method, which means you can get column index from order you added components.
     ///
     /// # Examples
     ///
     /// ```
     /// use my_ecs::prelude::*;
-    /// use std::{hash::RandomState, any::TypeId};
+    /// use std::any::TypeId;
     ///
     /// #[derive(Component)]
     /// struct Ca;
     ///
-    /// let mut cont: SparseSet<RandomState> = SparseSet::new();
+    /// let mut cont = SparseSet::new();
     ///
     /// cont.add_column(tinfo!(Ca));
     /// assert!(cont.contains_column(&TypeId::of::<Ca>()));
@@ -576,20 +552,19 @@ pub trait RegisterComponent {
 
     /// Removes the component column from the entity container.
     ///
-    /// If removal is successful, returns [`TypeInfo`] of the removed component
-    /// column. But if the entity container doesn't have component column for
-    /// the given column index, returns `None`.
+    /// If removal is successful, returns [`TypeInfo`] of the removed component column. But if the
+    /// entity container doesn't have component column for the given column index, returns `None`.
     ///
     /// # Examples
     ///
     /// ```
     /// use my_ecs::prelude::*;
-    /// use std::{hash::RandomState, any::TypeId};
+    /// use std::any::TypeId;
     ///
     /// #[derive(Component)]
     /// struct Ca;
     ///
-    /// let mut cont: SparseSet<RandomState> = SparseSet::new();
+    /// let mut cont = SparseSet::new();
     ///
     /// let col_idx = cont.add_column(tinfo!(Ca)).unwrap();
     /// assert!(cont.contains_column(&TypeId::of::<Ca>()));
@@ -602,21 +577,20 @@ pub trait RegisterComponent {
 
     /// Retrieves column index for the given component type.
     ///
-    /// If there is not the component column in the entity container, returns
-    /// `None`
+    /// If there is not the component column in the entity container, returns `None`
     ///
     /// # Examples
     ///
     /// ```
     /// use my_ecs::prelude::*;
-    /// use std::{hash::RandomState, any::TypeId};
+    /// use std::any::TypeId;
     ///
     /// #[derive(Component)]
     /// struct Ca;
     /// #[derive(Component)]
     /// struct Cb;
     ///
-    /// let mut cont: SparseSet<RandomState> = SparseSet::new();
+    /// let mut cont = SparseSet::new();
     ///
     /// let col_idx = cont.add_column(tinfo!(Ca)).unwrap();
     /// assert_eq!(cont.get_column_index(&TypeId::of::<Ca>()).unwrap(), col_idx);
@@ -627,19 +601,17 @@ pub trait RegisterComponent {
 
     /// Retrieves [`TypeInfo`] of the component for the given column index.
     ///
-    /// If there is not the component column in the entity container, returns
-    /// `None`
+    /// If there is not the component column in the entity container, returns `None`
     ///
     /// # Examples
     ///
     /// ```
     /// use my_ecs::prelude::*;
-    /// use std::hash::RandomState;
     ///
     /// #[derive(Component)]
     /// struct Ca;
     ///
-    /// let mut cont: SparseSet<RandomState> = SparseSet::new();
+    /// let mut cont = SparseSet::new();
     ///
     /// let col_idx = cont.add_column(tinfo!(Ca)).unwrap();
     /// let tinfo = cont.get_column_info(col_idx);
@@ -653,14 +625,13 @@ pub trait RegisterComponent {
     ///
     /// ```
     /// use my_ecs::prelude::*;
-    /// use std::hash::RandomState;
     ///
     /// #[derive(Component)]
     /// struct Ca;
     /// #[derive(Component)]
     /// struct Cb;
     ///
-    /// let mut cont: SparseSet<RandomState> = SparseSet::new();
+    /// let mut cont = SparseSet::new();
     /// assert_eq!(cont.num_columns(), 0);
     ///
     /// cont.add_column(tinfo!(Ca));
@@ -676,12 +647,12 @@ pub trait RegisterComponent {
     ///
     /// ```
     /// use my_ecs::prelude::*;
-    /// use std::{hash::RandomState, any::TypeId};
+    /// use std::any::TypeId;
     ///
     /// #[derive(Component)]
     /// struct Ca;
     ///
-    /// let mut cont: SparseSet<RandomState> = SparseSet::new();
+    /// let mut cont = SparseSet::new();
     /// assert!(!cont.contains_column(&TypeId::of::<Ca>()));
     ///
     /// cont.add_column(tinfo!(Ca));
@@ -696,23 +667,23 @@ pub trait RegisterComponent {
 ///
 /// See [`ContainEntity`] for more information.
 //
-// Must object safe.
+// Must be object safe.
 pub trait BorrowComponent {
     /// Borrows component column for the given column index.
     ///
-    /// If borrow is successful, returns [`RawGetter`] of the component column.
-    /// Otherwise, returns [`BorrowError`](crate::ds::BorrowError).
+    /// If borrow is successful, returns [`RawGetter`] of the component column. Otherwise, returns
+    /// [`BorrowError`](crate::ds::BorrowError).
     ///
     /// # Examples
     ///
     /// ```
     /// use my_ecs::prelude::*;
-    /// use std::{hash::RandomState, any::TypeId};
+    /// use std::any::TypeId;
     ///
     /// #[derive(Component)]
     /// struct Ca;
     ///
-    /// let mut cont: SparseSet<RandomState> = SparseSet::new();
+    /// let mut cont = SparseSet::new();
     /// cont.add_column(tinfo!(Ca));
     ///
     /// let col_idx = cont.get_column_index(&TypeId::of::<Ca>()).unwrap();
@@ -722,19 +693,19 @@ pub trait BorrowComponent {
 
     /// Borrows component column mutably for the given column index.
     ///
-    /// If borrow is successful, returns [`RawGetter`] of the component column.
-    /// Otherwise, returns [`BorrowError`](crate::ds::BorrowError).
+    /// If borrow is successful, returns [`RawGetter`] of the component column. Otherwise, returns
+    /// [`BorrowError`](crate::ds::BorrowError).
     ///
     /// # Examples
     ///
     /// ```
     /// use my_ecs::prelude::*;
-    /// use std::{hash::RandomState, any::TypeId};
+    /// use std::any::TypeId;
     ///
     /// #[derive(Component)]
     /// struct Ca;
     ///
-    /// let mut cont: SparseSet<RandomState> = SparseSet::new();
+    /// let mut cont = SparseSet::new();
     /// cont.add_column(tinfo!(Ca));
     ///
     /// let col_idx = cont.get_column_index(&TypeId::of::<Ca>()).unwrap();
@@ -744,8 +715,7 @@ pub trait BorrowComponent {
 
     /// Retrieves component column pointer for the given column index.
     ///
-    /// If there is not the component column in the entity container, returns
-    /// `None`
+    /// If there is not the component column in the entity container, returns `None`
     ///
     /// # Safety
     ///
@@ -766,16 +736,13 @@ pub trait AddEntity: RegisterComponent {
     ///
     /// # Panics
     ///
-    /// May panic if any component columns were borrowed and not returned yet.
-    /// But implementations must guarantee that one of
-    /// [`AddEntity::begin_add_row`], [`AddEntity::add_value`], and
-    /// [`AddEntity::end_add_row`] panics if borrowed component column is
-    /// detected.
+    /// May panic if any component columns were borrowed and not returned yet. But implementations
+    /// must guarantee that one of [`AddEntity::begin_add_row`], [`AddEntity::add_value`], and
+    /// [`AddEntity::end_add_row`] panics if borrowed component column is detected.
     ///
     /// # Safety
     ///
-    /// This method must be followed by [`AddEntity::add_value`] and
-    /// [`AddEntity::end_add_row`].
+    /// This method must be followed by [`AddEntity::add_value`] and [`AddEntity::end_add_row`].
     ///
     /// # Examples
     ///
@@ -784,9 +751,8 @@ pub trait AddEntity: RegisterComponent {
 
     /// Inserts a component value of an entity in the entity container.
     ///
-    /// This method creates a bitwise copy of the value, so that caller must not
-    /// access the value in any ways including its drop procedure after calling
-    /// this method.
+    /// This method creates a bitwise copy of the value, so that caller must not access the value in
+    /// any ways including its drop procedure after calling this method.
     ///
     /// # Panics
     ///
@@ -806,8 +772,8 @@ pub trait AddEntity: RegisterComponent {
     /// See [`ContainEntity`] document.
     unsafe fn add_value(&mut self, ci: usize, val_ptr: NonNull<u8>);
 
-    /// Finishes inserting component values of an entity in the entity
-    /// container then returns row index to the inserted entity.
+    /// Finishes inserting component values of an entity in the entity container then returns row
+    /// index to the inserted entity.
     ///
     /// # Panics
     ///
@@ -815,25 +781,23 @@ pub trait AddEntity: RegisterComponent {
     ///
     /// # Safety
     ///
-    /// Caller must have called [`AddEntity::begin_add_row`] once and
-    /// [`AddEntity::add_value`] number of component columns times before
-    /// calling to this method for just one entity.
+    /// Caller must have called [`AddEntity::begin_add_row`] once and [`AddEntity::add_value`]
+    /// number of component columns times before calling to this method for just one entity.
     ///
     /// # Examples
     ///
     /// See [`ContainEntity`] document.
     unsafe fn end_add_row(&mut self) -> usize;
 
-    /// Retrieves a pointer to a component value for the given column and value
-    /// indices.
+    /// Retrieves a pointer to a component value for the given column and value indices.
     ///
     /// If the given index is out of bounds, returns None.
     fn value_ptr_by_value_index(&self, ci: usize, vi: usize) -> Option<NonNull<u8>>;
 
     /// Removes an entity for the given row index from the entity container.
     ///
-    /// If removal is successful, returns true. Otherwise, for instance index
-    /// is out of bounds, returns false.
+    /// If removal is successful, returns true. Otherwise, for instance index is out of bounds,
+    /// returns false.
     ///
     /// # Examples
     ///
@@ -866,9 +830,8 @@ pub trait AddEntity: RegisterComponent {
     ///
     /// # Panics
     ///
-    /// May panic if any component columns were borrowed and not returned yet.
-    /// But implementations must guarantee that one of methods below panic if
-    /// borrowed component column is detected.
+    /// May panic if any component columns were borrowed and not returned yet. But implementations
+    /// must guarantee that one of methods below panic if borrowed component column is detected.
     /// - [`AddEntity::begin_remove_row_by_value_index`]
     /// - [`AddEntity::remove_value_by_value_index`]
     /// - [`AddEntity::drop_value_by_value_index`]
@@ -878,17 +841,15 @@ pub trait AddEntity: RegisterComponent {
     /// # Safety
     ///
     /// Caller must guarantee
-    /// - This method must be followed by
-    ///   [`AddEntity::remove_value_by_value_index`] and
-    ///   [`AddEntity::end_remove_row_by_value_index`].
-    ///   [`AddEntity::remove_value_by_value_index`] can be replaced by
-    ///   [`AddEntity::drop_value_by_value_index`] or
+    /// - This method must be followed by [`AddEntity::remove_value_by_value_index`] and
+    ///   [`AddEntity::end_remove_row_by_value_index`]. [`AddEntity::remove_value_by_value_index`]
+    ///   can be replaced by [`AddEntity::drop_value_by_value_index`] or
     ///   [`AddEntity::forget_value_by_value_index`].
     /// - Value index `vi` is not out of bounds.
     unsafe fn begin_remove_row_by_value_index(&mut self, vi: usize);
 
-    /// Removes a component value of an entity in the entity container then
-    /// write it to the given buffer.
+    /// Removes a component value of an entity in the entity container then write it to the given
+    /// buffer.
     ///
     /// Caller must choose one of methods below to take a component value out.
     /// - [`AddEntity::remove_value_by_value_index`].
@@ -902,8 +863,7 @@ pub trait AddEntity: RegisterComponent {
     /// # Safety
     ///
     /// Caller must guarantee
-    /// - This method must be called between
-    ///   [`AddEntity::remove_value_by_value_index`] and
+    /// - This method must be called between [`AddEntity::remove_value_by_value_index`] and
     ///   [`AddEntity::end_remove_row_by_value_index`] for all components.
     /// - Column index `ci` is not out of bounds.
     /// - Value index `vi` is not out of bounds.
@@ -924,15 +884,13 @@ pub trait AddEntity: RegisterComponent {
     /// # Safety
     ///
     /// Caller must guarantee
-    /// - This method must be called between
-    ///   [`AddEntity::remove_value_by_value_index`] and
+    /// - This method must be called between [`AddEntity::remove_value_by_value_index`] and
     ///   [`AddEntity::end_remove_row_by_value_index`] for all components.
     /// - Column index `ci` is not out of bounds.
     /// - Value index `vi` is not out of bounds.
     unsafe fn drop_value_by_value_index(&mut self, ci: usize, vi: usize);
 
-    /// Removes and forgets a component value of an entity in the entity
-    /// container.
+    /// Removes and forgets a component value of an entity in the entity container.
     ///
     /// Caller must choose one of methods below to take a component value out.
     /// - [`AddEntity::remove_value_by_value_index`].
@@ -957,10 +915,9 @@ pub trait AddEntity: RegisterComponent {
     /// # Safety
     ///
     /// Caller must guarantee
-    /// - Caller must have called [`AddEntity::begin_remove_row_by_value_index`]
-    ///   once and [`AddEntity::remove_value_by_value_index`] number of
-    ///   component columns times before calling to this method for just one
-    ///   entity.
+    /// - Caller must have called [`AddEntity::begin_remove_row_by_value_index`] once and
+    ///   [`AddEntity::remove_value_by_value_index`] number of component columns times before
+    ///   calling to this method for just one entity.
     /// - Value index `vi` is not out of bounds.
     unsafe fn end_remove_row_by_value_index(&mut self, vi: usize);
 }
@@ -1013,30 +970,28 @@ impl fmt::Debug for EntityId {
 /// - Name: Unique name for the entity. Each entity must have its name.
 /// - Type: If the entity is declared statically, it has its own type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum EntityKey {
+pub enum EntityKey {
     /// Component keys, another type of [`TypeId`], that belong to an entity.
     ///
-    /// Searching an entity container using component keys always succeeds if
-    /// the keys are valid. In searching, component keys must be sorted and
-    /// deduplicated.
+    /// Searching an entity container using component keys always succeeds if the keys are valid. In
+    /// searching, component keys must be sorted and deduplicated.
     Ckeys(Arc<[ComponentKey]>),
 
     /// Index to an entity container.
     ///
-    /// Searching an entity container using entity index always succeeds if
-    /// the index is valid.
+    /// Searching an entity container using entity index always succeeds if the index is valid.
     Index(EntityIndex),
 
     /// Name of an entity container.
     ///
-    /// Entity container may not have its name. In this casa, it fails to search
-    /// an entity container using entity name.
+    /// Entity container may not have its name. In this casa, it fails to search an entity container
+    /// using entity name.
     Name(EntityName),
 }
 
-my_ecs_util::impl_from_for_enum!("outer" = EntityKey; "var" = Ckeys; "inner" = Arc<[ComponentKey]>);
-my_ecs_util::impl_from_for_enum!("outer" = EntityKey; "var" = Index; "inner" = EntityIndex);
-my_ecs_util::impl_from_for_enum!("outer" = EntityKey; "var" = Name; "inner" = EntityName);
+my_utils::impl_from_for_enum!("outer" = EntityKey; "var" = Ckeys; "inner" = Arc<[ComponentKey]>);
+my_utils::impl_from_for_enum!("outer" = EntityKey; "var" = Index; "inner" = EntityIndex);
+my_utils::impl_from_for_enum!("outer" = EntityKey; "var" = Name; "inner" = EntityName);
 
 impl EntityKey {
     pub(crate) fn index(&self) -> &EntityIndex {
@@ -1065,15 +1020,15 @@ pub(crate) enum EntityKeyRef<'r> {
     Name(&'r str),
 }
 
-my_ecs_util::impl_from_for_enum!(
+my_utils::impl_from_for_enum!(
     "lifetimes" = 'r;
     "outer" = EntityKeyRef; "var" = Ckeys; "inner" = &'r [ComponentKey]
 );
-my_ecs_util::impl_from_for_enum!(
+my_utils::impl_from_for_enum!(
     "lifetimes" = 'r;
     "outer" = EntityKeyRef; "var" = Index; "inner" = &'r EntityIndex
 );
-my_ecs_util::impl_from_for_enum!(
+my_utils::impl_from_for_enum!(
     "lifetimes" = 'r;
     "outer" = EntityKeyRef; "var" = Name; "inner" = &'r str
 );
@@ -1095,11 +1050,11 @@ impl EntityIndex {
     }
 
     pub fn index(&self) -> usize {
-        self.0.value
+        *self.0
     }
 
     pub fn generation(&self) -> u64 {
-        self.0.with
+        *self.0.get_back()
     }
 }
 
@@ -1117,8 +1072,7 @@ impl fmt::Display for EntityIndex {
 
 /// Unique entity name.
 ///
-/// An entity container can be distinguished by its name, so in other words, it
-/// must be unique.
+/// An entity container can be distinguished by its name, so in other words, it must be unique.
 #[derive(Hash, PartialEq, Eq, Clone, Debug)]
 #[repr(transparent)]
 pub struct EntityName(Arc<str>);
@@ -1179,8 +1133,8 @@ pub struct EntityTag {
 
     /// Sorted component keys.
     ///
-    /// Note that this is sorted, so that index may be different with colum
-    /// index used in [`Self::cont`].
+    /// Note that this is sorted, so that index may be different with colum index used in
+    /// [`Self::cont`].
     ckeys: Arc<[ComponentKey]>,
 
     /// Corresponding component names to component keys.

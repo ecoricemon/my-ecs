@@ -1,5 +1,4 @@
 use super::{
-    DynResult, EcsError,
     cache::{CacheStorage, RefreshCacheStorage},
     cmd::Command,
     ent::{
@@ -10,7 +9,7 @@ use super::{
     post::{Commander, Post},
     resource::{Resource, ResourceDesc, ResourceIndex, ResourceKey, ResourceStorage},
     sched::{
-        comm::{CommandReceiver, CommandSender, command_channel},
+        comm::{command_channel, CommandReceiver, CommandSender},
         ctrl::Scheduler,
     },
     sys::{
@@ -21,14 +20,16 @@ use super::{
         },
     },
     worker::Work,
+    DynResult, EcsError,
 };
+use crate::FxBuildHasher;
 use my_ecs_macros::repeat_macro;
-use my_ecs_util::{Or, With, WithResult, debug_format};
+use my_utils::{debug_format, Or, With, WithResult};
 use std::{
     any::Any,
     error::Error,
-    fmt::Debug,
-    hash::{BuildHasher, RandomState},
+    fmt::{self, Debug},
+    hash::BuildHasher,
     marker::PhantomData,
     mem,
     ops::{Deref, DerefMut},
@@ -44,10 +45,9 @@ pub mod prelude {
 
 /// Common interafaces that ECS instance should provide to clients.
 ///
-/// ECS instance should provide some methods for adding/removing entities,
-/// resources, and systems. Of cource compoenets are included in entities.
-/// Moreover, ECS insance is required to be able to execute commands without
-/// wrapping them in systems.
+/// ECS instance should provide some methods for adding/removing entities, resources, and systems.
+/// Of cource compoenets are included in entities. Moreover, ECS insance is required to be able to
+/// execute commands without wrapping them in systems.
 pub trait EcsEntry {
     // === System methods ===
 
@@ -61,7 +61,7 @@ pub trait EcsEntry {
     /// fn system0() { /* ... */ }
     /// fn system1() { /* ... */ }
     ///
-    /// Ecs::default(WorkerPool::new(), [])
+    /// Ecs::create(WorkerPool::new(), [])
     ///     .add_systems((system0, system1))
     ///     .unwrap();
     /// ```
@@ -81,7 +81,7 @@ pub trait EcsEntry {
     ///
     /// fn system() { /* ... */ }
     ///
-    /// Ecs::default(WorkerPool::new(), [])
+    /// Ecs::create(WorkerPool::new(), [])
     ///     .add_system(system)
     ///     .unwrap();
     /// ```
@@ -105,7 +105,7 @@ pub trait EcsEntry {
     /// let s = "string1".to_owned();
     /// let system1 = move || { drop(s); };
     ///
-    /// Ecs::default(WorkerPool::new(), [])
+    /// Ecs::create(WorkerPool::new(), [])
     ///     .add_once_systems((system0, system1))
     ///     .unwrap();
     /// ```
@@ -126,7 +126,7 @@ pub trait EcsEntry {
     /// let s = "string0".to_owned();
     /// let system = move || { drop(s); };
     ///
-    /// Ecs::default(WorkerPool::new(), [])
+    /// Ecs::create(WorkerPool::new(), [])
     ///     .add_once_system(system)
     ///     .unwrap();
     /// ```
@@ -145,7 +145,7 @@ pub trait EcsEntry {
     /// ```
     /// use my_ecs::prelude::*;
     ///
-    /// let mut ecs = Ecs::default(WorkerPool::new(), []);
+    /// let mut ecs = Ecs::create(WorkerPool::new(), []);
     ///
     /// // Adds an inactive empty system.
     /// let desc = SystemDesc::new().with_activation(0, InsertPos::Back);
@@ -165,7 +165,7 @@ pub trait EcsEntry {
     /// ```
     /// use my_ecs::prelude::*;
     ///
-    /// let mut ecs = Ecs::default(WorkerPool::new(), []);
+    /// let mut ecs = Ecs::create(WorkerPool::new(), []);
     ///
     /// // Active system cannot be activated again.
     /// let sid = ecs.add_system(|| { /* ... */ }).unwrap();
@@ -194,7 +194,7 @@ pub trait EcsEntry {
     /// ```
     /// use my_ecs::prelude::*;
     ///
-    /// let mut ecs = Ecs::default(WorkerPool::new(), []);
+    /// let mut ecs = Ecs::create(WorkerPool::new(), []);
     ///
     /// // Inactivates an inactive system takes no effect.
     /// let desc = SystemDesc::new().with_activation(0, InsertPos::Back);
@@ -221,7 +221,7 @@ pub trait EcsEntry {
     /// #[derive(Entity)] struct E { c: C }
     /// #[derive(Component)] struct C;
     ///
-    /// Ecs::default(WorkerPool::new(), [])
+    /// Ecs::create(WorkerPool::new(), [])
     ///     .register_entity_of::<E>()
     ///     .unwrap();
     /// ```
@@ -243,11 +243,11 @@ pub trait EcsEntry {
     ///
     /// let mut desc = EntityReg::new(
     ///     Some(EntityName::new("my-entity".into())),
-    ///     Box::new(SparseSet::<std::hash::RandomState>::new()),
+    ///     Box::new(SparseSet::new()),
     /// );
     /// desc.add_component_of::<C>();
     ///
-    /// Ecs::default(WorkerPool::new(), [])
+    /// Ecs::create(WorkerPool::new(), [])
     ///     .register_entity(desc)
     ///     .unwrap();
     /// ```
@@ -264,20 +264,20 @@ pub trait EcsEntry {
     /// #[derive(Component)] struct Ca;
     /// #[derive(Component)] struct Cb;
     ///
-    /// let mut ecs = Ecs::default(WorkerPool::new(), []);
+    /// let mut ecs = Ecs::create(WorkerPool::new(), []);
     ///
     /// // You can unregister an entity type using entity type itself.
     /// let res = ecs
     ///     .register_entity_of::<E>()
     ///     .unregister_entity::<E>()
-    ///     .take();
+    ///     .into_result();
     /// assert!(res.is_ok());
     ///
     /// // Entity can be also identified by a combination of component types.
     /// let res = ecs
     ///     .register_entity_of::<E>()
     ///     .unregister_entity::<(Ca, Cb)>()
-    ///     .take();
+    ///     .into_result();
     /// assert!(res.is_ok());
     /// ```
     fn unregister_entity<C>(&mut self) -> WithResult<&mut Self, Box<dyn ContainEntity>, EcsError>
@@ -294,7 +294,7 @@ pub trait EcsEntry {
     /// #[derive(Entity)] struct E { c: C }
     /// #[derive(Component)] struct C;
     ///
-    /// let mut ecs = Ecs::default(WorkerPool::new(), []);
+    /// let mut ecs = Ecs::create(WorkerPool::new(), []);
     /// let ei = ecs.register_entity_of::<E>().unwrap();
     /// ecs.add_entity(ei, E { c: C }).unwrap();
     /// ```
@@ -316,7 +316,7 @@ pub trait EcsEntry {
     /// #[derive(Entity)] struct E { c: C }
     /// #[derive(Component)] struct C;
     ///
-    /// let mut ecs = Ecs::default(WorkerPool::new(), []);
+    /// let mut ecs = Ecs::create(WorkerPool::new(), []);
     /// let ei = ecs.register_entity_of::<E>().unwrap();
     /// let eid = ecs.add_entity(ei, E { c: C }).unwrap();
     /// let res = ecs.remove_entity(eid);
@@ -336,7 +336,7 @@ pub trait EcsEntry {
     /// #[derive(Resource)] struct Ra(i32);
     /// #[derive(Resource)] struct Rb(i32);
     ///
-    /// Ecs::default(WorkerPool::new(), [])
+    /// Ecs::create(WorkerPool::new(), [])
     ///     .add_resources((Ra(0), Rb(1)))
     ///     .unwrap();
     /// ```
@@ -359,7 +359,7 @@ pub trait EcsEntry {
     /// #[derive(Resource)] struct Ra;
     /// #[derive(Resource)] struct Rb(i32);
     ///
-    /// let mut ecs = Ecs::default(WorkerPool::new(), []);
+    /// let mut ecs = Ecs::create(WorkerPool::new(), []);
     ///
     /// // Adds an owned resource.
     /// let res = ecs.add_resource(Ra);
@@ -393,7 +393,7 @@ pub trait EcsEntry {
     /// #[derive(Resource, Debug, PartialEq)]
     /// struct R(i32);
     ///
-    /// let mut ecs = Ecs::default(WorkerPool::new(), []);
+    /// let mut ecs = Ecs::create(WorkerPool::new(), []);
     ///
     /// let res = ecs
     ///     .add_resource(R(42))
@@ -414,7 +414,7 @@ pub trait EcsEntry {
     ///
     /// #[derive(Resource)] struct R(i32);
     ///
-    /// let mut ecs = Ecs::default(WorkerPool::new(), []);
+    /// let mut ecs = Ecs::create(WorkerPool::new(), []);
     ///
     /// ecs.add_resource(R(42)).unwrap();
     /// let r = ecs.get_resource::<R>().unwrap();
@@ -433,7 +433,7 @@ pub trait EcsEntry {
     ///
     /// #[derive(Resource)] struct R(i32);
     ///
-    /// let mut ecs = Ecs::default(WorkerPool::new(), []);
+    /// let mut ecs = Ecs::create(WorkerPool::new(), []);
     ///
     /// ecs.add_resource(R(42)).unwrap();
     /// let r = ecs.get_resource_mut::<R>().unwrap();
@@ -441,7 +441,6 @@ pub trait EcsEntry {
     ///
     /// let r = ecs.get_resource_mut::<R>().unwrap();
     /// assert_eq!(r.0, 43);
-    ///
     /// ```
     fn get_resource_mut<R>(&mut self) -> Option<&mut R>
     where
@@ -456,7 +455,7 @@ pub trait EcsEntry {
     ///
     /// #[derive(Resource)] struct R;
     ///
-    /// let mut ecs = Ecs::default(WorkerPool::new(), []);
+    /// let mut ecs = Ecs::create(WorkerPool::new(), []);
     ///
     /// let ei = ecs.add_resource(R).unwrap();
     /// let found = ecs.get_resource_index::<R>().unwrap();
@@ -478,7 +477,7 @@ pub trait EcsEntry {
     /// let cmd0 = |ecs: Ecs| -> DynResult<()> { /* ... */ Ok(()) };
     /// let cmd1 = |ecs: Ecs| -> DynResult<()> { /* ... */ Ok(()) };
     ///
-    /// Ecs::default(WorkerPool::new(), [])
+    /// Ecs::create(WorkerPool::new(), [])
     ///     .execute_commands((cmd0, cmd1))
     ///     .unwrap();
     /// ```
@@ -500,7 +499,7 @@ pub trait EcsEntry {
     /// #[derive(Component)] struct Ca;
     /// #[derive(Component)] struct Cb;
     ///
-    /// let mut ecs = Ecs::default(WorkerPool::new(), []);
+    /// let mut ecs = Ecs::create(WorkerPool::new(), []);
     /// let ei = ecs.register_entity_of::<E>().unwrap();
     /// let eid = ecs.add_entity(ei, E { a: Ca }).unwrap();
     ///
@@ -522,8 +521,8 @@ pub trait EcsEntry {
 
     /// Returns errors generated from commands or futures.
     ///
-    /// Commands and futures don't cause panic. Instead, errors are collected
-    /// in a vector. Clients can retrieve the vector using this method.
+    /// Commands and futures don't cause panic. Instead, errors are collected in a vector. Clients
+    /// can retrieve the vector using this method.
     fn errors(&mut self) -> Vec<Box<dyn Error + Send + Sync + 'static>>;
 }
 
@@ -556,7 +555,7 @@ macro_rules! impl_help_add_many_systems {
                     let ( $([<A $i>]),* ) = self;
 
                     $(
-                        match ecs.add_system([<A $i>]).take() {
+                        match ecs.add_system([<A $i>]).into_result() {
                             Ok(_) => {}
                             Err(e) => return WithResult::new(ecs, Err(e.without_data())),
                         }
@@ -599,7 +598,7 @@ macro_rules! impl_help_add_many_once {
                     let ( $([<A $i>]),* ) = self;
 
                     $(
-                        match ecs.add_once_system([<A $i>]).take() {
+                        match ecs.add_once_system([<A $i>]).into_result() {
                             Ok(_) => {}
                             Err(e) => return WithResult::new(ecs, Err(e.without_data())),
                         }
@@ -643,7 +642,7 @@ macro_rules! impl_help_add_many_resources {
                     let ( $([<A $i>]),* ) = self;
 
                     $(
-                        match ecs.add_resource([<A $i>]).take() {
+                        match ecs.add_resource([<A $i>]).into_result() {
                             Ok(_) => {}
                             Err(e) => return WithResult::new(ecs, Err(e.without_data())),
                         }
@@ -693,16 +692,16 @@ macro_rules! impl_help_execute_many_commands {
 repeat_macro!(impl_help_execute_many_commands, 1..=8);
 
 /// Internal function pointer table of [`EcsApp`].
-/// 
+///
 /// # Why we need function pointer
-/// 
-/// To declare [`Command`], clients need to put `EcsApp` as a parameter in their
-/// functions. But `EcsApp` is too verbose. So it is where [`Ecs`] comes in to
-/// play. `Ecs` doesn't have complex generic parameters so clients can easily
-/// remember and use it. This vtable helps `Ecs` to call functions in `EcsApp`.
+///
+/// To declare [`Command`], clients need to put `EcsApp` as a parameter in their functions. But
+/// `EcsApp` is too verbose. So it is where [`Ecs`] comes in to play. `Ecs` doesn't have complex
+/// generic parameters so clients can easily remember and use it. This vtable helps `Ecs` to call
+/// functions in `EcsApp`.
 #[rustfmt::skip]
 #[allow(clippy::type_complexity)]
-#[derive(Debug)]
+#[derive(Clone)]
 struct EcsVTable {
     // === System methods ===
 
@@ -728,8 +727,14 @@ struct EcsVTable {
     unregister_entity_inner:
         unsafe fn(NonNull<u8>, EntityKeyRef<'_>) -> Result<Box<dyn ContainEntity>, EcsError>,
 
+    /// Lifetime of the output must be shrunk properly.
     get_entity_container_mut:
-        unsafe fn(NonNull<u8>, EntityKeyRef<'_>) -> Option<&mut EntityContainer>,
+        unsafe fn(NonNull<u8>, EntityKeyRef<'_>) -> Option<&'static mut EntityContainer>,
+
+    /// Lifetime of the output must be shrunk properly.
+    get_two_entity_container_mut:
+        unsafe fn(NonNull<u8>, EntityKeyRef<'_>, EntityKeyRef<'_>)
+        -> Option<(&'static mut EntityContainer, &'static mut EntityContainer)>,
 
     // === Resource methods ===
 
@@ -757,7 +762,7 @@ struct EcsVTable {
 
     step:
         unsafe fn(NonNull<u8>),
-    
+
     errors:
         unsafe fn(NonNull<u8>) -> Vec<Box<dyn Error + Send + Sync + 'static>>,
 }
@@ -857,6 +862,19 @@ impl EcsVTable {
             this.get_entity_container_mut(ekey)
         }
 
+        unsafe fn get_two_entity_container_mut<'o, W, S>(
+            this: NonNull<u8>,
+            ekey1: EntityKeyRef<'_>,
+            ekey2: EntityKeyRef<'_>,
+        ) -> Option<(&'o mut EntityContainer, &'o mut EntityContainer)>
+        where
+            W: Work + 'static,
+            S: BuildHasher + Default + 'static,
+        {
+            let this: &'o mut EcsApp<W, S> = unsafe { this.cast().as_mut() };
+            this.get_two_entity_container_mut(ekey1, ekey2)
+        }
+
         unsafe fn add_resource_inner<W, S>(
             this: NonNull<u8>,
             desc: ResourceDesc,
@@ -953,6 +971,7 @@ impl EcsVTable {
             register_entity_inner: register_entity_inner::<W, S>,
             unregister_entity_inner: unregister_entity_inner::<W, S>,
             get_entity_container_mut: get_entity_container_mut::<W, S>,
+            get_two_entity_container_mut: get_two_entity_container_mut::<W, S>,
             add_resource_inner: add_resource_inner::<W, S>,
             remove_resource_inner: remove_resource_inner::<W, S>,
             get_resource_inner: get_resource_inner::<W, S>,
@@ -965,11 +984,17 @@ impl EcsVTable {
     }
 }
 
+impl Debug for EcsVTable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EcsVTable").finish_non_exhaustive()
+    }
+}
+
 /// A handle to [`EcsApp`], which is real ecs instance.
 ///
-/// This type is just for easy use in some cases such as writing a command. By
-/// removing verbose generic parameters, clients can declare parameters as `Ecs`
-/// instead of `EcsApp<W, S>` in their command functions for example.
+/// This type is just for easy use in some cases such as writing a command. By removing verbose
+/// generic parameters, clients can declare parameters as `Ecs` instead of `EcsApp<W, S>` in their
+/// command functions for example.
 //
 // Do not implement Clone. This must be carefully cloned.
 #[derive(Debug)]
@@ -978,7 +1003,7 @@ pub struct Ecs<'ecs> {
     this: NonNull<u8>,
 
     /// Function table of the [`EcsApp`].
-    vtable: NonNull<EcsVTable>,
+    vtable: EcsVTable,
 
     /// Borrows [`EcsApp`] mutably.
     _marker: PhantomData<&'ecs mut ()>,
@@ -987,9 +1012,8 @@ pub struct Ecs<'ecs> {
 impl<'ecs> Ecs<'ecs> {
     /// Creates [`EcsApp`] with the given worker pool and group information.
     ///
-    /// The returned instance uses [`RandomState`] as hasher builder for its
-    /// internal data structures. If you want another, call [`Ecs::create`]
-    /// instead.
+    /// The returned instance uses [`FxBuildHasher`] as hasher builder for its internal data
+    /// structures. If you want another, use [`Ecs::create`] instead.
     ///
     /// # Examples
     ///
@@ -998,55 +1022,46 @@ impl<'ecs> Ecs<'ecs> {
     ///
     /// // Creates `EcsApp` with one group consisting of 4 workers.
     /// let pool = WorkerPool::with_len(4);
-    /// let ecs = Ecs::default(pool, [4]);
+    /// let ecs = Ecs::create(pool, [4]);
     ///
     /// // Creates `EcsApp` with two groups consisting of 2 workers respectively.
     /// let pool = WorkerPool::with_len(4);
-    /// let ecs = Ecs::default(pool, [2, 2]);
+    /// let ecs = Ecs::create(pool, [2, 2]);
     /// ```
-    pub fn default<Wp, W, G>(pool: Wp, groups: G) -> EcsApp<W, RandomState>
+    pub fn create<Wp, W, G>(pool: Wp, groups: G) -> EcsApp<W, FxBuildHasher>
     where
         Wp: Into<Vec<W>>,
         W: Work + 'static,
         G: AsRef<[usize]>,
-    {
-        Self::create(pool.into(), groups.as_ref())
-    }
-
-    /// Creates [`EcsApp`] with the given workers, group information, and hasher
-    /// builder type.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use my_ecs::prelude::*;
-    /// use std::hash::{BuildHasher, DefaultHasher};
-    ///
-    /// // Something like `std::hash::RandomState`.
-    /// #[derive(Default)] struct FixedState;
-    /// impl BuildHasher for FixedState {
-    ///     type Hasher = DefaultHasher;
-    ///     fn build_hasher(&self) -> Self::Hasher {
-    ///         DefaultHasher::new()
-    ///     }
-    /// }
-    ///
-    /// // Creates `EcsApp` with one group consisting of 4 workers.
-    /// let pool = WorkerPool::with_len(4);
-    /// let ecs: EcsApp<_, FixedState> = Ecs::create(pool, [4]);
-    ///
-    /// // Creates `EcsApp` with two groups consisting of 2 workers respectively.
-    /// let pool = WorkerPool::with_len(4);
-    /// let ecs: EcsApp<_, FixedState> = Ecs::create(pool, [2, 2]);
-    /// ```
-    pub fn create<Wp, W, G, S>(pool: Wp, groups: G) -> EcsApp<W, S>
-    where
-        Wp: Into<Vec<W>>,
-        W: Work + 'static,
-        G: AsRef<[usize]>,
-        S: BuildHasher + Default + 'static,
     {
         EcsApp::new(pool.into(), groups.as_ref())
+    }
+
+    /// Creates [`EcsApp`] with the given workers, group information, and hasher builder type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use my_ecs::prelude::*;
+    /// use std::collections::hash_map::RandomState;
+    ///
+    /// // Creates `EcsApp` with one group consisting of 4 workers.
+    /// let pool = WorkerPool::with_len(4);
+    /// let ecs: EcsApp<_, _> = Ecs::create_with_hasher(pool, [4], || RandomState::new());
+    ///
+    /// // Creates `EcsApp` with two groups consisting of 2 workers respectively.
+    /// let pool = WorkerPool::with_len(4);
+    /// let ecs: EcsApp<_, _> = Ecs::create_with_hasher(pool, [2, 2], || RandomState::new());
+    /// ```
+    pub fn create_with_hasher<Wp, W, G, F, S>(pool: Wp, groups: G, hasher: F) -> EcsApp<W, S>
+    where
+        Wp: Into<Vec<W>>,
+        W: Work + 'static,
+        G: AsRef<[usize]>,
+        F: FnMut() -> S,
+        S: BuildHasher + Default + 'static,
+    {
+        EcsApp::with_hasher(pool.into(), groups.as_ref(), hasher)
     }
 
     fn new<W, S>(ecs: &'ecs mut EcsApp<W, S>) -> Self
@@ -1054,9 +1069,10 @@ impl<'ecs> Ecs<'ecs> {
         W: Work + 'static,
         S: BuildHasher + Default + 'static,
     {
+        let vtable = ecs.vtable.clone();
+
         unsafe {
             let this = NonNull::new_unchecked(ecs as *mut _ as *mut u8);
-            let vtable = NonNull::new_unchecked(&mut ecs.vtable as *mut _);
             Self {
                 this,
                 vtable,
@@ -1067,38 +1083,36 @@ impl<'ecs> Ecs<'ecs> {
 
     /// # Safety
     ///
-    /// Caller must guarantee that the returned replica will not violate pointer
-    /// rules. In other words, callers must comply pointer aliasing and must not
-    /// use it after free.
+    /// Caller must guarantee that the returned replica will not violate pointer rules. In other
+    /// words, callers must comply pointer aliasing and must not use it after free.
     pub(crate) unsafe fn copy(&self) -> Self {
         Self {
             this: self.this,
-            vtable: self.vtable,
+            vtable: self.vtable.clone(),
             _marker: self._marker,
         }
     }
 
-    /// Returns pointer to a certain entity container for the given entity key.
-    ///
-    /// Note that you can acquire two or more entity container pointers at a
-    /// time. But you must check pointer uniqueness when you're turning them
-    /// into mutable references.
-    pub(crate) fn entity_container_ptr(
+    pub(crate) fn get_ptr_entity_container(
         &self,
         ekey: EntityKeyRef<'_>,
     ) -> Option<NonNull<EntityContainer>> {
         unsafe {
-            let vtable = self.vtable.as_ref();
-            (vtable.get_entity_container_mut)(self.this, ekey)
+            (self.vtable.get_entity_container_mut)(self.this, ekey)
                 .map(|cont| NonNull::new_unchecked(cont as *mut _))
         }
     }
 
+    pub(crate) fn get_two_entity_container_mut(
+        &mut self,
+        ekey1: EntityKeyRef<'_>,
+        ekey2: EntityKeyRef<'_>,
+    ) -> Option<(&mut EntityContainer, &mut EntityContainer)> {
+        unsafe { (self.vtable.get_two_entity_container_mut)(self.this, ekey1, ekey2) }
+    }
+
     pub(crate) fn post_ptr(&self) -> NonNull<Post> {
-        unsafe {
-            let vtable = self.vtable.as_ref();
-            (vtable.post_ptr)(self.this)
-        }
+        unsafe { (self.vtable.post_ptr)(self.this) }
     }
 }
 
@@ -1126,8 +1140,7 @@ impl EcsEntry for Ecs<'_> {
 
         // Registers the system.
         let res = unsafe {
-            let vtable = self.vtable.as_ref();
-            (vtable.register_system_inner)(self.this, sdata, group_index, volatile, private)
+            (self.vtable.register_system_inner)(self.this, sdata, group_index, volatile, private)
         };
 
         // TODO: If we failed to activate it, we have to unregister it.
@@ -1174,10 +1187,7 @@ impl EcsEntry for Ecs<'_> {
     }
 
     fn unregister_system(&mut self, sid: SystemId) -> WithResult<&mut Self, (), EcsError> {
-        let res = unsafe {
-            let vtable = self.vtable.as_ref();
-            (vtable.unregister_system_inner)(self.this, &sid)
-        };
+        let res = unsafe { (self.vtable.unregister_system_inner)(self.this, &sid) };
         WithResult::new(self, res)
     }
 
@@ -1187,26 +1197,17 @@ impl EcsEntry for Ecs<'_> {
         at: InsertPos,
         live: Tick,
     ) -> WithResult<&mut Self, (), EcsError> {
-        let res = unsafe {
-            let vtable = self.vtable.as_ref();
-            (vtable.activate_system_inner)(self.this, target, at, live)
-        };
+        let res = unsafe { (self.vtable.activate_system_inner)(self.this, target, at, live) };
         WithResult::new(self, res)
     }
 
     fn inactivate_system(&mut self, sid: SystemId) -> WithResult<&mut Self, (), EcsError> {
-        let res = unsafe {
-            let vtable = self.vtable.as_ref();
-            (vtable.inactivate_system_inner)(self.this, &sid)
-        };
+        let res = unsafe { (self.vtable.inactivate_system_inner)(self.this, &sid) };
         WithResult::new(self, res)
     }
 
     fn register_entity(&mut self, desc: EntityReg) -> WithResult<&mut Self, EntityIndex, EcsError> {
-        let res = unsafe {
-            let vtable = self.vtable.as_ref();
-            (vtable.register_entity_inner)(self.this, desc)
-        };
+        let res = unsafe { (self.vtable.register_entity_inner)(self.this, desc) };
         WithResult::new(self, res)
     }
 
@@ -1216,10 +1217,7 @@ impl EcsEntry for Ecs<'_> {
     {
         let ckeys = C::sorted_keys();
         let ekey = EntityKeyRef::Ckeys(ckeys.as_ref());
-        let res = unsafe {
-            let vtable = self.vtable.as_ref();
-            (vtable.unregister_entity_inner)(self.this, ekey)
-        };
+        let res = unsafe { (self.vtable.unregister_entity_inner)(self.this, ekey) };
         WithResult::new(self, res)
     }
 
@@ -1233,10 +1231,7 @@ impl EcsEntry for Ecs<'_> {
     {
         let ekey = EntityKeyRef::Index(&ei);
 
-        let cont = unsafe {
-            let vtable = self.vtable.as_ref();
-            (vtable.get_entity_container_mut)(self.this, ekey)
-        };
+        let cont = unsafe { (self.vtable.get_entity_container_mut)(self.this, ekey) };
 
         let res = if let Some(cont) = cont {
             let ri = value.move_to(&mut **cont);
@@ -1252,10 +1247,7 @@ impl EcsEntry for Ecs<'_> {
         let ei = eid.container_index();
         let ekey = EntityKeyRef::Index(&ei);
 
-        let cont = unsafe {
-            let vtable = self.vtable.as_ref();
-            (vtable.get_entity_container_mut)(self.this, ekey)
-        };
+        let cont = unsafe { (self.vtable.get_entity_container_mut)(self.this, ekey) };
 
         let res = if let Some(cont) = cont {
             let ri = eid.row_index();
@@ -1280,10 +1272,7 @@ impl EcsEntry for Ecs<'_> {
     where
         T: Into<ResourceDesc>,
     {
-        let res = unsafe {
-            let vtable = self.vtable.as_ref();
-            (vtable.add_resource_inner)(self.this, desc.into())
-        };
+        let res = unsafe { (self.vtable.add_resource_inner)(self.this, desc.into()) };
         WithResult::new(self, res)
     }
 
@@ -1291,10 +1280,7 @@ impl EcsEntry for Ecs<'_> {
     where
         R: Resource,
     {
-        let res = unsafe {
-            let vtable = self.vtable.as_ref();
-            (vtable.remove_resource_inner)(self.this, &R::key())
-        };
+        let res = unsafe { (self.vtable.remove_resource_inner)(self.this, &R::key()) };
         let res = res.map(|opt| opt.map(|any| *any.downcast::<R>().unwrap()));
         WithResult::new(self, res)
     }
@@ -1304,8 +1290,8 @@ impl EcsEntry for Ecs<'_> {
         R: Resource,
     {
         unsafe {
-            let vtable = self.vtable.as_ref();
-            (vtable.get_resource_inner)(self.this, &R::key()).map(|ptr| ptr.cast::<R>().as_ref())
+            (self.vtable.get_resource_inner)(self.this, &R::key())
+                .map(|ptr| ptr.cast::<R>().as_ref())
         }
     }
 
@@ -1314,8 +1300,7 @@ impl EcsEntry for Ecs<'_> {
         R: Resource,
     {
         unsafe {
-            let vtable = self.vtable.as_ref();
-            (vtable.get_resource_mut_inner)(self.this, &R::key())
+            (self.vtable.get_resource_mut_inner)(self.this, &R::key())
                 .map(|ptr| ptr.cast::<R>().as_mut())
         }
     }
@@ -1324,10 +1309,7 @@ impl EcsEntry for Ecs<'_> {
     where
         R: Resource,
     {
-        unsafe {
-            let vtable = self.vtable.as_ref();
-            (vtable.get_resource_index_inner)(self.this, &R::key())
-        }
+        unsafe { (self.vtable.get_resource_index_inner)(self.this, &R::key()) }
     }
 
     fn execute_commands<T>(
@@ -1357,42 +1339,41 @@ impl EcsEntry for Ecs<'_> {
     }
 
     fn errors(&mut self) -> Vec<Box<dyn Error + Send + Sync + 'static>> {
-        unsafe {
-            let vtable = self.vtable.as_ref();
-            (vtable.errors)(self.this)
-        }
+        unsafe { (self.vtable.errors)(self.this) }
     }
 }
 
 /// An ECS instance.
 ///
-/// Clients can create the instance via [`Ecs::default`], [`Ecs::create`] or
-/// [`EcsApp::new`]. It's possible to have multiple ECS instances as well if you
-/// really need to do so, but it's recommended to have multiple groups instead
-/// of multiple instances to reduce memory footprint and share data with ease.
+/// Clients can create the instance via [`Ecs::create`], [`Ecs::create`] or [`EcsApp::new`]. It's
+/// possible to have multiple ECS instances as well if you really need to do so, but it's
+/// recommended to have multiple groups instead of multiple instances to reduce memory footprint and
+/// share data with ease.
 ///
 /// * `W` - Worker type.
 /// * `S` - Hasher builder type.
 #[derive(Debug)]
-pub struct EcsApp<W, S = RandomState>
+pub struct EcsApp<W, S = FxBuildHasher>
 where
     W: Work + 'static,
     S: BuildHasher + Default + 'static,
 {
     /// System storage.
-    sys_stor: SystemStorage<S>,
+    sys_stor: SystemStorage,
 
     /// Entity and component storage.
+    ///
     /// The storage contains all kinds of entities and components.
     ent_stor: EntityStorage<S>,
 
     /// Resource storage.
+    ///
     /// The storage contains pointers to resources.
     res_stor: ResourceStorage<S>,
 
-    cache_stor: CacheStorage<S>,
+    cache_stor: CacheStorage,
 
-    sched: Scheduler<W, S>,
+    sched: Scheduler<W>,
 
     cmd_errs: Vec<Box<dyn Error + Send + Sync + 'static>>,
 
@@ -1402,51 +1383,45 @@ where
     rx_cmd: Rc<CommandReceiver>,
 }
 
-impl<W, S> EcsApp<W, S>
-where
-    W: Work + 'static,
-    S: BuildHasher + Default + 'static,
-{
-    /// Creates an ECS instance with the given workers, group information, and
-    /// hasher builder type.
+impl<W: Work + 'static> EcsApp<W> {
+    /// Creates an ECS instance with the given workers, group information, and hasher builder type.
     ///
     /// # Examples
     ///
     /// ```
     /// use my_ecs::prelude::*;
-    /// use std::hash::{BuildHasher, DefaultHasher};
-    ///
-    /// // Something like `std::hash::RandomState`.
-    /// #[derive(Default)]
-    /// struct FixedState;
-    /// impl BuildHasher for FixedState {
-    ///     type Hasher = DefaultHasher;
-    ///     fn build_hasher(&self) -> Self::Hasher {
-    ///         DefaultHasher::new()
-    ///     }
-    /// }
     ///
     /// // Creates `EcsApp` with one group consisting of 4 workers.
     /// let pool = WorkerPool::with_len(4);
-    /// let ecs: EcsApp<_, FixedState> = EcsApp::new(pool.into(), &[4]);
+    /// let ecs = EcsApp::new(pool.into(), &[4]);
     ///
     /// // Creates `EcsApp` with two groups consisting of 2 workers respectively.
     /// let pool = WorkerPool::with_len(4);
-    /// let ecs: EcsApp<_, FixedState> = EcsApp::new(pool.into(), &[2, 2]);
+    /// let ecs = EcsApp::new(pool.into(), &[2, 2]);
     /// ```
     pub fn new(workers: Vec<W>, groups: &[usize]) -> Self {
+        Self::with_hasher(workers, groups, FxBuildHasher::default)
+    }
+}
+
+impl<W, S> EcsApp<W, S>
+where
+    W: Work + 'static,
+    S: BuildHasher + Default + 'static,
+{
+    pub fn with_hasher<F: FnMut() -> S>(workers: Vec<W>, groups: &[usize], mut hasher: F) -> Self {
         // We need a group even if it's empty for now.
         let groups = if groups.is_empty() { &[0][..] } else { groups };
 
         let (tx_cmd, rx_cmd) = command_channel(thread::current());
         let rx_cmd = Rc::new(rx_cmd);
-        let sched = Scheduler::new(workers, groups, tx_cmd.clone(), Rc::clone(&rx_cmd));
+        let sched = Scheduler::new(workers, groups, tx_cmd.clone());
 
         let mut this = Self {
             sys_stor: SystemStorage::new(groups.len()),
-            ent_stor: EntityStorage::new(),
-            res_stor: ResourceStorage::new(),
-            cache_stor: CacheStorage::new(),
+            ent_stor: EntityStorage::with_hasher(&mut hasher),
+            res_stor: ResourceStorage::with_hasher(hasher),
+            cache_stor: CacheStorage::default(),
             sched,
             cmd_errs: Vec::new(),
             vtable: EcsVTable::new::<W, S>(),
@@ -1456,9 +1431,9 @@ where
 
         // Registers a `Post` resource.
         let tx_msg = this.sched.get_send_message_queue().clone();
-        let fut_cnt = Arc::clone(this.sched.get_future_count());
-        let tx_dedi = this.sched.get_tx_dedi_queue().clone();
-        let post = Post::new(tx_cmd, tx_msg, tx_dedi, fut_cnt);
+        let dedi_fut_cnt = Arc::clone(this.sched.get_dedicated_future_count());
+        let tx_dedi = this.sched.get_dedicated_send_task_queue().clone();
+        let post = Post::new(tx_cmd, tx_msg, tx_dedi, dedi_fut_cnt);
         this.add_resource(post).unwrap();
 
         this
@@ -1470,13 +1445,9 @@ where
         self.clear_command();
         self.clear_system();
 
-        // Takes workers out from the scheduler.
+        // Takes workers out of the scheduler.
         let tx_cmd = self.tx_cmd.clone();
-        let rx_cmd = Rc::clone(&self.rx_cmd);
-        let old = mem::replace(
-            &mut self.sched,
-            Scheduler::new(Vec::new(), &[], tx_cmd, rx_cmd),
-        );
+        let old = mem::replace(&mut self.sched, Scheduler::new(Vec::new(), &[], tx_cmd));
         old.take_workers()
     }
 
@@ -1487,7 +1458,7 @@ where
     /// ```
     /// use my_ecs::prelude::*;
     ///
-    /// let v = Ecs::default(WorkerPool::with_len(1), [1])
+    /// let v = Ecs::create(WorkerPool::with_len(1), [1])
     ///     .add_once_system(|| {
     ///         panic!("panics on purpose");
     ///     })
@@ -1508,8 +1479,8 @@ where
 
     /// Executes active systems of all groups once.
     ///
-    /// Generated commands during the execution will be completely consumed at
-    /// the end of system execution.
+    /// Generated commands during the execution will be completely consumed at the end of system
+    /// execution.
     ///
     /// # Examples
     ///
@@ -1520,7 +1491,7 @@ where
     /// let cnt = Arc::new(Mutex::new(0));
     /// let c_cnt = Arc::clone(&cnt);
     ///
-    /// Ecs::default(WorkerPool::new(), [])
+    /// Ecs::create(WorkerPool::new(), [])
     ///     .add_system(move || {
     ///         *c_cnt.lock().unwrap() += 1;
     ///     })
@@ -1560,7 +1531,7 @@ where
     /// let cnt = Arc::new(Mutex::new(0));
     /// let c_cnt = Arc::clone(&cnt);
     ///
-    /// Ecs::default(WorkerPool::new(), [])
+    /// Ecs::create(WorkerPool::new(), [])
     ///     .add_system(
     ///         SystemDesc::new()
     ///             .with_activation(2, InsertPos::Back)
@@ -1591,11 +1562,11 @@ where
                 break;
             }
 
-            // * We've run commands: new active systems could be inserted. We
-            //   need to go to the next cycle.
-            // * No commands & remaining dedicated futures: Waits for the
-            //   remaining futures to send tasks in order to avoid busy-waiting.
-            if !run_cmd && self.sched.has_dedicated_future() {
+            // * We've run commands: new active systems could be inserted. We need to go to the next
+            //   cycle.
+            // * No commands & remaining dedicated futures: Waits for the remaining futures to send
+            //   tasks in order to avoid busy-waiting.
+            if !run_cmd && self.sched.dedicated_future_count() > 0 {
                 self.sched.wait_receiving_dedicated_task();
             }
         }
@@ -1611,8 +1582,7 @@ where
         self
     }
 
-    /// Determines whether ecs has been executed completely, so that it cannot
-    /// do anything.
+    /// Determines whether ecs has been executed completely, so that it cannot do anything.
     ///
     /// If all conditions below are met, then ecs is considered as completed.
     /// - No active systems
@@ -1627,12 +1597,12 @@ where
             .all(|sgroup| sgroup.len_active() == 0);
 
         // For main worker, no uncompleted commands?
-        let no_cmd = !self.sched.has_command();
+        let no_cmd = self.rx_cmd.is_empty();
 
         // For main worker, no remaining async tasks?
-        let no_fut = !self.sched.has_dedicated_future();
+        let no_fut = self.sched.dedicated_future_count() == 0;
 
-        // For sub workers, they are closed?
+        // For sub workers, all closed?
         let is_sub_exhausted = self.sched.is_work_groups_exhausted();
 
         is_sub_exhausted && no_active && no_cmd && no_fut
@@ -1663,16 +1633,15 @@ where
         {
             // Validation procedure is as follows.
             // 1. Validates `Read`, `Write`, `ResRead`, `ResWrite`, and `EntWrite`.
-            // 2. Validates if queried resources exist.
-            //    When it comes to resource queries, in contrast to component or
-            //    entity queries, they must be known at the time of system
-            //    registration. Assume that clients forgot to register required
-            //    resources. Then, we can't give them to systems. But about
-            //    components or entities, we can give empty iterator somehow.
+            // 2. Validates if queried resources exist. When it comes to resource queries, in
+            //    contrast to component or entity queries, they must be known at the time of system
+            //    registration. Assume that clients forgot to register required resources. Then, we
+            //    can't give them to systems. But about components or entities, we can give empty
+            //    iterator somehow.
             // 3. `EntWrite` must not overlap both `Read` and `Write`.
 
-            // 1. Validates request's `Read`, `Write`, `ResRead`, `ResWrite`,
-            // and `EntWrite` themselves.
+            // 1. Validates request's `Read`, `Write`, `ResRead`, `ResWrite`, and `EntWrite`
+            //    themselves.
             let rinfo = sdata.get_request_info();
             if let Err(reason) = rinfo.validate() {
                 return Err(EcsError::InvalidRequest(reason, ()));
@@ -1778,8 +1747,7 @@ where
 
         // Refreshes cache item for the system.
         let sgroup = self.sys_stor.get_group_mut(target.group_index() as usize);
-        // Safety: The system was successfully activated, so we definitely can
-        // get the system data.
+        // Safety: The system was successfully activated, so we definitely can get the system data.
         let sdata = unsafe { sgroup.get_active(&target).unwrap_unchecked() };
         self.cache_stor.remove_item(target);
         self.cache_stor
@@ -1855,8 +1823,7 @@ where
 
     fn get_resource_inner(&self, rkey: &ResourceKey) -> Option<NonNull<u8>> {
         match self.res_stor.borrow2(rkey) {
-            // If it is borrowed successfully, we can replace `Borrowed` with
-            // shared reference.
+            // If it is borrowed successfully, we can replace `Borrowed` with shared reference.
             Ok(borrowed) => Some(borrowed.as_nonnull()),
             Err(..) => None,
         }
@@ -1864,8 +1831,7 @@ where
 
     fn get_resource_mut_inner(&mut self, rkey: &ResourceKey) -> Option<NonNull<u8>> {
         match self.res_stor.borrow_mut2(rkey) {
-            // If it is borrowed successfully, we can replace `Borrowed` with
-            // mutable reference.
+            // If it is borrowed successfully, we can replace `Borrowed` with mutable reference.
             Ok(borrowed) => Some(borrowed.as_nonnull()),
             Err(..) => None,
         }
@@ -1893,8 +1859,8 @@ where
 
     /// Cancels out remaining commands.
     ///
-    /// Commands are functions that can be executed or cancelled. They can be
-    /// cancelled by getting called [`cancel`].
+    /// Commands are functions that can be executed or cancelled. They can be cancelled by getting
+    /// called [`cancel`].
     ///
     /// [`cancel`]: Command::cancel
     fn clear_command(&mut self) {
@@ -1909,8 +1875,8 @@ where
 
     /// Cancels out remaining systems.
     ///
-    /// Systems are functions that can be executed or cancelled. They can be
-    /// cancelled by becoming [`SystemState::Dead`] states.
+    /// Systems are functions that can be executed or cancelled. They can be cancelled by becoming
+    /// [`SystemState::Dead`] states.
     ///
     /// [`SystemState::Dead`]: crate::ecs::sys::system::SystemState::Dead
     fn clear_system(&mut self) {
@@ -1933,6 +1899,18 @@ where
     {
         self.ent_stor.get_entity_container_mut(ekey)
     }
+
+    fn get_two_entity_container_mut<'r, K1, K2>(
+        &mut self,
+        ekey1: K1,
+        ekey2: K2,
+    ) -> Option<(&mut EntityContainer, &mut EntityContainer)>
+    where
+        K1: Into<EntityKeyRef<'r>>,
+        K2: Into<EntityKeyRef<'r>>,
+    {
+        self.ent_stor.get_two_entity_container_mut(ekey1, ekey2)
+    }
 }
 
 impl<W, S> EcsEntry for EcsApp<W, S>
@@ -1948,7 +1926,7 @@ where
         T: Into<SystemDesc<Sys>>,
         Sys: System,
     {
-        let res = Ecs::new(self).add_system(desc).take();
+        let res = Ecs::new(self).add_system(desc).into_result();
         WithResult::new(self, res)
     }
 
@@ -1960,12 +1938,12 @@ where
         T: Into<FnOnceSystem<Req, F>>,
         FnOnceSystem<Req, F>: System,
     {
-        let res = Ecs::new(self).add_once_system(sys).take();
+        let res = Ecs::new(self).add_once_system(sys).into_result();
         WithResult::new(self, res)
     }
 
     fn unregister_system(&mut self, sid: SystemId) -> WithResult<&mut Self, (), EcsError> {
-        let res = Ecs::new(self).unregister_system(sid).take();
+        let res = Ecs::new(self).unregister_system(sid).into_result();
         WithResult::new(self, res)
     }
 
@@ -1975,17 +1953,19 @@ where
         at: InsertPos,
         live: Tick,
     ) -> WithResult<&mut Self, (), EcsError> {
-        let res = Ecs::new(self).activate_system(target, at, live).take();
+        let res = Ecs::new(self)
+            .activate_system(target, at, live)
+            .into_result();
         WithResult::new(self, res)
     }
 
     fn inactivate_system(&mut self, sid: SystemId) -> WithResult<&mut Self, (), EcsError> {
-        let res = Ecs::new(self).inactivate_system(sid).take();
+        let res = Ecs::new(self).inactivate_system(sid).into_result();
         WithResult::new(self, res)
     }
 
     fn register_entity(&mut self, desc: EntityReg) -> WithResult<&mut Self, EntityIndex, EcsError> {
-        let res = Ecs::new(self).register_entity(desc).take();
+        let res = Ecs::new(self).register_entity(desc).into_result();
         WithResult::new(self, res)
     }
 
@@ -1993,7 +1973,7 @@ where
     where
         C: Components,
     {
-        let res = Ecs::new(self).unregister_entity::<C>().take();
+        let res = Ecs::new(self).unregister_entity::<C>().into_result();
         WithResult::new(self, res)
     }
 
@@ -2005,12 +1985,12 @@ where
     where
         E: Entity,
     {
-        let res = Ecs::new(self).add_entity(ei, value).take();
+        let res = Ecs::new(self).add_entity(ei, value).into_result();
         WithResult::new(self, res)
     }
 
     fn remove_entity(&mut self, eid: EntityId) -> WithResult<&mut Self, (), EcsError> {
-        let res = Ecs::new(self).remove_entity(eid).take();
+        let res = Ecs::new(self).remove_entity(eid).into_result();
         WithResult::new(self, res)
     }
 
@@ -2021,7 +2001,7 @@ where
     where
         T: Into<ResourceDesc>,
     {
-        let res = Ecs::new(self).add_resource(desc).take();
+        let res = Ecs::new(self).add_resource(desc).into_result();
         WithResult::new(self, res)
     }
 
@@ -2029,7 +2009,7 @@ where
     where
         R: Resource,
     {
-        let res = Ecs::new(self).remove_resource::<R>().take();
+        let res = Ecs::new(self).remove_resource::<R>().into_result();
         WithResult::new(self, res)
     }
 
@@ -2063,7 +2043,7 @@ where
     where
         T: HelpExecuteManyCommands,
     {
-        let res = Ecs::new(self).execute_commands(cmds).take();
+        let res = Ecs::new(self).execute_commands(cmds).into_result();
         WithResult::new(self, res)
     }
 
@@ -2075,7 +2055,7 @@ where
         F: FnOnce(Commander) -> R,
         R: Command,
     {
-        let res = Ecs::new(self).execute_command(f).take();
+        let res = Ecs::new(self).execute_command(f).into_result();
         WithResult::new(self, res)
     }
 
@@ -2115,10 +2095,9 @@ where
 
 /// A handle to an [`EcsApp`].
 ///
-/// This is useful when you need to move the ECS instance onto heap memory from
-/// stack, then have ownership by its handle. Because this type deals with the
-/// ownership, this is non-cloneable. When the handle is dropped, associated ECS
-/// instance is also dropepd and deallocated from heap memory.
+/// This is useful when you need to move the ECS instance onto heap memory from stack, then have
+/// ownership by its handle. Because this type deals with the ownership, this is non-cloneable. When
+/// the handle is dropped, associated ECS instance is also dropepd and deallocated from heap memory.
 ///
 /// You can use [`From`] to convert `EcsApp` into this handle.
 pub struct LeakedEcsApp {
@@ -2163,8 +2142,8 @@ impl Drop for LeakedEcsApp {
     fn drop(&mut self) {
         // Safety:
         // - `self.drop` holds proper drop method for `self.this`
-        // - It cannot be double free because we release `self.this` here only.
-        // See `Self::new()` for more details.
+        // - It cannot be double free because we release `self.this` here only. See `Self::new()`
+        //   for more details.
         unsafe { (self.drop)(self.this.copy()) };
     }
 }
@@ -2192,12 +2171,11 @@ pub struct EcsExt<'ecs> {
 impl EcsExt<'_> {
     /// Executes active systems of all groups once.
     ///
-    /// Generated commands during the execution will be completely consumed at
-    /// the end of system execution.
+    /// Generated commands during the execution will be completely consumed at the end of system
+    /// execution.
     pub fn step(&mut self) {
         unsafe {
-            let vtable = self.ecs.vtable.as_ref();
-            (vtable.step)(self.ecs.this);
+            (self.ecs.vtable.step)(self.ecs.this);
         }
     }
 }
@@ -2211,7 +2189,7 @@ impl EcsEntry for EcsExt<'_> {
         T: Into<SystemDesc<Sys>>,
         Sys: System,
     {
-        let res = self.ecs.add_system(desc).take();
+        let res = self.ecs.add_system(desc).into_result();
         WithResult::new(self, res)
     }
 
@@ -2223,12 +2201,12 @@ impl EcsEntry for EcsExt<'_> {
         T: Into<FnOnceSystem<Req, F>>,
         FnOnceSystem<Req, F>: System,
     {
-        let res = self.ecs.add_once_system(sys).take();
+        let res = self.ecs.add_once_system(sys).into_result();
         WithResult::new(self, res)
     }
 
     fn unregister_system(&mut self, sid: SystemId) -> WithResult<&mut Self, (), EcsError> {
-        let res = self.ecs.unregister_system(sid).take();
+        let res = self.ecs.unregister_system(sid).into_result();
         WithResult::new(self, res)
     }
 
@@ -2238,17 +2216,17 @@ impl EcsEntry for EcsExt<'_> {
         at: InsertPos,
         live: Tick,
     ) -> WithResult<&mut Self, (), EcsError> {
-        let res = self.ecs.activate_system(target, at, live).take();
+        let res = self.ecs.activate_system(target, at, live).into_result();
         WithResult::new(self, res)
     }
 
     fn inactivate_system(&mut self, sid: SystemId) -> WithResult<&mut Self, (), EcsError> {
-        let res = self.ecs.inactivate_system(sid).take();
+        let res = self.ecs.inactivate_system(sid).into_result();
         WithResult::new(self, res)
     }
 
     fn register_entity(&mut self, desc: EntityReg) -> WithResult<&mut Self, EntityIndex, EcsError> {
-        let res = self.ecs.register_entity(desc).take();
+        let res = self.ecs.register_entity(desc).into_result();
         WithResult::new(self, res)
     }
 
@@ -2256,7 +2234,7 @@ impl EcsEntry for EcsExt<'_> {
     where
         C: Components,
     {
-        let res = self.ecs.unregister_entity::<C>().take();
+        let res = self.ecs.unregister_entity::<C>().into_result();
         WithResult::new(self, res)
     }
 
@@ -2268,12 +2246,12 @@ impl EcsEntry for EcsExt<'_> {
     where
         E: Entity,
     {
-        let res = self.ecs.add_entity(ei, value).take();
+        let res = self.ecs.add_entity(ei, value).into_result();
         WithResult::new(self, res)
     }
 
     fn remove_entity(&mut self, eid: EntityId) -> WithResult<&mut Self, (), EcsError> {
-        let res = self.ecs.remove_entity(eid).take();
+        let res = self.ecs.remove_entity(eid).into_result();
         WithResult::new(self, res)
     }
 
@@ -2284,7 +2262,7 @@ impl EcsEntry for EcsExt<'_> {
     where
         T: Into<ResourceDesc>,
     {
-        let res = self.ecs.add_resource(desc).take();
+        let res = self.ecs.add_resource(desc).into_result();
         WithResult::new(self, res)
     }
 
@@ -2292,7 +2270,7 @@ impl EcsEntry for EcsExt<'_> {
     where
         R: Resource,
     {
-        let res = self.ecs.remove_resource::<R>().take();
+        let res = self.ecs.remove_resource::<R>().into_result();
         WithResult::new(self, res)
     }
 
@@ -2324,7 +2302,7 @@ impl EcsEntry for EcsExt<'_> {
     where
         T: HelpExecuteManyCommands,
     {
-        let res = self.ecs.execute_commands(cmds).take();
+        let res = self.ecs.execute_commands(cmds).into_result();
         WithResult::new(self, res)
     }
 
@@ -2336,7 +2314,7 @@ impl EcsEntry for EcsExt<'_> {
         F: FnOnce(Commander) -> R,
         R: Command,
     {
-        let res = self.ecs.execute_command(f).take();
+        let res = self.ecs.execute_command(f).into_result();
         WithResult::new(self, res)
     }
 
@@ -2353,7 +2331,7 @@ mod tests {
 
     #[test]
     fn test_add_many_systems() {
-        let mut ecs = Ecs::default(WorkerPool::with_len(1), [1]);
+        let mut ecs = Ecs::create(WorkerPool::with_len(1), [1]);
 
         let state = Arc::new(Mutex::new(vec![]));
 
@@ -2381,7 +2359,7 @@ mod tests {
 
     #[test]
     fn test_execute_many_commands() {
-        let mut ecs = Ecs::default(WorkerPool::with_len(1), [1]);
+        let mut ecs = Ecs::create(WorkerPool::with_len(1), [1]);
 
         let state = Arc::new(Mutex::new(vec![]));
 
@@ -2410,7 +2388,7 @@ mod tests {
     #[test]
     fn test_add_many_resources() {
         use crate as my_ecs;
-        let mut ecs = Ecs::default(WorkerPool::with_len(1), [1]);
+        let mut ecs = Ecs::create(WorkerPool::with_len(1), [1]);
 
         // Declares a resource.
         #[derive(Resource)]
@@ -2437,7 +2415,7 @@ mod tests {
         let cnt0 = Arc::clone(&cnt);
         let cnt1 = Arc::clone(&cnt);
 
-        Ecs::default(WorkerPool::new(), [])
+        Ecs::create(WorkerPool::new(), [])
             .add_once_systems((
                 move || *cnt0.lock().unwrap() += 1,
                 move || *cnt1.lock().unwrap() += 10,
@@ -2449,8 +2427,8 @@ mod tests {
 
     #[test]
     fn test_multiple_apps() {
-        let mut a = Ecs::default(WorkerPool::with_len(1), [1]);
-        let mut b = Ecs::default(WorkerPool::new(), []);
+        let mut a = Ecs::create(WorkerPool::with_len(1), [1]);
+        let mut b = Ecs::create(WorkerPool::new(), []);
 
         let cnt = Arc::new(Mutex::new(0));
         let cnt_a = Arc::clone(&cnt);

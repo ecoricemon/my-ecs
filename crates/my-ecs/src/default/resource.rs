@@ -1,11 +1,11 @@
 //! Implements [`Resource`] for some data types of the crate.
 
 use crate::{
-    ds::{
+    ecs::resource::Resource,
+    utils::ds::{
         AnyVec, ChunkAnyVec, GenQueue, GroupMap, IndexedMap, OptVec, SetList, SetValueList,
         SimpleVecPool,
     },
-    ecs::resource::Resource,
 };
 
 impl Resource for AnyVec {}

@@ -1,10 +1,11 @@
-use crate::ecs::EcsError;
-use my_ecs_util::{
-    Or, With, debug_format,
+use crate::{ecs::EcsError, FxBuildHasher};
+use my_utils::{
+    debug_format,
     ds::{
         ATypeId, BorrowError, BorrowResult, ManagedConstPtr, ManagedMutPtr, NonNullExt, OptVec,
         SimpleHolder,
     },
+    Or, With,
 };
 use std::{
     any::Any,
@@ -19,7 +20,6 @@ pub mod prelude {
 }
 
 /// Unique data in the entire ecs instance.
-#[allow(private_interfaces)]
 pub trait Resource: Send + 'static {
     #[doc(hidden)]
     fn key() -> ResourceKey {
@@ -27,52 +27,65 @@ pub trait Resource: Send + 'static {
     }
 }
 
-/// There are two types of resources.
-/// First one is static resource which is defined internally.
-/// The other one is user resource which is defined by users.
-/// This struct has pointers to those resources and doesn't update it once it's set.
-/// Because, resource is a kind of unique data storage, so it makes sense.
+/// There are two types of resources. First one is static resource which is defined internally. The
+/// other one is user resource which is defined by users. This struct has pointers to those
+/// resources and doesn't update it once it's set. Because, resource is a kind of unique data
+/// storage, so it makes sense.
 #[derive(Debug)]
-pub(super) struct ResourceStorage<S> {
+pub(super) struct ResourceStorage<S = FxBuildHasher> {
     /// Owned resources.
     owned: HashMap<ResourceKey, Box<dyn Any>, S>,
 
     /// Raw pointers to resources.
-    /// Pointers to owned resources are guaranteed to be valid by the struct.
-    /// Other pointers must be kept to be valid by client code.
-    /// They must be well aligned, not aliased, and alive.
+    ///
+    /// Pointers to owned resources are guaranteed to be valid by the struct. Other pointers must be
+    /// kept to be valid by client code. They must be well aligned, not aliased, and alive.
     ptrs: OptVec<SimpleHolder<NonNullExt<u8>>, S>,
 
     /// [`ResourceKey`] -> index in `Self::ptrs`.
     imap: HashMap<ResourceKey, ResourceIndex, S>,
 
     /// Dedicated resources, which are not allowed to be sent to other workers.
-    /// So they must be handled by main worker.
-    /// For example, in web environment, we must send JS objects through postMessage().
-    /// That means objects that are not posted can't be accessed from other workers.
-    /// Plus, ecs objects will be dedicated resource in most cases.
+    ///
+    /// So they must be handled by main worker. For example, in web environment, we must send JS
+    /// objects through postMessage(). That means objects that are not posted can't be accessed from
+    /// other workers. Plus, ecs objects will be dedicated resource in most cases.
     is_dedi: Vec<bool>,
 
-    /// Generation of each resource. The generation is when the resource is
-    /// registered to this storage.
+    /// Generation of each resource.
+    ///
+    /// The generation is when the resource is registered to this storage.
     res_gens: Vec<u64>,
 
     /// Generation that will be assigned to the next registered resource.
     generation: u64,
 }
 
-impl<S> ResourceStorage<S>
-where
-    S: Default,
-{
+impl ResourceStorage {
+    #[cfg(test)]
     pub(super) fn new() -> Self {
         Self {
-            owned: HashMap::default(),
+            owned: HashMap::with_hasher(FxBuildHasher::default()),
             ptrs: OptVec::new(),
-            imap: HashMap::default(),
+            imap: HashMap::with_hasher(FxBuildHasher::default()),
             is_dedi: Vec::new(),
             res_gens: Vec::new(),
-            generation: 1,
+            generation: Self::INIT_GEN,
+        }
+    }
+}
+
+impl<S> ResourceStorage<S> {
+    const INIT_GEN: u64 = 1;
+
+    pub(super) fn with_hasher<F: FnMut() -> S>(mut hasher: F) -> Self {
+        Self {
+            owned: HashMap::with_hasher(hasher()),
+            ptrs: OptVec::with_hasher(hasher()),
+            imap: HashMap::with_hasher(hasher()),
+            is_dedi: Vec::new(),
+            res_gens: Vec::new(),
+            generation: Self::INIT_GEN,
         }
     }
 }
@@ -83,8 +96,8 @@ where
 {
     /// Adds a resource.
     ///
-    /// If it succeeded, returns resource index for the resource. Otherwise,
-    /// nothing takes place and returns error with the descriptor.
+    /// If it succeeded, returns resource index for the resource. Otherwise, nothing takes place and
+    /// returns error with the descriptor.
     pub(super) fn add(
         &mut self,
         desc: ResourceDesc,
@@ -111,8 +124,7 @@ where
             Or::B(ptr) => ptr,
         };
 
-        // Attaches ResourceKey's type info to the pointer for the sake of
-        // debugging.
+        // Attaches ResourceKey's type info to the pointer for the sake of debugging.
         let ptr = NonNullExt::from_nonnull(ptr).with_type(*key.get_inner());
 
         // Adds the pointer.
@@ -138,8 +150,8 @@ where
     }
 
     pub(super) fn remove(&mut self, rkey: &ResourceKey) -> Option<Or<Box<dyn Any>, NonNull<u8>>> {
-        // Removes the resource from `self.owned`, `self.ptrs`, and `self.imap`.
-        // But we don't have to remove `self.is_dedi`.
+        // Removes the resource from `self.owned`, `self.ptrs`, and `self.imap`. But we don't have
+        // to remove `self.is_dedi`.
         if let Some(ri) = self.imap.remove(rkey) {
             let data = self.owned.remove(rkey);
             let ptr = self.ptrs.take(ri.index());
@@ -247,9 +259,11 @@ where
     #[cfg(test)]
     pub(super) unsafe fn get_ptr(&self, ri: ResourceIndex) -> Option<NonNullExt<u8>> {
         if self.is_valid_index(&ri) {
-            self.ptrs
-                .get(ri.index())
-                .map(|holder| unsafe { *holder.get_unchecked() })
+            self.ptrs.get(ri.index()).map(|holder| {
+                let ptr = holder.ptr_inner();
+                let value = unsafe { *ptr.as_ref() };
+                value
+            })
         } else {
             None
         }
@@ -264,21 +278,17 @@ where
     }
 }
 
-impl<S> Default for ResourceStorage<S>
-where
-    S: Default,
-{
+impl<S: Default> Default for ResourceStorage<S> {
     fn default() -> Self {
-        Self::new()
+        Self::with_hasher(|| S::default())
     }
 }
 
 /// A descriptor for registration of a resource.
 ///
-/// Normally, resource is owned by an ECS instance, but type-erased raw pointer
-/// can also be considered as a resource. In that case, clients must guarantee
-/// safety about the pointer. [`ResourceDesc::with_owned`] and
-/// [`ResourceDesc::with_ptr`] are methods about the ownership.
+/// Normally, resource is owned by an ECS instance, but type-erased raw pointer can also be
+/// considered as a resource. In that case, clients must guarantee safety about the pointer.
+/// [`ResourceDesc::with_owned`] and [`ResourceDesc::with_ptr`] are methods about the ownership.
 #[derive(Debug)]
 pub struct ResourceDesc {
     pub dedicated: bool,
@@ -307,8 +317,7 @@ impl ResourceDesc {
         }
     }
 
-    /// Sets whether the resource is dedicated to the descriptor then returns
-    /// the result.
+    /// Sets whether the resource is dedicated to the descriptor then returns the result.
     ///
     /// Dedicated resource is only accessable from main worker for now.
     ///
@@ -341,14 +350,13 @@ impl ResourceDesc {
         self
     }
 
-    /// Sets the given pointer as a resource to the descriptor then returns the
-    /// result.
+    /// Sets the given pointer as a resource to the descriptor then returns the result.
     ///
     /// # Safety
     ///
-    /// After registration the descriptor to an ECS instance, owner of the data
-    /// must not access the data while the ECS instance is running because the
-    /// ECS instance may read or write something on the data.
+    /// After registration the descriptor to an ECS instance, owner of the data must not access the
+    /// data while the ECS instance is running because the ECS instance may read or write something
+    /// on the data.
     ///
     /// # Examples
     ///
@@ -380,17 +388,15 @@ impl<R: Resource> From<R> for ResourceDesc {
 }
 
 /// Unique identifier for a type implementing [`Resource`].
-pub(crate) type ResourceKey = ATypeId<ResourceKey_>;
-pub(crate) struct ResourceKey_;
+pub type ResourceKey = ATypeId<ResourceKey_>;
+pub struct ResourceKey_;
 
 /// A unique identifier for a resource **item**.
 ///
-/// A unique resource is usually identified by [`ResourceIndex`], but if you
-/// need to have a resource container for a resource type then identify each
-/// item in the container, this would be useful. This resource item identifier
-/// is composed of the `ResourceIndex` and **item index** as well. The item
-/// index is a pair of index(usize) and generation(u64) so that you can use it
-/// for most cases.
+/// A unique resource is usually identified by [`ResourceIndex`], but if you need to have a resource
+/// container for a resource type then identify each item in the container, this would be useful.
+/// This resource item identifier is composed of the `ResourceIndex` and **item index** as well. The
+/// item index is a pair of index(usize) and generation(u64) so that you can use it for most cases.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ResourceId {
     /// Index to a specific resource container.
@@ -403,8 +409,7 @@ pub struct ResourceId {
 }
 
 impl ResourceId {
-    /// Creates a new [`ResourceId`] with the given resource index and item
-    /// index.
+    /// Creates a new [`ResourceId`] with the given resource index and item index.
     pub const fn new(ri: ResourceIndex, ii: With<usize, u64>) -> Self {
         Self { ri, ii }
     }
@@ -416,8 +421,8 @@ impl ResourceId {
 
     /// Returns item index.
     ///
-    /// Item index consists of an index(usize) and a generation(u64), but
-    /// the generation may not be used. It depends.
+    /// Item index consists of an index(usize) and a generation(u64), but the generation may not be
+    /// used. It depends.
     pub const fn item_index(&self) -> With<usize, u64> {
         self.ii
     }
@@ -425,9 +430,9 @@ impl ResourceId {
 
 /// A unique resource identifier.
 ///
-/// Resource index is composed of index(usize) and generation(u64). The
-/// generation is determined when the resource is registered to an ECS instance.
-/// The generation help us detect stale resource identifiers.
+/// Resource index is composed of index(usize) and generation(u64). The generation is determined
+/// when the resource is registered to an ECS instance. The generation help us detect stale resource
+/// identifiers.
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Debug)]
 #[repr(transparent)]
 pub struct ResourceIndex(With<usize, u64>);
@@ -452,12 +457,12 @@ impl ResourceIndex {
 
     /// Returns inner index.
     pub fn index(&self) -> usize {
-        self.0.value
+        *self.0
     }
 
     /// Returns inner generation.
     pub fn generation(&self) -> u64 {
-        self.0.with
+        *self.0.get_back()
     }
 }
 

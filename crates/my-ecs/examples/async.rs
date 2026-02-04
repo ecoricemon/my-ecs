@@ -5,13 +5,13 @@ fn main() {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod non_web {
-    use async_io::Timer;
     use my_ecs::prelude::*;
+    use my_ecs::utils::test_utils::TimerFuture;
     use std::time::Duration;
 
     pub(super) fn run() {
         // Creates instance.
-        let mut ecs = Ecs::default(WorkerPool::with_len(3), [3]);
+        let mut ecs = Ecs::create(WorkerPool::with_len(3), [3]);
 
         // Schedules a future using once system.
         ecs.add_once_system(|rr: ResRead<Post>| rr.send_future(register_map()))
@@ -23,7 +23,7 @@ mod non_web {
 
     async fn register_map() -> impl Command {
         // Assumes that we're reading map data from a file using async io function.
-        Timer::after(Duration::from_millis(10)).await;
+        TimerFuture::after(Duration::from_millis(10)).await;
 
         // Now we got the data.
         let map_data = "\
@@ -39,11 +39,11 @@ mod non_web {
             // Registers map resource.
             let map = Map::new(&map_data);
             ecs.add_resource(map)
-                .take()
+                .into_result()
                 .map_err(EcsError::without_data)?;
 
             // Appends a system that uses the map.
-            ecs.add_once_system(show_map).take()?;
+            ecs.add_once_system(show_map).into_result()?;
             Ok(())
         };
         Ok(f)
