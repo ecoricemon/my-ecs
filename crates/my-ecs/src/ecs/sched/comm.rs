@@ -1,18 +1,18 @@
 use super::task::{AsyncTask, ParTask, Task};
 use crate::{
-    ds::{Signal, UnsafeFuture},
+    cb_deque::{Injector, Steal, Stealer, Worker},
     ecs::{
         cmd::CommandObject,
         worker::{Message, WorkerId},
     },
+    utils::ds::{Signal, UnsafeFuture},
 };
-use crossbeam_deque as cb;
+use crossbeam_channel::{SendError, Sender, TryRecvError};
 use std::{
     cell::Cell,
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, Ordering},
-        mpsc::{self, SendError, Sender, TryRecvError},
+        Arc, Mutex,
     },
     thread::{self, Thread},
 };
@@ -24,33 +24,32 @@ thread_local! {
 #[derive(Debug)]
 pub(crate) struct SubComm {
     /// Global task queue contains [`Task::System`] only.
-    /// It works in 'single producer multiple consumers' fashion and push/pop
-    /// occurs as follows.
+    ///
+    /// It works in 'single producer multiple consumers' fashion and push/pop occurs as follows.
     /// - 'Push' occurs by main worker.
     /// - 'Pop' occurs by all sub workers.
-    injector: Arc<cb::Injector<Task>>,
+    injector: Arc<Injector<Task>>,
 
-    /// Local task queue contains [`Task::System`], [`Task::Parallel`], and
-    /// [`Task::Future`].
-    /// It works in 'single producer multiple consumers' fashion and push/pop
-    /// occurs as follows.
+    /// Local task queue contains [`Task::System`], [`Task::Parallel`], and [`Task::Future`].
+    ///
+    /// It works in 'single producer multiple consumers' fashion and push/pop occurs as follows.
     /// - 'Push' occurs by sub worker.
-    /// - 'Pop' occurs by both this sub worker and siblings via [`cb::Stealer`].
-    local: cb::Worker<Task>,
+    /// - 'Pop' occurs by both this sub worker and siblings via [`Stealer`].
+    local: Worker<Task>,
 
     /// Sibling's pop-only local queues.  
-    siblings: Arc<[cb::Stealer<Task>]>,
+    siblings: Arc<[Stealer<Task>]>,
 
     /// Local future task queue contains [`Task::Future`] only.
-    /// It works in 'multiple producers multiple consumers' fashion and
-    /// push/pop occurs as follows.
+    ///
+    /// It works in 'multiple producers multiple consumers' fashion and push/pop occurs as follows.
     /// - 'Push' occurs by a thread that called the most inner future's poll().
     /// - 'Pop' occurs by each sub worker.
     //
-    // `crossbeam::Worker<T>` is not a 'multiple producers multiple consumers'
-    // queue, so uses another `Injector` instead. But if it causes some kind of
-    // performance issue, then consider using another queue.
-    futures: Arc<[cb::Injector<Task>]>,
+    // `crossbeam::Worker<T>` is not a 'multiple producers multiple consumers' queue, so uses
+    // another `Injector` instead. But if it causes some kind of performance issue, then consider
+    // using another queue.
+    futures: Arc<[Injector<Task>]>,
 
     /// Channel sending messages to main worker.
     tx_msg: ParkingSender<Message>,
@@ -59,7 +58,7 @@ pub(crate) struct SubComm {
     tx_cmd: CommandSender,
 
     /// Signal to wake or block workers and some counts.
-    signal: Arc<GlobalSignal>,
+    signal: Arc<GroupSignal>,
 
     /// Index to [`Self::siblings`], [`Self::futures`], and [`Self::signal`].
     wid: WorkerId,
@@ -68,8 +67,8 @@ pub(crate) struct SubComm {
 impl SubComm {
     pub(super) fn with_len(
         group_index: u16,
-        injector: &Arc<cb::Injector<Task>>,
-        signal: &Arc<GlobalSignal>,
+        injector: &Arc<Injector<Task>>,
+        signal: &Arc<GroupSignal>,
         tx_msg: &ParkingSender<Message>,
         tx_cmd: &CommandSender,
         len: usize,
@@ -77,22 +76,22 @@ impl SubComm {
         // Local queues and stealers.
         let (locals, siblings): (Vec<_>, Vec<_>) = (0..len)
             .map(|_| {
-                let local = cb::Worker::<Task>::new_lifo();
+                let local = Worker::<Task>::new_lifo();
                 let sibling = local.stealer();
                 (local, sibling)
             })
             .unzip();
-        let siblings: Arc<[cb::Stealer<Task>]> = siblings.into();
+        let siblings: Arc<[Stealer<Task>]> = siblings.into();
 
         // Local async queues.
-        let asyncs: Arc<[cb::Injector<Task>]> = (0..len).map(|_| cb::Injector::new()).collect();
+        let asyncs: Arc<[Injector<Task>]> = (0..len).map(|_| Injector::new()).collect();
 
         locals
             .into_iter()
             .enumerate()
             .map(|(worker_index, local)| {
-                let id = WORKER_ID_GEN.get();
-                WORKER_ID_GEN.set(id + 1);
+                let id = WORKER_ID_GEN.with(Cell::get);
+                WORKER_ID_GEN.with(|gen| gen.set(id + 1));
                 Self {
                     injector: Arc::clone(injector),
                     local,
@@ -107,12 +106,11 @@ impl SubComm {
             .collect()
     }
 
-    pub(crate) fn signal(&self) -> &GlobalSignal {
+    pub(crate) fn signal(&self) -> &GroupSignal {
         &self.signal
     }
 
-    /// We can also get the worker id from
-    /// [`WORKER_ID`](crate::ecs::sched::ctrl::WORKER_ID).
+    /// We can also get the worker id from [`WORKER_ID`](crate::ecs::sched::ctrl::WORKER_ID).
     pub(crate) fn worker_id(&self) -> WorkerId {
         let wid = self.maybe_uninit_worker_id();
 
@@ -120,7 +118,7 @@ impl SubComm {
         {
             use crate::ecs::sched::ctrl::WORKER_ID;
 
-            assert_eq!(wid, WORKER_ID.get());
+            assert_eq!(wid, WORKER_ID.with(Cell::get));
         }
 
         wid
@@ -134,7 +132,7 @@ impl SubComm {
         self.siblings.len()
     }
 
-    pub(super) fn set_signal(&mut self, signal: Arc<GlobalSignal>) {
+    pub(super) fn set_signal(&mut self, signal: Arc<GroupSignal>) {
         self.signal = signal;
     }
 
@@ -154,9 +152,9 @@ impl SubComm {
         self.tx_cmd.send_or_cancel(cmd);
     }
 
-    pub(super) fn pop(&self) -> cb::Steal<Task> {
+    pub(super) fn pop(&self) -> Steal<Task> {
         if let Some(task) = self.pop_local() {
-            cb::Steal::Success(task)
+            Steal::Success(task)
         } else {
             self.pop_future()
         }
@@ -166,11 +164,11 @@ impl SubComm {
         self.local.pop()
     }
 
-    pub(super) fn pop_future(&self) -> cb::Steal<Task> {
+    pub(super) fn pop_future(&self) -> Steal<Task> {
         loop {
             let steal = self.futures[self.wid.worker_index() as usize].steal();
             match &steal {
-                cb::Steal::Retry => {}
+                Steal::Retry => {}
                 _ => return steal,
             }
         }
@@ -189,30 +187,30 @@ impl SubComm {
         self.local.is_empty()
     }
 
-    pub(super) fn search(&self) -> cb::Steal<Task> {
+    pub(super) fn search(&self) -> Steal<Task> {
         self.search_injector()
             .or_else(|| self.search_sibling_locals())
             .or_else(|| self.search_futures())
     }
 
-    pub(super) fn search_injector(&self) -> cb::Steal<Task> {
+    pub(super) fn search_injector(&self) -> Steal<Task> {
         loop {
             let steal = self.injector.steal_batch_and_pop(&self.local);
             match &steal {
-                cb::Steal::Success(_task) => {
+                Steal::Success(_task) => {
                     if !self.local.is_empty() {
                         self.signal.sub().notify_one();
                     }
                     return steal;
                 }
-                cb::Steal::Empty => break,
-                cb::Steal::Retry => {}
+                Steal::Empty => break,
+                Steal::Retry => {}
             }
         }
-        cb::Steal::Empty
+        Steal::Empty
     }
 
-    pub(super) fn search_sibling_locals(&self) -> cb::Steal<Task> {
+    pub(super) fn search_sibling_locals(&self) -> Steal<Task> {
         for sibling in self
             .siblings
             .iter()
@@ -223,21 +221,21 @@ impl SubComm {
             loop {
                 let steal = sibling.steal_batch_and_pop(&self.local);
                 match &steal {
-                    cb::Steal::Success(_task) => {
+                    Steal::Success(_task) => {
                         if !(self.local.is_empty() && sibling.is_empty()) {
                             self.signal.sub().notify_one();
                         }
                         return steal;
                     }
-                    cb::Steal::Empty => break,
-                    cb::Steal::Retry => {}
+                    Steal::Empty => break,
+                    Steal::Retry => {}
                 }
             }
         }
-        cb::Steal::Empty
+        Steal::Empty
     }
 
-    pub(super) fn search_futures(&self) -> cb::Steal<Task> {
+    pub(super) fn search_futures(&self) -> Steal<Task> {
         for sibling in self
             .futures
             .iter()
@@ -248,63 +246,68 @@ impl SubComm {
             loop {
                 let steal = sibling.steal_batch_and_pop(&self.local);
                 match &steal {
-                    cb::Steal::Success(_task) => {
+                    Steal::Success(_task) => {
                         if !(self.local.is_empty() && sibling.is_empty()) {
                             self.signal.sub().notify_one();
                         }
                         return steal;
                     }
-                    cb::Steal::Empty => break,
-                    cb::Steal::Retry => {}
+                    Steal::Empty => break,
+                    Steal::Retry => {}
                 }
             }
         }
-        cb::Steal::Empty
+        Steal::Empty
     }
 }
 
 #[derive(Debug)]
-pub(crate) struct GlobalSignal {
-    /// Handle of main worker.  
+pub(crate) struct GroupSignal {
+    /// Handle of main worker.
+    ///
     /// Sub workers can wake the main worker up through this handle.
     main: Thread,
 
-    /// [`Signal`] for sub workers.  
+    /// [`Signal`] for sub workers.
+    ///
     /// Main or sub worker can wake up any sub worker through this signal.
     sub: Signal,
 
-    /// Abort flag.  
-    /// This flag is written by main worker only.
-    /// If this is true, sub workers will be closed soon.
+    /// Abort flag.
+    ///
+    /// This flag is written by main worker only. If this is true, sub workers will be closed soon.
     is_abort: AtomicBool,
 
-    /// Number of open sub workers.  
-    /// This count is written by sub workers only.
-    /// Main worker will make use of this count for making some decisions.
+    /// Number of open sub workers.
+    ///
+    /// This count is written by sub workers only. Main worker will make use of this count for
+    /// making some decisions.
     open_cnt: AtomicU32,
 
-    /// Number of working sub workers.  
-    /// This count is written by sub workers only.
-    /// Main worker will make use of this count for making some decisions.
+    /// Number of working sub workers.
+    ///
+    /// This count is written by sub workers only. Main worker will make use of this count for
+    /// making some decisions.
     work_cnt: AtomicU32,
 
-    /// Number of running future tasks.  
-    /// This count is written by sub workers only.
-    /// Main worker will make use of this count for making some decisions.
+    /// Number of running future tasks.
+    ///
+    /// This count is written by sub workers only. Main worker will make use of this count for
+    /// making some decisions.
     fut_cnt: AtomicU32,
 }
 
-impl GlobalSignal {
-    /// Some atomic counts are composed of 'target' and 'count' bits.
-    /// 'target' bits are located at MSB, and 'count' bits are located at LSB.
-    /// This shift is the offset bits of the 'target' bits from LSB.
+impl GroupSignal {
+    /// Some atomic counts are composed of 'target' and 'count' bits. 'target' bits are located at
+    /// MSB, and 'count' bits are located at LSB. This shift is the offset bits of the 'target' bits
+    /// from LSB.
     const TARGET_SHIFT: u32 = 16;
 
     /// Mask to filter 'target' bits out, so that we can get 'count' bits only.
     const COUNT_MASK: u32 = (1 << Self::TARGET_SHIFT) - 1;
 
-    /// Mask to filter 'count' bits out, so that we can get 'target' bits only.
-    /// Don't forget to r-shift on the filtered value to get 'target' number.
+    /// Mask to filter 'count' bits out, so that we can get 'target' bits only. Don't forget to
+    /// r-shift on the filtered value to get 'target' number.
     const TARGET_MASK: u32 = !Self::COUNT_MASK;
 
     pub(super) fn new(sub_handles: Vec<Thread>) -> Self {
@@ -512,7 +515,7 @@ pub(crate) fn command_channel(th: Thread) -> (CommandSender, CommandReceiver) {
 }
 
 pub(super) fn parking_channel<T>(th: Thread) -> (ParkingSender<T>, ParkingReceiver<T>) {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = crossbeam_channel::unbounded();
     (ParkingSender::new(tx, th.clone()), ParkingReceiver::new(rx))
 }
 
@@ -551,19 +554,14 @@ pub(crate) use parking_receiver_debug::*;
 
 #[cfg(not(debug_assertions))]
 mod parking_receiver_release {
-    use std::{
-        cell::Cell,
-        fmt,
-        sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError},
-        thread,
-        time::Duration,
-    };
+    use crossbeam_channel::{Receiver, RecvTimeoutError, TryRecvError};
+    use std::{cell::Cell, fmt, thread, time::Duration};
 
     pub(crate) struct ParkingReceiver<T> {
         rx: Receiver<T>,
 
-        /// Takes the next value out of the channel and holds it.
-        /// to cooperate with `thread::park_timeout`.
+        /// Takes the next value out of the channel and holds it to cooperate with
+        /// `thread::park_timeout`.
         next: Cell<Option<T>>,
     }
 
@@ -624,10 +622,10 @@ mod parking_receiver_release {
 
 #[cfg(debug_assertions)]
 mod parking_receiver_debug {
+    use crossbeam_channel::{Receiver, RecvTimeoutError, TryRecvError};
     use std::{
         cell::{RefCell, RefMut},
         collections::VecDeque,
-        sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError},
         thread,
         time::Duration,
     };
@@ -639,7 +637,7 @@ mod parking_receiver_debug {
     }
 
     impl<T> ParkingReceiver<T> {
-        pub(crate) const fn new(rx: Receiver<T>) -> Self {
+        pub(crate) fn new(rx: Receiver<T>) -> Self {
             Self {
                 rx,
                 buf: RefCell::new(VecDeque::new()),
@@ -659,11 +657,11 @@ mod parking_receiver_debug {
         //
         // Why `thread::park_timeout()` instead of `Receiver::recv_timeout()`?
         //
-        // In web, we cannot get time, but `Receiver::recv_timeout()` tries
-        // to get current time, so it fails to compile.
-        // Fortunately, in nightly-2024-06-20, `thread::park_timeout()` is
+        // In web, we cannot get time, but `Receiver::recv_timeout()` tries to get current time, so
+        // it fails to compile. Fortunately, in nightly-2024-06-20, `thread::park_timeout()` is
         // implemented via wasm32::memory_atomic_wait32(), so it works.
-        // See "nightly-2024-06-20-.../lib/rustlib/src/rust/library/std/src/sys/pal/wasm/atomics/futex.rs"
+        // See "nightly-2024-06-20-.../lib/rustlib/src/rust/library/std/src/sys/pal/wasm/atomics/
+        // futex.rs"
         pub(crate) fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvTimeoutError> {
             if let Ok(value) = self.try_recv() {
                 Ok(value)
@@ -678,12 +676,11 @@ mod parking_receiver_debug {
 
         /// Blocks until a message arrives through the channel.
         ///
-        /// If there is arleady a received message, returns immediately.
-        /// Otherwise, blocks for the given duration, but it may return
-        /// spuriously.
+        /// If there is arleady a received message, returns immediately. Otherwise, blocks for the
+        /// given duration, but it may return spuriously.
         ///
-        /// Also note that this method doesn't consume any messages. You will
-        /// get the message through other receving methods.
+        /// Also note that this method doesn't consume any messages. You will get the message
+        /// through other receving methods.
         pub(crate) fn wait_timeout(&self, timeout: Duration) {
             if let Ok(value) = self.try_recv() {
                 self.buf.borrow_mut().push_front(value);
@@ -700,6 +697,7 @@ mod parking_receiver_debug {
             }
         }
 
+        #[allow(unused)]
         pub(crate) fn buffer(&self) -> RefMut<'_, VecDeque<T>> {
             let mut buf = self.buf.borrow_mut();
             while let Ok(value) = self.rx.try_recv() {

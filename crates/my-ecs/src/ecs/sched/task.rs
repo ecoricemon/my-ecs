@@ -9,10 +9,11 @@ use crate::{
     },
     global,
 };
-use my_ecs_util::ds::{ManagedMutPtr, ReadyFuture, UnsafeFuture};
+use my_utils::ds::{ManagedMutPtr, ReadyFuture, UnsafeFuture};
 use std::{
     any::Any,
     cell::UnsafeCell,
+    mem,
     ops::Deref,
     ptr::NonNull,
     sync::atomic::{self, AtomicI32, Ordering},
@@ -26,9 +27,9 @@ pub(crate) enum Task {
     Async(AsyncTask),
 }
 
-my_ecs_util::impl_from_for_enum!("outer" = Task; "var" = System; "inner" = SysTask);
-my_ecs_util::impl_from_for_enum!("outer" = Task; "var" = Parallel; "inner" = ParTask);
-my_ecs_util::impl_from_for_enum!("outer" = Task; "var" = Async; "inner" = AsyncTask);
+my_utils::impl_from_for_enum!("outer" = Task; "var" = System; "inner" = SysTask);
+my_utils::impl_from_for_enum!("outer" = Task; "var" = Parallel; "inner" = ParTask);
+my_utils::impl_from_for_enum!("outer" = Task; "var" = Async; "inner" = AsyncTask);
 
 impl Task {
     pub(super) fn id(&self) -> TaskId {
@@ -36,6 +37,17 @@ impl Task {
             Self::System(task) => TaskId::System(task.sid),
             Self::Parallel(task) => TaskId::Parallel(*task),
             Self::Async(task) => TaskId::Async(**task),
+        }
+    }
+
+    pub(super) fn discard(self) {
+        match self {
+            Task::System(_task) => { /* Do we need to do something here? */ }
+            Task::Parallel(_task) => { /* Do we need to do something here? */ }
+            Task::Async(task) => {
+                // Safety: Uncompleted future task is aborted and deallocated in here only.
+                unsafe { task.destroy() };
+            }
         }
     }
 }
@@ -47,9 +59,9 @@ pub(super) enum TaskId {
     Async(UnsafeFuture),
 }
 
-my_ecs_util::impl_from_for_enum!("outer" = TaskId; "var" = System; "inner" = SystemId);
-my_ecs_util::impl_from_for_enum!("outer" = TaskId; "var" = Parallel; "inner" = ParTask);
-my_ecs_util::impl_from_for_enum!("outer" = TaskId; "var" = Async; "inner" = UnsafeFuture);
+my_utils::impl_from_for_enum!("outer" = TaskId; "var" = System; "inner" = SystemId);
+my_utils::impl_from_for_enum!("outer" = TaskId; "var" = Parallel; "inner" = ParTask);
+my_utils::impl_from_for_enum!("outer" = TaskId; "var" = Async; "inner" = UnsafeFuture);
 
 #[derive(Debug)]
 pub(crate) struct SysTask {
@@ -77,12 +89,14 @@ impl SysTask {
         // In web panic hook, we're going to use this info for recovery.
         #[cfg(target_arch = "wasm32")]
         {
-            use super::comm::{TaskKind, WORK_ID, WorkId};
+            use super::comm::{TaskKind, WorkId, WORK_ID};
 
-            WORK_ID.set(WorkId {
-                wid: _wid,
-                sid: self.sid,
-                kind: TaskKind::System,
+            WORK_ID.with(|work_id| {
+                work_id.set(WorkId {
+                    wid: _wid,
+                    sid: self.sid,
+                    kind: TaskKind::System,
+                })
             });
         }
 
@@ -111,16 +125,17 @@ impl SysTask {
                 invoker.invoke(&mut buf);
             }
 
-            // In web and debug mode, drops `ManagedMutPtr` first
-            // to be recovered when the invoker panics.
             #[cfg(feature = "check")]
             {
                 let Self { invoker, buf, .. } = self;
 
-                let mut invoker_ptr = invoker.inner();
-                let mut buf_ptr = buf.inner();
+                // We need to unwrap `ManagedMutPtr` in web and debug environmetn in order for
+                // recovery after panic. This unwrapping just disables tracking the pointer.
+                let mut invoker_ptr = invoker.as_nonnull();
+                let mut buf_ptr = buf.as_nonnull();
                 drop(invoker);
                 drop(buf);
+
                 // Safety: Managed pointers.
                 unsafe { invoker_ptr.as_mut().invoke(buf_ptr.as_mut()) };
             }
@@ -141,8 +156,8 @@ impl PartialEq for ParTask {
     fn eq(&self, other: &Self) -> bool {
         // Makes sure that we can compare `ParTask`. To compare `ParTask`, data pointer must be
         // created from not a ZST, which is `ParTaskHolder`.
-        const _: () = const {
-            assert!(size_of::<ParTaskHolder::<fn(FnContext) -> (), ()>>() > 0);
+        const _: () = {
+            assert!(mem::size_of::<ParTaskHolder::<fn(FnContext) -> (), ()>>() > 0);
         };
 
         self.data == other.data
@@ -171,19 +186,21 @@ impl ParTask {
     }
 
     pub(super) fn execute(self, _wid: WorkerId, f_cx: FnContext) {
-        // Statistic count is increased in bridge() to see whether ECS
-        // intercepted the call correctly.
+        // Statistic count is increased in bridge() to see whether ECS intercepted the call
+        // correctly.
         // global::stat::increase_parallel_task_count();
 
         // In web panic hook, we're going to use this info for recovery.
         #[cfg(target_arch = "wasm32")]
         {
-            use super::comm::{TaskKind, WORK_ID, WorkId};
+            use super::comm::{TaskKind, WorkId, WORK_ID};
 
-            WORK_ID.set(WorkId {
-                wid: _wid,
-                sid: SystemId::dummy(),
-                kind: TaskKind::Parallel,
+            WORK_ID.with(|work_id| {
+                work_id.set(WorkId {
+                    wid: _wid,
+                    sid: SystemId::dummy(),
+                    kind: TaskKind::Parallel,
+                })
             });
         }
 
@@ -214,8 +231,7 @@ where
         }
     }
 
-    /// Converts `data` into self,
-    /// Then takes function out from the function slot and executes it,
+    /// Converts `data` into self, Then takes function out from the function slot and executes it,
     /// and then puts the returned value in the return slot.
     unsafe fn execute(data: NonNull<u8>, f_cx: FnContext) {
         let this: &Self = unsafe { data.cast().as_ref() };
@@ -296,23 +312,24 @@ impl AsyncTask {
         // In web panic hook, we're going to use this info for recovery.
         #[cfg(target_arch = "wasm32")]
         {
-            use super::comm::{TaskKind, WORK_ID, WorkId};
+            use super::comm::{TaskKind, WorkId, WORK_ID};
 
-            WORK_ID.set(WorkId {
-                wid: _wid,
-                sid: SystemId::dummy(),
-                kind: TaskKind::Async,
+            WORK_ID.with(|work_id| {
+                work_id.set(WorkId {
+                    wid: _wid,
+                    sid: SystemId::dummy(),
+                    kind: TaskKind::Async,
+                });
             });
         }
 
         // Calls poll on the future.
         //
-        // Safety: We're constraining future output type to be
-        // `Box<dyn Command>`.
+        // Safety: We're constraining future output type to be `Box<dyn Command>`.
         match unsafe { self.poll() } {
             Poll::Ready(()) => {
-                // Safety: The future is just ready and destroying it only
-                // occurs in `ReadyFuture::drop`.
+                // Safety: The future is just ready and destroying it only occurs in
+                // `ReadyFuture::drop`.
                 let ready = unsafe { ReadyFuture::new(*self) };
                 on_ready(ready)
             }

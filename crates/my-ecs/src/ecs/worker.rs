@@ -1,5 +1,5 @@
 use super::{sched::ctrl::SubContext, sys::system::SystemId};
-use my_ecs_util::ds::ManagedConstPtr;
+use my_utils::ds::ManagedConstPtr;
 use std::{any::Any, fmt};
 
 pub mod prelude {

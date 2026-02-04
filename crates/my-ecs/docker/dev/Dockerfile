@@ -7,6 +7,6 @@ RUN apt-get update && apt-get -y install pkg-config libssl-dev
 RUN apt-get -y install curl && \
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
     apt-get -y install nodejs && \
-    rustup toolchain install nightly-2025-01-03 --component rust-src && \
+    rustup toolchain install nightly --component rust-src && \
     curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh && \
     npx -y playwright@1.46.1 install chromium --with-deps

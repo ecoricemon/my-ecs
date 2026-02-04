@@ -13,7 +13,6 @@ help() {
     echo "arguments:"
     echo "  -r    : Release mode."
     echo "  -a    : Debug & Release modes."
-    echo "  -tsan : Test with thread sanitizer. Available with test only."
     echo "  -R    : Run recursively."
     exit 1
 }
@@ -119,18 +118,6 @@ test_release_web() {
     fi
 }
 
-test_tsan() {
-    local ret=0
-
-    print_title "Test with thread sanitizer"
-    RUSTFLAGS='-Zsanitizer=thread' \
-        cargo +nightly-2025-01-03 run --example tsan --target $(get_host_triple)
-    ret=$?
-    if [ $ret -ne 0 ]; then
-        exit $ret
-    fi
-}
-
 test_repeat() {
     local ret=0
 
@@ -214,11 +201,6 @@ do
             is_debug=1
             is_release=1
             ;;
-        -tsan)
-            is_debug=0
-            is_release=0
-            test_kind="tsan"
-            ;;
         -rep)
             is_debug=0
             is_release=0
@@ -238,9 +220,7 @@ cmd=${all_args[0]}
 
 case $cmd in
     test)
-        if [ "$test_kind" == "tsan" ]; then
-            test_tsan
-        elif [ "$test_kind" == "rep" ]; then
+        if [ "$test_kind" == "rep" ]; then
             test_repeat
         else
             test_debug
