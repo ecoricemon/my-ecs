@@ -5,15 +5,14 @@ use std::{
     ptr::NonNull,
 };
 
-/// A pointer that implements [`Send`] and [`Sync`] regardless of whether `T`
-/// implements both [`Send`] and [`Sync`].
+/// A pointer that implements [`Send`] and [`Sync`] regardless of whether `T` implements both
+/// [`Send`] and [`Sync`].
 ///
 /// # Safety
 ///
-/// This pointer can be sent to another worker. Owner must guarantee that
-/// sending the pointer is safe. For instance, if you are controlling access to
-/// pointer over workers completely, it will be safe in terms of `Send` and
-/// `Sync`.
+/// This pointer can be sent to another worker. Owner must guarantee that sending the pointer is
+/// safe. For instance, if you are controlling access to pointer over workers completely, it will be
+/// safe in terms of `Send` and `Sync`.
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct SendSyncPtr<T: ?Sized>(NonNull<T>);
@@ -27,7 +26,7 @@ impl<T: ?Sized> SendSyncPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::SendSyncPtr;
+    /// use my_utils::ds::SendSyncPtr;
     /// use std::ptr::NonNull;
     ///
     /// let mut v = 0;
@@ -41,13 +40,13 @@ impl<T: ?Sized> SendSyncPtr<T> {
 
     /// Creates a [`SendSyncPtr`] that is dangling, but well-aligned.
     ///
-    /// In many Rust functions, they require aligned pointers even if they are
-    /// some trash values. This function will be usuful in that cases.
+    /// In many Rust functions, they require aligned pointers even if they are some trash values.
+    /// This function will be usuful in that cases.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::SendSyncPtr;
+    /// use my_utils::ds::SendSyncPtr;
     /// use std::ptr::NonNull;
     ///
     /// let dangling = SendSyncPtr::<i32>::dangling();
@@ -65,7 +64,7 @@ impl<T: ?Sized> SendSyncPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::SendSyncPtr;
+    /// use my_utils::ds::SendSyncPtr;
     ///
     /// let dangling = SendSyncPtr::<i32>::dangling();
     /// assert!(dangling.is_dangling());
@@ -83,7 +82,7 @@ impl<T: ?Sized> SendSyncPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::SendSyncPtr;
+    /// use my_utils::ds::SendSyncPtr;
     /// use std::ptr::NonNull;
     ///
     /// let mut v = 0;
@@ -101,7 +100,7 @@ impl<T: ?Sized> SendSyncPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::SendSyncPtr;
+    /// use my_utils::ds::SendSyncPtr;
     /// use std::ptr::NonNull;
     ///
     /// let mut v = 0;
@@ -123,7 +122,7 @@ impl<T: ?Sized> SendSyncPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::SendSyncPtr;
+    /// use my_utils::ds::SendSyncPtr;
     /// use std::ptr::NonNull;
     ///
     /// let mut v = 0;
@@ -146,14 +145,13 @@ impl<T: ?Sized> SendSyncPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::SendSyncPtr;
+    /// use my_utils::ds::SendSyncPtr;
     /// use std::ptr::NonNull;
     ///
     /// let mut v = 0;
     /// let ptr = NonNull::new(&mut v as *mut i32).unwrap();
     /// let mut ptr = SendSyncPtr::new(ptr);
     /// let mut_v = unsafe { ptr.as_mut() };
-    /// assert_eq!(mut_v, &mut v);
     /// ```
     #[inline]
     pub unsafe fn as_mut<'a>(&mut self) -> &'a mut T {
@@ -162,8 +160,8 @@ impl<T: ?Sized> SendSyncPtr<T> {
 
     /// Adds an offset to the pointer then returns the result.
     ///
-    /// Note that `count` is in units of `T`. For example, `count` = 3 means
-    /// 12 bytes offset if `T` is `i32`.
+    /// Note that `count` is in units of `T`. For example, `count` = 3 means 12 bytes offset if `T`
+    /// is `i32`.
     ///
     /// # Safety
     ///
@@ -172,7 +170,7 @@ impl<T: ?Sized> SendSyncPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::SendSyncPtr;
+    /// use my_utils::ds::SendSyncPtr;
     /// use std::ptr::NonNull;
     ///
     /// let arr: [char; 3] = ['a', 'b', 'c'];
@@ -190,14 +188,17 @@ impl<T: ?Sized> SendSyncPtr<T> {
     where
         T: Sized,
     {
-        let inner = unsafe { self.0.add(count) };
+        let inner = unsafe {
+            let ptr = self.0.as_ptr().add(count);
+            NonNull::new_unchecked(ptr)
+        };
         Self::new(inner)
     }
 
     /// Subtracts an offset from the pointer then returns the result.
     ///
-    /// Note that `count` is in units of `T`. For example, `count` = 3 means
-    /// 12 bytes offset if `T` is `i32`.
+    /// Note that `count` is in units of `T`. For example, `count` = 3 means 12 bytes offset if `T`
+    /// is `i32`.
     ///
     /// # Safety
     ///
@@ -206,25 +207,30 @@ impl<T: ?Sized> SendSyncPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::SendSyncPtr;
+    /// use my_utils::ds::SendSyncPtr;
     /// use std::ptr::NonNull;
     ///
     /// let arr: [char; 3] = ['a', 'b', 'c'];
-    /// let ptr = NonNull::new((&arr[2] as *const char).cast_mut()).unwrap();
+    ///
+    /// let ptr = NonNull::new(arr.as_ptr_range().end.cast_mut()).unwrap();
     /// let ptr = SendSyncPtr::new(ptr);
     ///
-    /// let ref_v = unsafe { ptr.sub(1).as_ref() };
-    /// assert_eq!(ref_v, &'b');
-    ///
-    /// let ref_v = unsafe { ptr.sub(2).as_ref() };
-    /// assert_eq!(ref_v, &'a');
+    /// unsafe {
+    ///     let r = ptr.sub(1).as_ref();
+    ///     assert_eq!(r, &'c');
+    ///     let r = ptr.sub(2).as_ref();
+    ///     assert_eq!(r, &'b');
+    /// }
     /// ```
     #[inline]
     pub const unsafe fn sub(self, count: usize) -> Self
     where
         T: Sized,
     {
-        let inner = unsafe { self.0.sub(count) };
+        let inner = unsafe {
+            let ptr = self.0.as_ptr().sub(count);
+            NonNull::new_unchecked(ptr)
+        };
         Self::new(inner)
     }
 
@@ -233,7 +239,7 @@ impl<T: ?Sized> SendSyncPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::SendSyncPtr;
+    /// use my_utils::ds::SendSyncPtr;
     /// use std::ptr::NonNull;
     ///
     /// let mut v = 0x1234_5678;
@@ -251,11 +257,11 @@ impl<T: ?Sized> SendSyncPtr<T> {
     }
 }
 
+/// Comparison by address
 impl<T: ?Sized> PartialEq for SendSyncPtr<T> {
-    #[allow(ambiguous_wide_pointer_comparisons)]
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.as_ptr() == other.as_ptr()
+        self.as_ptr().cast::<()>().eq(&other.as_ptr().cast::<()>())
     }
 }
 
@@ -268,11 +274,11 @@ impl<T: ?Sized> PartialOrd for SendSyncPtr<T> {
     }
 }
 
+/// Comparison by address
 impl<T: ?Sized> Ord for SendSyncPtr<T> {
-    #[allow(ambiguous_wide_pointer_comparisons)]
     #[inline]
     fn cmp(&self, other: &Self) -> cmp::Ordering {
-        self.as_ptr().cmp(&other.as_ptr())
+        self.as_ptr().cast::<()>().cmp(&other.as_ptr().cast::<()>())
     }
 }
 
@@ -294,9 +300,8 @@ impl<T: ?Sized> Copy for SendSyncPtr<T> {}
 
 /// A pointer that is extended with type id or name.
 ///
-/// If 'check' feature is enabled, it contains type id or name. Otherwise, it's
-/// just a [`NonNull`]. This is useful when you want to know the type of the
-/// pointer.
+/// If 'check' feature is enabled, it contains type id or name. Otherwise, it's just a [`NonNull`].
+/// This is useful when you want to know the type of the pointer.
 #[cfg_attr(not(feature = "check"), repr(transparent))]
 pub struct NonNullExt<T: ?Sized> {
     inner: NonNull<T>,
@@ -326,7 +331,7 @@ impl<T: ?Sized> NonNullExt<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::NonNullExt;
+    /// use my_utils::ds::NonNullExt;
     ///
     /// let mut v = 0;
     /// let ptr = NonNullExt::new(&mut v as *mut i32).unwrap();
@@ -346,7 +351,7 @@ impl<T: ?Sized> NonNullExt<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::NonNullExt;
+    /// use my_utils::ds::NonNullExt;
     ///
     /// let mut v = 0;
     /// let ptr = unsafe { NonNullExt::new_unchecked(&mut v as *mut i32) };
@@ -370,7 +375,7 @@ impl<T: ?Sized> NonNullExt<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::NonNullExt;
+    /// use my_utils::ds::NonNullExt;
     /// use std::ptr::NonNull;
     ///
     /// let mut v = 0;
@@ -388,13 +393,13 @@ impl<T: ?Sized> NonNullExt<T> {
 
     /// Creates a [`NonNullExt`] that is dangling, but well-aligned.
     ///
-    /// In many Rust functions, they require aligned pointers even if they are
-    /// some trash values. This function will be usuful in that cases.
+    /// In many Rust functions, they require aligned pointers even if they are some trash values.
+    /// This function will be usuful in that cases.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::NonNullExt;
+    /// use my_utils::ds::NonNullExt;
     ///
     /// let dangling = NonNullExt::<i32>::dangling();
     /// ```
@@ -415,7 +420,7 @@ impl<T: ?Sized> NonNullExt<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::NonNullExt;
+    /// use my_utils::ds::NonNullExt;
     ///
     /// let dangling = NonNullExt::<i32>::dangling();
     /// assert!(dangling.is_dangling());
@@ -430,15 +435,14 @@ impl<T: ?Sized> NonNullExt<T> {
 
     /// Sets the [`TypeIdExt`] to the pointer then returns the pointer.
     ///
-    /// Basically, [`NonNullExt`] contains type name of the pointer if `check`
-    /// feature is enabled. You can replace it with the given `TypeIdExt`
-    /// using this method. But `check` feature is disabled, this method is
-    /// no-op.
+    /// Basically, [`NonNullExt`] contains type name of the pointer if `check` feature is enabled.
+    /// You can replace it with the given `TypeIdExt` using this method. But `check` feature is
+    /// disabled, this method is no-op.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, TypeIdExt};
+    /// use my_utils::ds::{NonNullExt, TypeIdExt};
     ///
     /// let mut v = 0;
     /// let ptr = NonNullExt::new(&mut v as *mut i32)
@@ -460,16 +464,15 @@ impl<T: ?Sized> NonNullExt<T> {
         }
     }
 
-    /// Returns [`TypeIdExt`] of the pointer if `check` feature is enabled and
-    /// the pointer contains `TypeIdExt` rather than type name.
+    /// Returns [`TypeIdExt`] of the pointer if `check` feature is enabled and the pointer contains
+    /// `TypeIdExt` rather than type name.
     ///
-    /// If you want to set the `TypeIdExt` to the pointer, call
-    /// [`NonNullExt::with_type`].
+    /// If you want to set the `TypeIdExt` to the pointer, call [`NonNullExt::with_type`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, TypeIdExt};
+    /// use my_utils::ds::{NonNullExt, TypeIdExt};
     ///
     /// let mut v = 0;
     /// let ptr = NonNullExt::new(&mut v as *mut i32)
@@ -497,7 +500,7 @@ impl<T: ?Sized> NonNullExt<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::NonNullExt;
+    /// use my_utils::ds::NonNullExt;
     ///
     /// let mut v = 0;
     /// let ptr = NonNullExt::new(&mut v as *mut i32).unwrap();
@@ -521,13 +524,12 @@ impl<T: ?Sized> NonNullExt<T> {
 
     /// Casts the pointer to another type.
     ///
-    /// Note that this method resets [`TypeIdExt`] you set through
-    /// [`NonNullExt::with_type`].
+    /// Note that this method resets [`TypeIdExt`] you set through [`NonNullExt::with_type`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::NonNullExt;
+    /// use my_utils::ds::NonNullExt;
     ///
     /// let mut v = 0x1234_5678;
     /// let ptr = NonNullExt::new(&mut v as *mut i32).unwrap();
@@ -547,8 +549,8 @@ impl<T: ?Sized> NonNullExt<T> {
 
     /// Adds an offset to the pointer then returns the result.
     ///
-    /// Note that `count` is in units of `T`. For example, `count` = 3 means
-    /// 12 bytes offset if `T` is `i32`.
+    /// Note that `count` is in units of `T`. For example, `count` = 3 means 12 bytes offset if `T`
+    /// is `i32`.
     ///
     /// # Safety
     ///
@@ -557,7 +559,7 @@ impl<T: ?Sized> NonNullExt<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::NonNullExt;
+    /// use my_utils::ds::NonNullExt;
     ///
     /// let arr: [char; 3] = ['a', 'b', 'c'];
     /// let ptr = NonNullExt::new(arr.as_ptr().cast_mut()).unwrap();
@@ -573,7 +575,10 @@ impl<T: ?Sized> NonNullExt<T> {
     where
         T: Sized,
     {
-        let inner = unsafe { self.inner.add(count) };
+        let inner = unsafe {
+            let ptr = self.inner.as_ptr().add(count);
+            NonNull::new_unchecked(ptr)
+        };
 
         Self {
             inner,
@@ -584,8 +589,8 @@ impl<T: ?Sized> NonNullExt<T> {
 
     /// Subtracts an offset from the pointer then returns the result.
     ///
-    /// Note that `count` is in units of `T`. For example, `count` = 3 means
-    /// 12 bytes offset if `T` is `i32`.
+    /// Note that `count` is in units of `T`. For example, `count` = 3 means 12 bytes offset if `T`
+    /// is `i32`.
     ///
     /// # Safety
     ///
@@ -594,23 +599,27 @@ impl<T: ?Sized> NonNullExt<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::NonNullExt;
+    /// use my_utils::ds::NonNullExt;
     ///
     /// let arr: [char; 3] = ['a', 'b', 'c'];
-    /// let ptr = NonNullExt::new((&arr[2] as *const char).cast_mut()).unwrap();
+    /// let ptr = NonNullExt::new(arr.as_ptr_range().end.cast_mut()).unwrap();
     ///
-    /// let ref_v = unsafe { ptr.sub(1).as_ref() };
-    /// assert_eq!(ref_v, &'b');
-    ///
-    /// let ref_v = unsafe { ptr.sub(2).as_ref() };
-    /// assert_eq!(ref_v, &'a');
+    /// unsafe {
+    ///     let r = ptr.sub(1).as_ref();
+    ///     assert_eq!(r, &'c');
+    ///     let r = ptr.sub(2).as_ref();
+    ///     assert_eq!(r, &'b');
+    /// }
     /// ```
     #[inline]
     pub unsafe fn sub(self, count: usize) -> Self
     where
         T: Sized,
     {
-        let inner = unsafe { self.inner.sub(count) };
+        let inner = unsafe {
+            let ptr = self.inner.as_ptr().sub(count);
+            NonNull::new_unchecked(ptr)
+        };
 
         Self {
             inner,
@@ -636,11 +645,11 @@ impl<T: ?Sized> DerefMut for NonNullExt<T> {
     }
 }
 
+/// Comparison by address
 impl<T: ?Sized> PartialEq for NonNullExt<T> {
-    #[allow(ambiguous_wide_pointer_comparisons)]
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.as_ptr() == other.as_ptr()
+        self.as_ptr().cast::<()>().eq(&other.as_ptr().cast::<()>())
     }
 }
 
@@ -653,11 +662,11 @@ impl<T: ?Sized> PartialOrd for NonNullExt<T> {
     }
 }
 
+/// Comparison by address
 impl<T: ?Sized> Ord for NonNullExt<T> {
-    #[allow(ambiguous_wide_pointer_comparisons)]
     #[inline]
     fn cmp(&self, other: &Self) -> cmp::Ordering {
-        self.as_ptr().cmp(&other.as_ptr())
+        self.as_ptr().cast::<()>().cmp(&other.as_ptr().cast::<()>())
     }
 }
 
@@ -679,17 +688,15 @@ impl<T: ?Sized> Copy for NonNullExt<T> {}
 
 /// A wrapper of [`NonNullExt`] that can be used to manage a constant pointer.
 ///
-/// When the `check` feature is enabled, the crate tracks whether
-/// [`ManagedMutPtr`] that has the same address is being created while the
-/// pointer is alive. This could be useful when you need extra debugging
-/// facility than `NonNullExt`.
+/// When the `check` feature is enabled, the crate tracks whether [`ManagedMutPtr`] that has the
+/// same address is being created while the pointer is alive. This could be useful when you need
+/// extra debugging facility than `NonNullExt`.
 ///
 /// # Safety
 ///
-/// The pointer is used as a shared reference without unsafe function such as
-/// [`NonNull::as_ref`] because the pointer is completely managed. Therefore,
-/// You must make sure that the pointer will not violate any conditions of
-/// `Pointer to reference conversion` in [`std::ptr`] document.
+/// The pointer is used as a shared reference without unsafe function such as [`NonNull::as_ref`]
+/// because the pointer is completely managed. Therefore, You must make sure that the pointer will
+/// not violate any conditions of `Pointer to reference conversion` in [`std::ptr`] document.
 pub struct ManagedConstPtr<T: ?Sized> {
     inner: NonNullExt<T>,
     #[cfg(feature = "check")]
@@ -714,7 +721,7 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedConstPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedConstPtr};
     ///
     /// let mut v = 0;
     /// let ptr = NonNullExt::new(&mut v as *mut i32).unwrap();
@@ -737,13 +744,13 @@ impl<T: ?Sized> ManagedConstPtr<T> {
 
     /// Creates a [`ManagedConstPtr`] that is dangling, but well-aligned.
     ///
-    /// In many Rust functions, they require aligned pointers even if they are
-    /// some trash values. This function will be usuful in that cases.
+    /// In many Rust functions, they require aligned pointers even if they are some trash values.
+    /// This function will be usuful in that cases.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ManagedConstPtr;
+    /// use my_utils::ds::ManagedConstPtr;
     ///
     /// let dangling = ManagedConstPtr::<i32>::dangling();
     /// ```
@@ -764,7 +771,7 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ManagedConstPtr;
+    /// use my_utils::ds::ManagedConstPtr;
     ///
     /// let dangling = ManagedConstPtr::<i32>::dangling();
     /// assert!(dangling.is_dangling());
@@ -782,7 +789,7 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedConstPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedConstPtr};
     ///
     /// let mut v = 0;
     /// let nne = NonNullExt::new(&mut v as *mut i32).unwrap();
@@ -799,7 +806,7 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedConstPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedConstPtr};
     ///
     /// let mut v = 0;
     /// let nne = NonNullExt::new(&mut v as *mut i32).unwrap();
@@ -816,7 +823,7 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedConstPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedConstPtr};
     ///
     /// let mut v = 0;
     /// let nne = NonNullExt::new(&mut v as *mut i32).unwrap();
@@ -830,13 +837,12 @@ impl<T: ?Sized> ManagedConstPtr<T> {
 
     /// Converts the pointer into a shared reference.
     ///
-    /// Note that trace of the address by `check` feature ends by consuming the
-    /// pointer.
+    /// Note that trace of the address by `check` feature ends by consuming the pointer.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedConstPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedConstPtr};
     ///
     /// let mut v = 0;
     /// let nne = NonNullExt::new(&mut v as *mut i32).unwrap();
@@ -856,13 +862,13 @@ impl<T: ?Sized> ManagedConstPtr<T> {
 
     /// Casts the pointer to another type.
     ///
-    /// This method doesn't break the trace of the address by `check` feature.
-    /// But internal type information is reset. See [`NonNullExt::cast`].
+    /// This method doesn't break the trace of the address by `check` feature. But internal type
+    /// information is reset. See [`NonNullExt::cast`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedConstPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedConstPtr};
     ///
     /// let mut v = 0x1234_5678;
     /// let nne = NonNullExt::new(&mut v as *mut i32).unwrap();
@@ -885,8 +891,8 @@ impl<T: ?Sized> ManagedConstPtr<T> {
 
     /// Adds an offset to the pointer then returns the result.
     ///
-    /// Note that `count` is in units of `T`. For example, `count` = 3 means
-    /// 12 bytes offset if `T` is `i32`.
+    /// Note that `count` is in units of `T`. For example, `count` = 3 means 12 bytes offset if `T`
+    /// is `i32`.
     ///
     /// # Safety
     ///
@@ -895,7 +901,7 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedConstPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedConstPtr};
     ///
     /// let arr: [char; 3] = ['a', 'b', 'c'];
     /// let nne = NonNullExt::new(arr.as_ptr().cast_mut()).unwrap();
@@ -920,8 +926,8 @@ impl<T: ?Sized> ManagedConstPtr<T> {
 
     /// Subtracts an offset from the pointer then returns the result.
     ///
-    /// Note that `count` is in units of `T`. For example, `count` = 3 means
-    /// 12 bytes offset if `T` is `i32`.
+    /// Note that `count` is in units of `T`. For example, `count` = 3 means 12 bytes offset if `T`
+    /// is `i32`.
     ///
     /// # Safety
     ///
@@ -930,15 +936,15 @@ impl<T: ?Sized> ManagedConstPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedConstPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedConstPtr};
     ///
     /// let arr: [char; 3] = ['a', 'b', 'c'];
-    /// let nne = NonNullExt::new((&arr[2] as *const char).cast_mut()).unwrap();
-    /// let ptr = unsafe { ManagedConstPtr::new(nne) };
+    /// let ptr = NonNullExt::new(arr.as_ptr_range().end.cast_mut()).unwrap();
     ///
     /// unsafe {
-    ///     assert_eq!(*ptr.sub(1), 'b');
-    ///     assert_eq!(*ptr.sub(2), 'a');
+    ///     let ptr = ManagedConstPtr::new(ptr);
+    ///     assert_eq!(*ptr.sub(1), 'c');
+    ///     assert_eq!(*ptr.sub(2), 'b');
     /// }
     /// ```
     #[inline]
@@ -973,11 +979,11 @@ impl<T: ?Sized> Deref for ManagedConstPtr<T> {
     }
 }
 
+/// Comparison by address
 impl<T: ?Sized> PartialEq for ManagedConstPtr<T> {
-    #[allow(ambiguous_wide_pointer_comparisons)]
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.as_ptr() == other.as_ptr()
+        self.as_ptr().cast::<()>().eq(&other.as_ptr().cast::<()>())
     }
 }
 
@@ -990,11 +996,11 @@ impl<T: ?Sized> PartialOrd for ManagedConstPtr<T> {
     }
 }
 
+/// Comparison by address
 impl<T: ?Sized> Ord for ManagedConstPtr<T> {
-    #[allow(ambiguous_wide_pointer_comparisons)]
     #[inline]
     fn cmp(&self, other: &Self) -> cmp::Ordering {
-        self.as_ptr().cmp(&other.as_ptr())
+        self.as_ptr().cast::<()>().cmp(&other.as_ptr().cast::<()>())
     }
 }
 
@@ -1027,17 +1033,15 @@ impl<T: ?Sized> Copy for ManagedConstPtr<T> {}
 
 /// A wrapper of [`NonNullExt`] that can be used to manage a mutable pointer.
 ///
-/// When the `check` feature is enabled, the crate tracks whether
-/// [`ManagedMutPtr`] or [`ManagedConstPtr`] that has the same address is being
-/// created while the pointer is alive. This could be useful when you need extra
-/// debugging facility than `NonNullExt`.
+/// When the `check` feature is enabled, the crate tracks whether [`ManagedMutPtr`] or
+/// [`ManagedConstPtr`] that has the same address is being created while the pointer is alive. This
+/// could be useful when you need extra debugging facility than `NonNullExt`.
 ///
 /// # Safety
 ///
-/// The pointer is used as a mutable reference without unsafe function such as
-/// [`NonNull::as_mut`] because the pointer is completely managed. Therefore,
-/// You must make sure that the pointer will not violate any conditions of
-/// `Pointer to reference conversion` in [`std::ptr`] document.
+/// The pointer is used as a mutable reference without unsafe function such as [`NonNull::as_mut`]
+/// because the pointer is completely managed. Therefore, You must make sure that the pointer will
+/// not violate any conditions of `Pointer to reference conversion` in [`std::ptr`] document.
 pub struct ManagedMutPtr<T: ?Sized> {
     inner: NonNullExt<T>,
     #[cfg(feature = "check")]
@@ -1062,7 +1066,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedMutPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedMutPtr};
     ///
     /// let mut v = 0;
     /// let ptr = NonNullExt::new(&mut v as *mut i32).unwrap();
@@ -1085,13 +1089,13 @@ impl<T: ?Sized> ManagedMutPtr<T> {
 
     /// Creates a [`ManagedMutPtr`] that is dangling, but well-aligned.
     ///
-    /// In many Rust functions, they require aligned pointers even if they are
-    /// some trash values. This function will be usuful in that cases.
+    /// In many Rust functions, they require aligned pointers even if they are some trash values.
+    /// This function will be usuful in that cases.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ManagedMutPtr;
+    /// use my_utils::ds::ManagedMutPtr;
     ///
     /// let dangling = ManagedMutPtr::<i32>::dangling();
     /// ```
@@ -1112,7 +1116,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ManagedMutPtr;
+    /// use my_utils::ds::ManagedMutPtr;
     ///
     /// let dangling = ManagedMutPtr::<i32>::dangling();
     /// assert!(dangling.is_dangling());
@@ -1130,7 +1134,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedMutPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedMutPtr};
     ///
     /// let mut v = 0;
     /// let nne = NonNullExt::new(&mut v as *mut i32).unwrap();
@@ -1147,7 +1151,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedMutPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedMutPtr};
     ///
     /// let mut v = 0;
     /// let nne = NonNullExt::new(&mut v as *mut i32).unwrap();
@@ -1164,7 +1168,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedMutPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedMutPtr};
     ///
     /// let mut v = 0;
     /// let nne = NonNullExt::new(&mut v as *mut i32).unwrap();
@@ -1178,13 +1182,12 @@ impl<T: ?Sized> ManagedMutPtr<T> {
 
     /// Converts the pointer into a mutable reference.
     ///
-    /// Note that trace of the address by `check` feature ends by consuming the
-    /// pointer.
+    /// Note that trace of the address by `check` feature ends by consuming the pointer.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedMutPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedMutPtr};
     ///
     /// let mut v = 0;
     /// let nne = NonNullExt::new(&mut v as *mut i32).unwrap();
@@ -1204,13 +1207,13 @@ impl<T: ?Sized> ManagedMutPtr<T> {
 
     /// Casts the pointer to another type.
     ///
-    /// This method doesn't break the trace of the address by `check` feature.
-    /// But internal type information is reset. See [`NonNullExt::cast`].
+    /// This method doesn't break the trace of the address by `check` feature. But internal type
+    /// information is reset. See [`NonNullExt::cast`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedMutPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedMutPtr};
     ///
     /// let mut v = 0x1234_5678;
     /// let nne = NonNullExt::new(&mut v as *mut i32).unwrap();
@@ -1236,7 +1239,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedMutPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedMutPtr};
     ///
     /// let mut v = 0;
     /// let nne = NonNullExt::new(&mut v as *mut i32).unwrap();
@@ -1256,8 +1259,8 @@ impl<T: ?Sized> ManagedMutPtr<T> {
 
     /// Adds an offset to the pointer then returns the result.
     ///
-    /// Note that `count` is in units of `T`. For example, `count` = 3 means
-    /// 12 bytes offset if `T` is `i32`.
+    /// Note that `count` is in units of `T`. For example, `count` = 3 means 12 bytes offset if `T`
+    /// is `i32`.
     ///
     /// # Safety
     ///
@@ -1266,7 +1269,7 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedMutPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedMutPtr};
     ///
     /// let arr: [char; 2] = ['a', 'b'];
     /// let nne = NonNullExt::new(arr.as_ptr().cast_mut()).unwrap();
@@ -1287,8 +1290,8 @@ impl<T: ?Sized> ManagedMutPtr<T> {
 
     /// Subtracts an offset from the pointer then returns the result.
     ///
-    /// Note that `count` is in units of `T`. For example, `count` = 3 means
-    /// 12 bytes offset if `T` is `i32`.
+    /// Note that `count` is in units of `T`. For example, `count` = 3 means 12 bytes offset if `T`
+    /// is `i32`.
     ///
     /// # Safety
     ///
@@ -1297,13 +1300,15 @@ impl<T: ?Sized> ManagedMutPtr<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{NonNullExt, ManagedMutPtr};
+    /// use my_utils::ds::{NonNullExt, ManagedMutPtr};
     ///
     /// let arr: [char; 2] = ['a', 'b'];
-    /// let nne = NonNullExt::new((&arr[1] as *const char).cast_mut()).unwrap();
-    /// let ptr = unsafe { ManagedMutPtr::new(nne) };
+    /// let ptr = NonNullExt::new(arr.as_ptr_range().end.cast_mut()).unwrap();
     ///
-    /// unsafe { assert_eq!(*ptr.sub(1), 'a') };
+    /// unsafe {
+    ///     let ptr = ManagedMutPtr::new(ptr);
+    ///     assert_eq!(*ptr.sub(2), 'a');
+    /// };
     /// ```
     #[inline]
     pub unsafe fn sub(self, count: usize) -> Self
@@ -1345,11 +1350,11 @@ impl<T: ?Sized> DerefMut for ManagedMutPtr<T> {
     }
 }
 
+/// Comparison by address.
 impl<T: ?Sized> PartialEq for ManagedMutPtr<T> {
-    #[allow(ambiguous_wide_pointer_comparisons)]
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.as_ptr() == other.as_ptr()
+        self.as_ptr().cast::<()>().eq(&other.as_ptr().cast::<()>())
     }
 }
 
@@ -1362,11 +1367,11 @@ impl<T: ?Sized> PartialOrd for ManagedMutPtr<T> {
     }
 }
 
+/// Comparison by address.
 impl<T: ?Sized> Ord for ManagedMutPtr<T> {
-    #[allow(ambiguous_wide_pointer_comparisons)]
     #[inline]
     fn cmp(&self, other: &Self) -> cmp::Ordering {
-        self.as_ptr().cmp(&other.as_ptr())
+        self.as_ptr().cast::<()>().cmp(&other.as_ptr().cast::<()>())
     }
 }
 
@@ -1377,10 +1382,9 @@ impl<T: ?Sized> hash::Hash for ManagedMutPtr<T> {
     }
 }
 
-// ManagedMutPtr is not a pure pointer unlike NonNull.
-// It can be dereferenced as shared or mutable reference without need for unsafe block.
-// That means it's more like a mutable reference.
-// So, we don't implement Clone and Copy for it.
+// ManagedMutPtr is not a pure pointer unlike NonNull. It can be dereferenced as shared or mutable
+// reference without need for unsafe block. That means it's more like a mutable reference. So, we
+// don't implement Clone and Copy for it.
 // impl<T: ?Sized> Clone for ManagedMutPtr<T> {..}
 // impl<T: ?Sized> Copy for ManagedMutPtr<T> {..}
 
@@ -1421,6 +1425,7 @@ mod debug {
     }
 
     /// Inserts the pointer to the global map.
+    ///
     /// In the map, shared pointer is allowed to be inserted multiple times.
     ///
     /// # Panics
@@ -1444,20 +1449,19 @@ mod debug {
     }
 
     /// Inserts the pointer to the global map.
-    /// In the map, exclusive pointer is not allowed to be inserted multiple times.
-    /// To insert the same pointer, you must remove the pointer first.
     ///
-    /// Note, however, that zero-sized `T` is considered shared pointer.
-    /// It means the pointer is allowed to be inserted many times.
+    /// In the map, exclusive pointer is not allowed to be inserted multiple times. To insert the
+    /// same pointer, you must remove the pointer first.
+    ///
+    /// Note, however, that zero-sized `T` is considered shared pointer. It means the pointer is
+    /// allowed to be inserted many times.
     ///
     /// # Panics
     ///
     /// Panics if the map contained the pointer.
     pub(super) fn insert_mut_ptr<T: ?Sized>(ptr: NonNullExt<T>) {
-        // If `T` is a zero-sized type, then it's good to be allowed to have
-        // the same pointers because they do not mutate the same data.
-        // It can be considered as a const pointer.
-        //
+        // If `T` is a zero-sized type, then it's good to be allowed to have the same pointers
+        // because they do not mutate the same data. It can be considered as a const pointer.
         // Safety: Even if it's aliased, we do not read the data here.
         if unsafe { size_of_val(ptr.as_ref()) } == 0 {
             insert_const_ptr(ptr);

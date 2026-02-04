@@ -10,11 +10,12 @@ use super::{
     },
 };
 use crate::{
-    DefaultRandomState,
     ds::{ATypeId, Borrowed, ManagedConstPtr, ManagedMutPtr},
     ecs::resource::ResourceKey,
+    FxBuildHasher,
 };
-use my_ecs_util::debug_format;
+use my_utils::debug_format;
+use once_cell::sync::Lazy;
 use std::{
     any,
     collections::HashMap,
@@ -22,17 +23,16 @@ use std::{
     hash::BuildHasher,
     marker::PhantomData,
     ptr::NonNull,
-    sync::{Arc, LazyLock, Mutex},
+    sync::{Arc, Mutex},
 };
 
 /// A storage including request, query and filter information together.
 //
-// When a system is registered, it's corresponding request and
-// related other information is registered here, and it can be shared from other systems.
-// When it comes to unregister, each system data will unregister itself from
-// this storage when it's dropped.
-pub(crate) static RINFO_STOR: LazyLock<Arc<Mutex<RequestInfoStorage<DefaultRandomState>>>> =
-    const { LazyLock::new(|| Arc::new(Mutex::new(RequestInfoStorage::new()))) };
+// When a system is registered, it's corresponding request and related other information is
+// registered here, and it can be shared from other systems. When it comes to unregister, each
+// system data will unregister itself from this storage when it's dropped.
+pub(crate) static RINFO_STOR: Lazy<Arc<Mutex<RequestInfoStorage<FxBuildHasher>>>> =
+    Lazy::new(|| Arc::new(Mutex::new(RequestInfoStorage::new())));
 
 /// Storage containing request and other info.
 #[derive(Debug)]
@@ -118,8 +118,8 @@ where
             // Safety: We checked it in matches.
             let rinfo = unsafe { self.rinfo.remove(key).unwrap_unchecked() };
 
-            // `RequestInfo` contains other info, so copy keys and drop rinfo first
-            // in order to keep remove code simple.
+            // `RequestInfo` contains other info, so copy keys and drop rinfo first in order to keep
+            // remove code simple.
             let read_key = rinfo.read().0;
             let write_key = rinfo.write().0;
             let res_read_key = rinfo.res_read().0;
@@ -139,8 +139,8 @@ where
             remove_eqinfo(self, &ent_write_key);
         }
 
-        // Removes query and select info if it's not referenced from external anymore.
-        // This function must be called inside `remove()`.
+        // Removes query and select info if it's not referenced from external anymore. This function
+        // must be called inside `remove()`.
         fn remove_qinfo_sinfo<S>(this: &mut RequestInfoStorage<S>, key: &QueryKey)
         where
             S: BuildHasher,
@@ -152,8 +152,7 @@ where
                 this.qinfo.get(key),
                 Some(x) if Arc::strong_count(x) == QINFO_EMPTY_STRONG_CNT
             ) {
-                // `QueryInfo` contains `FilterInfo` in it.
-                // We need to remove `FilterInfo` first.
+                // `QueryInfo` contains `FilterInfo` in it. We need to remove `FilterInfo` first.
                 // Safety: We checked it in matches.
                 let qinfo = unsafe { this.qinfo.remove(key).unwrap_unchecked() };
 
@@ -169,8 +168,8 @@ where
             }
         }
 
-        // Removes resource query info if it's not referenced from external anymore.
-        // This function must be called inside `remove()`.
+        // Removes resource query info if it's not referenced from external anymore. This function
+        // must be called inside `remove()`.
         fn remove_rqinfo<S>(this: &mut RequestInfoStorage<S>, key: &ResQueryKey)
         where
             S: BuildHasher,
@@ -186,8 +185,8 @@ where
             }
         }
 
-        // Removes entity query info if it's not referenced from external anymore.
-        // This function must be called inside `remove()`.
+        // Removes entity query info if it's not referenced from external anymore. This function
+        // must be called inside `remove()`.
         fn remove_eqinfo<S>(this: &mut RequestInfoStorage<S>, key: &EntQueryKey)
         where
             S: BuildHasher,
@@ -323,9 +322,9 @@ where
 
 /// A system request for a components, resources, and entity containers.
 ///
-/// All systems must declare their own requests in advance. The crate exploits
-/// the information to avoid data race and dead-lock between systems. A request
-/// consists of read and write requests like so,
+/// All systems must declare their own requests in advance. The crate exploits the information to
+/// avoid data race and dead-lock between systems. A request consists of read and write requests
+/// like so,
 ///
 /// * Read - Read request for a set of components.
 /// * Write - Write request for a set of components.
@@ -480,14 +479,14 @@ impl RequestInfo {
         self.ent_write().1.as_ref().filters()
     }
 
-    /// Determines whether the request info is valid or not in terms of
-    /// `Read`, `Write`, `ResRead`, and `ResWrite`.
+    /// Determines whether the request info is valid or not in terms of `Read`, `Write`, `ResRead`,
+    /// and `ResWrite`.
+    ///
     /// Request info that meets conditions below is valid.
     /// - Write query selectors are disjoint against other selectors.
     /// - Write resource query doesn't overlap other read or write resource query.
     ///
-    /// Note that request info cannot validate `EntWrite` itself.
-    /// That must be validated outside.
+    /// Note that request info cannot validate `EntWrite` itself. That must be validated outside.
     pub(crate) fn validate(&self) -> Result<(), String> {
         // 1. Write query contains disjoint selectors only?
         let (_, r_qinfo) = self.read();
@@ -566,9 +565,8 @@ impl Request for () {
 
 /// System buffer for its request.
 ///
-/// System request, [`Request`], is composed of requests for read, write,
-/// resource read, resource write, and entity write. They are actually pointers
-/// to the requesting data. Each request means,
+/// System request, [`Request`], is composed of requests for read, write, resource read, resource
+/// write, and entity write. They are actually pointers to the requesting data. Each request means,
 /// - Read or write: Read or write requests for specific
 ///   [`Component`](crate::ecs::ent::component::Component)s.
 /// - Resource read or write: Read or write requests for specific
@@ -576,12 +574,10 @@ impl Request for () {
 /// - Entity write: Write requests for specific entity containers.
 //
 // Why buffer for system rather than request?
-// Q. Many systems may have the same request, so is they be able to share the
-//    same buffer?
+// Q. Many systems may have the same request, so is they be able to share the same buffer?
 // A. Because of borrow check, we need system-individual buffer.
 // - We check borrow status, so we need to borrow and release data everytime.
-//   * Borrow check helps us avoid running into hidden data race during
-//     development.
+//   * Borrow check helps us avoid running into hidden data race during development.
 #[derive(Debug)]
 pub struct SystemBuffer {
     /// Buffer for read-only borrowed component arrays for the system's request.
@@ -600,10 +596,9 @@ pub struct SystemBuffer {
     pub(crate) ent_write: Box<[FilteredRaw]>,
 }
 
-// We're going to send this buffer to other threads with a system implementation.
-// So it's needed to be `Send` like `dyn Invoke + Send`.
-// Obviously, it includes raw pointers, which are unsafe to be sent.
-// But scheduler guarantees there will be no violation.
+// We're going to send this buffer to other threads with a system implementation. So it's needed to
+// be `Send` like `dyn Invoke + Send`. Obviously, it includes raw pointers, which are unsafe to be
+// sent. But scheduler guarantees there will be no violation.
 unsafe impl Send for SystemBuffer {}
 
 impl SystemBuffer {

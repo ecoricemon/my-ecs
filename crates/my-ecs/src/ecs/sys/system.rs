@@ -1,13 +1,14 @@
 use super::{
     query::{EntQueryMut, Query, QueryMut, ResQuery, ResQueryMut},
     request::{
-        RINFO_STOR, Request, RequestInfo, RequestKey, Response, StoreRequestInfo, SystemBuffer,
+        Request, RequestInfo, RequestKey, Response, StoreRequestInfo, SystemBuffer, RINFO_STOR,
     },
 };
-use crate::ecs::EcsError;
-use my_ecs_util::{
-    Or, debug_format,
+use crate::{ecs::EcsError, FxBuildHasher};
+use my_utils::{
+    debug_format,
     ds::{ATypeId, ListPos, ManagedMutPtr, NonNullExt, SetList, SimpleVecPool},
+    Or,
 };
 use std::{
     any::{self, Any},
@@ -26,9 +27,8 @@ use SystemState::*;
 
 /// System is a type that accesses components, entities, or resoruces.
 ///
-/// [`Fn`], [`FnMut`], and [`FnOnce`] with certain parameters implement this
-/// trait by the crate. Of course `struct` also can implement this trait. It's
-/// useful when you need some data for a system.
+/// [`Fn`], [`FnMut`], and [`FnOnce`] with certain parameters implement this trait by the crate. Of
+/// course `struct` also can implement this trait. It's useful when you need some data for a system.
 ///
 /// # Examples
 ///
@@ -102,15 +102,14 @@ use SystemState::*;
 /// let s: String = "".to_owned();
 /// let fn_once_system = move || { drop(s); };
 ///
-/// Ecs::default(WorkerPool::new(), [])
+/// Ecs::create(WorkerPool::new(), [])
 ///     .add_systems((struct_system, fn_system))
 ///     .add_once_system(fn_once_system)
 ///     .unwrap();
 /// ```
 //
-// Clients can define their systems with some data. And we're going to send
-// those systems to other workers, so it's good to add `Send` bound to the trait
-// for safety.
+// Clients can define their systems with some data. And we're going to send those systems to other
+// workers, so it's good to add `Send` bound to the trait for safety.
 #[allow(private_interfaces, private_bounds)]
 pub trait System: Send + 'static {
     type Request: Request;
@@ -179,8 +178,7 @@ pub trait System: Send + 'static {
 
 /// A system group that will be invoked together in a cycle by scheduler.
 ///
-/// Systems can be in one of states such as [`Active`], [`Inactive`], [`Dead`],
-/// and [`Poisoned`].
+/// Systems can be in one of states such as [`Active`], [`Inactive`], [`Dead`], and [`Poisoned`].
 ///
 /// Possible system transitions are as follows,
 ///
@@ -205,15 +203,15 @@ pub trait System: Send + 'static {
 /// [`drain_dead`]: Self::drain_dead
 /// [`drain_poisoned`]: Self::drain_poisoned
 #[derive(Debug)]
-pub(crate) struct SystemGroup<S> {
+pub(crate) struct SystemGroup {
     /// System id that will be given to new registered system.
     cur_id: SystemId,
 
     /// Active state systems.
-    active: SystemCycle<S>,
+    active: SystemCycle,
 
     /// Inactive state systems.
-    inactive: HashSet<SystemData, S>,
+    inactive: HashSet<SystemData, FxBuildHasher>,
 
     /// Dead state systems.
     dead: Vec<SystemData>,
@@ -222,27 +220,25 @@ pub(crate) struct SystemGroup<S> {
     poisoned: Vec<PoisonedSystem>,
 
     /// Volatile systems will be removed permanently instead of moving to inactive list.
+    ///
     /// For instance, setup system and FnOnce system are volatile.
-    volatile: HashSet<SystemId, S>,
+    volatile: HashSet<SystemId, FxBuildHasher>,
 
     /// Active system's lifetime.
-    lifetime: SystemLifetime<S>,
+    lifetime: SystemLifetime,
 }
 
-impl<S> SystemGroup<S>
-where
-    S: BuildHasher + Default,
-{
-    pub(crate) fn new(gi: u16) -> Self {
-        let dummy = ().into_data();
+impl SystemGroup {
+    const INIT_SYSTEM_IDX: u16 = 1;
 
+    pub(crate) fn new(gi: u16) -> Self {
         Self {
-            cur_id: SystemId::new(gi, 1),
-            active: SystemCycle::new(dummy),
-            inactive: HashSet::default(),
+            cur_id: SystemId::new(gi, Self::INIT_SYSTEM_IDX),
+            active: SystemCycle::new(),
+            inactive: HashSet::with_hasher(FxBuildHasher::default()),
             dead: Vec::new(),
             poisoned: Vec::new(),
-            volatile: HashSet::default(),
+            volatile: HashSet::with_hasher(FxBuildHasher::default()),
             lifetime: SystemLifetime::new(),
         }
     }
@@ -288,7 +284,7 @@ where
     }
 
     // TODO: rename
-    pub(crate) fn get_active_mut(&mut self) -> &mut SystemCycle<S> {
+    pub(crate) fn get_active_mut(&mut self) -> &mut SystemCycle {
         &mut self.active
     }
 
@@ -296,8 +292,7 @@ where
         self.active.contains(sid)
     }
 
-    /// Determines whether a system for the given id is in [`Active`] or
-    /// [`Inactive`] states.
+    /// Determines whether a system for the given id is in [`Active`] or [`Inactive`] states.
     pub(crate) fn contains(&self, sid: &SystemId) -> bool {
         self.contains_active(sid) || self.contains_inactive(sid)
     }
@@ -324,18 +319,16 @@ where
 
     /// Registers a system.
     ///
-    /// If there's no error during registration, the system state becomes
-    /// [`Inactive`].
+    /// If there's no error during registration, the system state becomes [`Inactive`].
     ///
     /// Cases below are considered error.
-    /// - System id is not correct. System id must be the same as the one
-    ///   [`Self::next_system_id`] returns.
-    /// - Found a system that has the same system id in [`Active`] or `Inactive`
-    ///   systems.
+    /// - System id is not correct. System id must be the same as the one [`Self::next_system_id`]
+    ///   returns.
+    /// - Found a system that has the same system id in [`Active`] or `Inactive` systems.
     //
-    // It can be possible to set system id here, but then, system data may
-    // contain invalid system id for a second. That's not what we want, so you
-    // must set the correct id by calling [`Self::next_system_id`] beforehand.
+    // It can be possible to set system id here, but then, system data may contain invalid system id
+    // for a second. That's not what we want, so you must set the correct id by calling
+    // [`Self::next_system_id`] beforehand.
     pub(crate) fn register(
         &mut self,
         sdata: SystemData,
@@ -376,8 +369,8 @@ where
     ///
     /// Whereas cases below are considered error.
     /// - If the system was not in `Inactive` state.
-    /// - If insert position pointed to a particular system, and the system was
-    ///   not in `Active` states.
+    /// - If insert position pointed to a particular system, and the system was not in `Active`
+    ///   states.
     pub(crate) fn activate(
         &mut self,
         target: &SystemId,
@@ -432,9 +425,8 @@ where
 
     /// Moves a system for the given id to [`Poisoned`] state.
     ///
-    /// If the system was in one of [`Active`] or [`Inactive`] states, the
-    /// system state transitions to `Poisoned` state. Otherwise, just returns
-    /// given payload back.
+    /// If the system was in one of [`Active`] or [`Inactive`] states, the system state transitions
+    /// to `Poisoned` state. Otherwise, just returns given payload back.
     pub(crate) fn poison(
         &mut self,
         sid: &SystemId,
@@ -457,8 +449,8 @@ where
 
     /// Inactivates a system for the given id.
     ///
-    /// If inactivation is successful, system state changes depends on system
-    /// volatility as shown below.
+    /// If inactivation is successful, system state changes depends on system volatility as shown
+    /// below.
     /// - If the system is volatile, it changes to [`Dead`] state.
     /// - Otherwise, it changes to [`Inactive`] state.
     ///
@@ -483,10 +475,10 @@ where
 
     fn _inactivate(
         sid: &SystemId,
-        active: &mut SystemCycle<S>,
-        inactive: &mut HashSet<SystemData, S>,
+        active: &mut SystemCycle,
+        inactive: &mut HashSet<SystemData, FxBuildHasher>,
         dead: &mut Vec<SystemData>,
-        volatile: &mut HashSet<SystemId, S>,
+        volatile: &mut HashSet<SystemId, FxBuildHasher>,
     ) -> Result<(), EcsError> {
         if inactive.contains(sid) {
             Ok(())
@@ -556,7 +548,7 @@ where
 /// | [`Inactive`] | [`Poisoned`] | Not allowed                           |
 /// | [`Active`]   | [`Inactive`] | A system is inactivated or expired    |
 /// | [`Active`]   | [`Dead`]     | A system is expired and it's volatile |
-/// | [`Active`]   | [`Poisoned`] | A system panicked                     |
+/// | [`Active`]   | [`Poisoned`] | A system has panicked                 |
 /// | [`Dead`]     |              | A system is removed by client         |
 /// | [`Poisoned`] |              | A system is removed by client         |
 #[derive(Debug)]
@@ -570,15 +562,11 @@ pub enum SystemState {
 /// Currently activated systems.
 #[derive(Debug)]
 #[repr(transparent)]
-pub(crate) struct SystemCycle<S>(SetList<SystemId, SystemData, S>);
+pub(crate) struct SystemCycle(SetList<SystemId, SystemData, FxBuildHasher>);
 
-impl<S> SystemCycle<S>
-where
-    S: BuildHasher + Default,
-{
-    // `SetList` requires default head node, just makes empty system and puts it in.
-    pub(crate) fn new(dummy: SystemData) -> Self {
-        Self(SetList::new(dummy))
+impl SystemCycle {
+    pub(crate) fn new() -> Self {
+        Self(SetList::new())
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -601,20 +589,26 @@ where
         self.0.remove(sid)
     }
 
-    pub(crate) fn iter_begin(&mut self) -> SystemCycleIter<'_, S> {
+    pub(crate) fn iter_begin(&mut self) -> SystemCycleIter<'_> {
         SystemCycleIter::new(&mut self.0)
     }
 }
 
-impl<S> Deref for SystemCycle<S> {
-    type Target = SetList<SystemId, SystemData, S>;
+impl Default for SystemCycle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Deref for SystemCycle {
+    type Target = SetList<SystemId, SystemData, FxBuildHasher>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-impl<S> DerefMut for SystemCycle<S> {
+impl DerefMut for SystemCycle {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
@@ -622,18 +616,17 @@ impl<S> DerefMut for SystemCycle<S> {
 
 #[derive(Debug)]
 #[repr(transparent)]
-pub(crate) struct SystemCycleIter<'a, S> {
-    raw: RawSystemCycleIter<S>,
-
+pub(crate) struct SystemCycleIter<'a> {
+    raw: RawSystemCycleIter,
     _marker: PhantomData<&'a mut ()>,
 }
 
-impl<S> SystemCycleIter<'_, S> {
-    pub(crate) fn into_raw(self) -> RawSystemCycleIter<S> {
+impl<'a> SystemCycleIter<'a> {
+    pub(crate) fn into_raw(self) -> RawSystemCycleIter {
         self.raw
     }
 
-    pub(crate) unsafe fn from_raw(raw: RawSystemCycleIter<S>) -> Self {
+    pub(crate) unsafe fn from_raw(raw: RawSystemCycleIter) -> Self {
         Self {
             raw,
             _marker: PhantomData,
@@ -644,13 +637,8 @@ impl<S> SystemCycleIter<'_, S> {
     pub(crate) fn position(&self) -> ListPos {
         self.raw.position()
     }
-}
 
-impl<'a, S> SystemCycleIter<'a, S>
-where
-    S: BuildHasher,
-{
-    pub(crate) fn new(systems: &'a mut SetList<SystemId, SystemData, S>) -> Self {
+    pub(crate) fn new(systems: &'a mut SetList<SystemId, SystemData, FxBuildHasher>) -> Self {
         Self {
             raw: RawSystemCycleIter::new(systems),
             _marker: PhantomData,
@@ -670,27 +658,22 @@ where
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct RawSystemCycleIter<S> {
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RawSystemCycleIter {
     /// Currently activated systems.
-    systems: NonNull<SetList<SystemId, SystemData, S>>,
+    systems: NonNull<SetList<SystemId, SystemData, FxBuildHasher>>,
 
     /// System position to be run.
     cur_pos: ListPos,
 }
 
-impl<S> RawSystemCycleIter<S> {
+impl RawSystemCycleIter {
     /// Returns current system position.
     pub(crate) fn position(&self) -> ListPos {
         self.cur_pos
     }
-}
 
-impl<S> RawSystemCycleIter<S>
-where
-    S: BuildHasher,
-{
-    pub(crate) fn new(systems: &mut SetList<SystemId, SystemData, S>) -> Self {
+    pub(crate) fn new(systems: &mut SetList<SystemId, SystemData, FxBuildHasher>) -> Self {
         let cur_pos = systems.first_position();
         // Safety: Infallible.
         let systems = unsafe { NonNull::new_unchecked(systems as *mut _) };
@@ -718,22 +701,14 @@ where
     }
 }
 
-impl<S> Clone for RawSystemCycleIter<S> {
-    fn clone(&self) -> Self {
-        *self
-    }
-}
-
-impl<S> Copy for RawSystemCycleIter<S> {}
-
 /// A position to insert a system into system scheduling list.
 ///
-/// * Front - Inserts a system to the beginning of the system scheduling list.
-///   The system will be run first on the next scheduling.
-/// * Back - Inserts a system to the end of the system scheduling list. The
-///   system will be run last on the next scheduling.
-/// * After - Inserts a system after a specific system in the system scheduling
-///   list. The system will be run after the designated system.
+/// * Front - Inserts a system to the beginning of the system scheduling list. The system will be
+///   run first on the next scheduling.
+/// * Back - Inserts a system to the end of the system scheduling list. The system will be run last
+///   on the next scheduling.
+/// * After - Inserts a system after a specific system in the system scheduling list. The system
+///   will be run after the designated system.
 #[derive(Debug, Clone, Copy)]
 pub enum InsertPos {
     Back,
@@ -742,25 +717,22 @@ pub enum InsertPos {
 }
 
 #[derive(Debug)]
-struct SystemLifetime<S> {
+struct SystemLifetime {
     /// Monotonically increasing count.
     tick: Tick,
 
     /// [`Tick`] -> An index to [`Self::pool`].
-    lives: HashMap<Tick, usize, S>,
+    lives: HashMap<Tick, usize, FxBuildHasher>,
 
     /// Vector contains system ids to be dead at a specific time.
     pool: SimpleVecPool<SystemId>,
 }
 
-impl<S> SystemLifetime<S>
-where
-    S: BuildHasher + Default,
-{
+impl SystemLifetime {
     fn new() -> Self {
         Self {
             tick: 0,
-            lives: HashMap::default(),
+            lives: HashMap::with_hasher(FxBuildHasher::default()),
             pool: SimpleVecPool::new(),
         }
     }
@@ -780,6 +752,12 @@ where
             self.pool.release(index);
             self.pool.get(index)
         })
+    }
+}
+
+impl Default for SystemLifetime {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -854,10 +832,9 @@ impl fmt::Display for SystemId {
 
 /// # Safety
 ///
-/// This struct is commonly managed by scheduler which guarantees valid access
-/// in terms of [`Send`] and [`Sync`] even if it contains raw pointers in it.
-/// But if clients use this struct on their own purposes, they must keep that in
-/// mind.
+/// This struct is commonly managed by scheduler which guarantees valid access in terms of [`Send`]
+/// and [`Sync`] even if it contains raw pointers in it. But if clients use this struct on their own
+/// purposes, they must keep that in mind.
 pub(crate) struct SystemData {
     /// Unique id for a system.
     id: SystemId,
@@ -871,8 +848,8 @@ pub(crate) struct SystemData {
     //
     // * Why Arc
     // - In order to share `SystemInfo` with others.
-    // - In order to reduce size of the struct. We move whole `SystemData` when
-    // we activate or inactivate systems.
+    // - In order to reduce size of the struct. We move whole `SystemData` when we activate or
+    //   inactivate systems.
     info: Arc<SystemInfo>,
 }
 
@@ -897,6 +874,12 @@ impl SystemData {
         } else {
             Err(self)
         }
+    }
+}
+
+impl Default for SystemData {
+    fn default() -> Self {
+        ().into_data()
     }
 }
 
@@ -1080,7 +1063,11 @@ impl SystemFlags {
 impl fmt::Debug for SystemFlags {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let dedi = if !self.is_dedi_empty() {
-            if self.is_dedi() { "DEDI" } else { "NON-DEDI" }
+            if self.is_dedi() {
+                "DEDI"
+            } else {
+                "NON-DEDI"
+            }
         } else {
             "DEDI?"
         };
@@ -1117,8 +1104,7 @@ pub(crate) struct SystemInfo {
 
     _skey: SystemKey,
 
-    /// [`System`] is related to a [`RequestInfo`].
-    /// This field is the key for the `RequestInfo`.
+    /// [`System`] is related to a [`RequestInfo`]. This field is the key for the `RequestInfo`.
     rkey: RequestKey,
 
     /// [`System`] is related to a [`RequestInfo`].
@@ -1168,32 +1154,29 @@ impl Drop for SystemInfo {
 
 /// A descriptor for a [`System`].
 pub struct SystemDesc<Sys> {
-    /// System itself. Clients cannot put `SystemData` in, which is only allowed
-    /// to the crate.
+    /// System itself. Clients cannot put `SystemData` in, which is only allowed to the crate.
     pub(crate) sys: Or<Sys, SystemData>,
 
-    /// Whether the system is private system or not. Private system is a kind of
-    /// systems which is used internally.
+    /// Whether the system is private system or not. Private system is a kind of systems which is
+    /// used internally.
     pub(crate) private: bool,
 
     /// Group index of the system.
     pub group_index: u16,
 
-    /// Whether the system is volatile or not. A volatile system will be
-    /// discarded from memory after get executed as much as its lifetime.
-    /// Unlike volatile system, non-volatile system will move to inactivate
-    /// state instead of being discarded.
+    /// Whether the system is volatile or not. A volatile system will be discarded from memory after
+    /// get executed as much as its lifetime. Unlike volatile system, non-volatile system will move
+    /// to inactivate state instead of being discarded.
     pub volatile: bool,
 
     /// Lifetime and insert position in an active system cycle.
-    /// - Lifetime(live): Determines how long the system should be executed.
-    ///   Whenever client schedules ecs, lifetime of executed system decreases
-    ///   by 1 conceptually. Zero lifetime is considered inactivation.
-    /// - Insert position: Active systems get executed in an order. Client can
-    ///   designate where the system locates. [`InsertPos::Front`] means the
-    ///   first position in the order, while [`InsertPos::Back`] means the last
-    ///   position in the order. Of course, client can put the system in the
-    ///   middle of the order by [`InsertPos::After`].
+    /// - Lifetime(live): Determines how long the system should be executed. Whenever client
+    ///   schedules ecs, lifetime of executed system decreases by 1 conceptually. Zero lifetime is
+    ///   considered inactivation.
+    /// - Insert position: Active systems get executed in an order. Client can designate where the
+    ///   system locates. [`InsertPos::Front`] means the first position in the order, while
+    ///   [`InsertPos::Back`] means the last position in the order. Of course, client can put the
+    ///   system in the middle of the order by [`InsertPos::After`].
     pub activation: (Tick, InsertPos),
 }
 
@@ -1341,11 +1324,10 @@ impl<S: System> Invoke for S {
 
 /// A system that is [`FnMut`].
 ///
-/// The purpose of this type is to remove boilerplate code related to system
-/// declaration when clients make systems using functions. Unlike types like
-/// `struct` or `enum`, functions have parameters which explains what types the
-/// functions need. The crate exploits the information then makes boilerplate
-/// code for clients.
+/// The purpose of this type is to remove boilerplate code related to system declaration when
+/// clients make systems using functions. Unlike types like `struct` or `enum`, functions have
+/// parameters which explains what types the functions need. The crate exploits the information then
+/// makes boilerplate code for clients.
 ///
 /// Plus, there is [`FnOnceSystem`] for [`FnOnce`].
 ///
@@ -1370,11 +1352,10 @@ where
 
 /// A system that is [`FnOnce`].
 ///
-/// The purpose of this type is to remove boilerplate code related to system
-/// declaration when clients make systems using functions. Unlike types like
-/// `struct` or `enum`, functions have parameters which explains what types the
-/// functions need. The crate exploits the information then makes boilerplate
-/// code for clients.
+/// The purpose of this type is to remove boilerplate code related to system declaration when
+/// clients make systems using functions. Unlike types like `struct` or `enum`, functions have
+/// parameters which explains what types the functions need. The crate exploits the information then
+/// makes boilerplate code for clients.
 ///
 /// Plus, there is [`FnSystem`] for [`FnMut`].
 ///
@@ -1637,15 +1618,13 @@ mod impl_for_fn_system {
 
 /// A internal type for support flexible APIs.
 //
-// When it comes to use cases,
-// imagine that we'd like to accept 'struct' or 'closure' systems
-// in a function like this,
+// When it comes to use cases, imagine that we'd like to accept 'struct' or 'closure' systems in a
+// function like this,
 // - fn register<S: System>(s: s) {}
 //
-// However, to implement `System` for every possible 'closure',
-// it must stop by `FnSystem` for blanket impl.
-// That's why we need a type to bond 'struct' and 'closure' together.
-// Conversions of 'struct' and 'closure' are as follows.
+// However, to implement `System` for every possible 'closure', it must stop by `FnSystem` for
+// blanket impl. That's why we need a type to bond 'struct' and 'closure' together. Conversions of
+// 'struct' and 'closure' are as follows.
 // - FnMut -> FnSystem: System (for blanket impl) -> SystemBond
 // - Struct: System -------------------------------> SystemBond
 //
@@ -1678,7 +1657,7 @@ mod tests {
 
     #[test]
     fn test_systemgroup_unregister_volatile() {
-        let mut sgroup = SystemGroup::<hash::RandomState>::new(0);
+        let mut sgroup = SystemGroup::new(0);
 
         // Registers an inactive & volatile system.
         // Active: 0, Inactive: 1, Volatile: 1
@@ -1697,7 +1676,7 @@ mod tests {
 
     #[test]
     fn test_systemgroup_mixed_operations() {
-        let mut sgroup = SystemGroup::<hash::RandomState>::new(0);
+        let mut sgroup = SystemGroup::new(0);
 
         // Registers an inactive & non-volatile system.
         // Active: 0, Inactive: 1, Volatile: 0
@@ -1744,10 +1723,7 @@ mod tests {
         validate_len(&sgroup, 0, 0, 0);
     }
 
-    fn validate_len<S>(sgroup: &SystemGroup<S>, act: usize, inact: usize, vol: usize)
-    where
-        S: BuildHasher + Default,
-    {
+    fn validate_len(sgroup: &SystemGroup, act: usize, inact: usize, vol: usize) {
         assert_eq!(sgroup.active.len(), act);
         assert_eq!(sgroup.inactive.len(), inact);
         assert_eq!(sgroup.volatile.len(), vol);

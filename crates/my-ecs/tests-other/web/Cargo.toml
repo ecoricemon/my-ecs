@@ -1,7 +1,7 @@
 [package]
 name = "tester"
 version = "0.0.0"
-edition = "2024"
+edition = "2021"
 rust-version = "1.85"
 
 [lib]
@@ -18,4 +18,4 @@ web-sys = { workspace = true, features = [
     "CustomEvent",
     "Window",
 ] }
-console_error_panic_hook = { workspace = true }
+console_error_panic_hook = "0.1.7"

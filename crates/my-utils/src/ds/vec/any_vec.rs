@@ -17,10 +17,9 @@ use std::{
 
 /// A type-erased vector containing values of the same type.
 ///
-/// This vector would be useful when you need to hold vectors of heterogeneous
-/// types in a single variable. Instead, this vector has methods that looks
-/// quite dirty and not easy to use. Most methods are unsafe because they take
-/// or return pointer instead of concrete type.
+/// This vector would be useful when you need to hold vectors of heterogeneous types in a single
+/// variable. Instead, this vector has methods that looks quite dirty and not easy to use. Most
+/// methods are unsafe because they take or return pointer instead of concrete type.
 #[derive(Debug)]
 pub struct AnyVec {
     ptr: NonNull<u8>,
@@ -29,8 +28,7 @@ pub struct AnyVec {
     tinfo: TypeInfo,
 }
 
-// `AnyVec` is currently restricted to be `Send` and `Sync`. See
-// `AnyVec::new()`.
+// `AnyVec` is currently restricted to be `Send` and `Sync`. See `AnyVec::new()`.
 unsafe impl Send for AnyVec {}
 unsafe impl Sync for AnyVec {}
 
@@ -40,7 +38,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let v = AnyVec::new(tinfo!(i32));
     /// ```
@@ -55,8 +53,7 @@ impl AnyVec {
             cap: 0,
         };
 
-        // If ZST, we won't allocate any memory for the vector.
-        // But, adjust capacity like `Vec`.
+        // If ZST, we won't allocate any memory for the vector. But, adjust capacity like `Vec`.
         if v.is_zst() {
             v.cap = usize::MAX;
         }
@@ -68,7 +65,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let v = AnyVec::new(tinfo!(i32));
     /// assert_eq!(v.type_info(), &tinfo!(i32));
@@ -82,7 +79,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let v = AnyVec::new(tinfo!(i32));
     /// assert_eq!(v.type_id(), std::any::TypeId::of::<i32>());
@@ -96,7 +93,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let v = AnyVec::new(tinfo!(i32));
     /// println!("{}", v.type_name());
@@ -110,7 +107,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let v = AnyVec::new(tinfo!(i32));
     /// assert_eq!(v.item_size(), std::mem::size_of::<i32>());
@@ -124,7 +121,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let v = AnyVec::new(tinfo!(i32));
     /// assert!(!v.is_zst());
@@ -140,7 +137,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let v = AnyVec::new(tinfo!(i32));
     /// assert_eq!(v.align(), std::mem::align_of::<i32>());
@@ -164,7 +161,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let v = AnyVec::new(tinfo!(i32));
     /// assert!(v.is_clone());
@@ -182,7 +179,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let v = AnyVec::new(tinfo!(i32));
     /// assert!(v.is_send());
@@ -197,7 +194,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let v = AnyVec::new(tinfo!(i32));
     /// assert!(v.is_sync());
@@ -212,7 +209,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let v = AnyVec::new(tinfo!(i32));
     /// assert!(v.is_type_of::<i32>());
@@ -226,7 +223,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     /// unsafe { v.push(0_i32) };
@@ -241,7 +238,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let v = AnyVec::new(tinfo!(i32));
     /// assert!(v.is_empty());
@@ -255,7 +252,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     /// v.reserve(10);
@@ -274,7 +271,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     /// unsafe {
@@ -305,7 +302,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     /// unsafe {
@@ -329,9 +326,8 @@ impl AnyVec {
 
     /// Returns parallel iterator visiting all items.
     ///
-    /// Parallel iterator implements [`rayon`]'s parallel iterator traits, so
-    /// that it can be split into multiple CPU cores then consumed at the same
-    /// time.
+    /// Parallel iterator implements [`rayon`]'s parallel iterator traits, so that it can be split
+    /// into multiple CPU cores then consumed at the same time.
     ///
     /// # Panics
     ///
@@ -340,16 +336,18 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
-    /// use rayon::prelude::*;
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     /// unsafe {
     ///     v.push(1_i32);
     ///     v.push(2_i32);
     /// }
-    /// let sum: i32 = v.par_iter_of::<i32>().sum();
-    /// assert_eq!(sum, 3);
+    /// let par_iter = v.par_iter_of::<i32>();
+    /// # if !cfg!(miri) {
+    /// #     use rayon::prelude::*;
+    /// #     assert_eq!(par_iter.sum::<i32>(), 3);
+    /// # }
     /// ```
     #[inline]
     pub fn par_iter_of<T: Send + Sync + 'static>(&self) -> ParIter<'_, T> {
@@ -365,9 +363,8 @@ impl AnyVec {
 
     /// Returns mutable parallel iterator visiting all items.
     ///
-    /// Parallel iterator implements [`rayon`]'s parallel iterator traits, so
-    /// that it can be split into multiple CPU cores then consumed at the same
-    /// time.
+    /// Parallel iterator implements [`rayon`]'s parallel iterator traits, so that it can be split
+    /// into multiple CPU cores then consumed at the same time.
     ///
     /// # Panics
     ///
@@ -376,16 +373,18 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
-    /// use rayon::prelude::*;
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     /// unsafe {
     ///     v.push(1_i32);
     ///     v.push(2_i32);
     /// }
-    /// let sum: i32 = v.par_iter_mut_of::<i32>().map(|x| *x + 1).sum();
-    /// assert_eq!(sum, 5);
+    /// let par_iter = v.par_iter_mut_of::<i32>();
+    /// # if !cfg!(miri) { 
+    /// #     use rayon::prelude::*;
+    /// #     assert_eq!(par_iter.map(|x| *x).sum::<i32>(), 3) 
+    /// # }
     /// ```
     #[inline]
     pub fn par_iter_mut_of<T: Send + Sync + 'static>(&mut self) -> ParIterMut<'_, T> {
@@ -401,21 +400,19 @@ impl AnyVec {
 
     /// Reserves additional capacity more than or equal to the given value.
     ///
-    /// If capacity of the vector is already sufficient, nothing takes place.
-    /// Otherwise, allocates new memory or reallocates the old memory so that
-    /// the capacity will be greater than or equal to `self.len() + additional`.
-    /// This method deliberately allocates more memory than requested to avoid
-    /// frequent reallocation.
+    /// If capacity of the vector is already sufficient, nothing takes place. Otherwise, allocates
+    /// new memory or reallocates the old memory so that the capacity will be greater than or equal
+    /// to `self.len() + additional`. This method deliberately allocates more memory than requested
+    /// to avoid frequent reallocation.
     ///
     /// # Panics
     ///
-    /// Panics if total memory in bytes after calling this method will exceed
-    /// [`isize::MAX`].
+    /// Panics if total memory in bytes after calling this method will exceed [`isize::MAX`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     /// v.reserve(10);
@@ -441,19 +438,19 @@ impl AnyVec {
 
     /// Reserves additional capacity as much as the given value.
     ///
-    /// If capacity of the vector is already sufficient, nothing takes place.
-    /// Otherwise, allocates new memory or reallocates the old memory so that
-    /// the capacity will be equal to `self.len() + additional` exactly.
+    /// If capacity of the vector is already sufficient, nothing takes place. Otherwise, allocates
+    /// new memory or reallocates the old memory so that the capacity will be equal to `self.len() +
+    /// additional` exactly.
     ///
-    /// Note, however, that allocator may give a memory block that is greater
-    /// than requested for some reason. The exact size of memory block is
-    /// invisible from clients, but you can look into it using something like
+    /// Note, however, that allocator may give a memory block that is greater than requested for
+    /// some reason. The exact size of memory block is invisible from clients, but you can look into
+    /// it using something like
     /// [`libc::malloc_usable_size`](https://docs.rs/libc/latest/libc/fn.malloc_usable_size.html).
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     /// v.reserve(10);
@@ -473,8 +470,8 @@ impl AnyVec {
 
     /// # Safety
     ///
-    /// `new_cap` x [`Self::item_size`] must be greater than zero and lesser or
-    /// equal to [`isize::MAX`].
+    /// `new_cap` x [`Self::item_size`] must be greater than zero and lesser or equal to
+    /// [`isize::MAX`].
     unsafe fn _reserve(&mut self, new_cap: usize) {
         let item_size = self.item_size();
         let new_size = new_cap * item_size;
@@ -501,7 +498,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     /// assert_eq!(v.capacity(), 0);
@@ -527,28 +524,26 @@ impl AnyVec {
         } else {
             // Safety:
             // - Extra capacity, so current pointer is valid.
-            // - Not ZST and empty, so that new capacity size in bytes is
-            //   greater than zero.
+            // - Not ZST and empty, so that new capacity size in bytes is greater than zero.
             // - Size of current items in bytes cannot exceed `isize::MAX`.
             unsafe { self.realloc_unchecked(self.len()) };
         }
     }
 
-    /// Sets length of the vector to the given value without any additional
-    /// operations.
+    /// Sets length of the vector to the given value without any additional operations.
     ///
     /// # Safety
     ///
     /// - `new_len` must be less than or equal to `self.capacity()`.
-    /// - If `new_len` is greater than the previous length, caller must
-    ///   initialize the extended range with proper values.
-    /// - If `new_len` is less than the previous length, caller must drop
-    ///   abandoned values from the vector properly.
+    /// - If `new_len` is greater than the previous length, caller must initialize the extended
+    ///   range with proper values.
+    /// - If `new_len` is less than the previous length, caller must drop abandoned values from the
+    ///   vector properly.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     ///
@@ -563,24 +558,23 @@ impl AnyVec {
         self.len = new_len;
     }
 
-    /// Copies data as much as [`AnyVec::item_size`] from `src` address to the
-    /// memory pointed by `index`.
+    /// Copies data as much as [`AnyVec::item_size`] from `src` address to the memory pointed by
+    /// `index`.
     ///
-    /// Note that the old stored value is dropped before the copy, which means
-    /// the given index must be in bounds.
+    /// Note that the old stored value is dropped before the copy, which means the given index must
+    /// be in bounds.
     ///
     /// # Safety
     ///
     /// - `index` must be in bounds.
     /// - `src` must point to a valid type that the vector contains.
     /// - Memory range pointed by `index` must not need to be dropped.
-    /// - `src` must not be dropped after calling this method because it is
-    ///   moved into the vector.
+    /// - `src` must not be dropped after calling this method because it is moved into the vector.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     /// use std::ptr::NonNull;
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
@@ -602,24 +596,21 @@ impl AnyVec {
         }
     }
 
-    /// Copies data as much as `self.item_size()` from `src` address to the end
-    /// of the vector.
+    /// Copies data as much as `self.item_size()` from `src` address to the end of the vector.
     ///
-    /// If the vector doesn't have sufficient capacity for the appended value,
-    /// then the vector increases its capacity first by calling
-    /// [`AnyVec::reserve`] which allocates memory more than just one value,
-    /// then does the copy.
+    /// If the vector doesn't have sufficient capacity for the appended value, then the vector
+    /// increases its capacity first by calling [`AnyVec::reserve`] which allocates memory more than
+    /// just one value, then does the copy.
     ///
     /// # Safety
     ///
     /// - `src` must point to a valid type that the vector contains.
-    /// - `src` must not be dropped after calling this method because it is
-    ///   moved into the vector.
+    /// - `src` must not be dropped after calling this method because it is moved into the vector.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     /// use std::ptr::NonNull;
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
@@ -648,10 +639,9 @@ impl AnyVec {
 
     /// Writes a value to the end of the vector by calling the given function.
     ///
-    /// If the vector doesn't have sufficient capacity for the appended value,
-    /// then the vector increases its capacity first by calling
-    /// [`AnyVec::reserve`] which allocates memory more than just one value,
-    /// then does the write operation.
+    /// If the vector doesn't have sufficient capacity for the appended value, then the vector
+    /// increases its capacity first by calling [`AnyVec::reserve`] which allocates memory more than
+    /// just one value, then does the write operation.
     ///
     /// # Safety
     ///
@@ -660,7 +650,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     /// use std::ptr::{self, NonNull};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
@@ -697,7 +687,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     /// unsafe {
@@ -721,26 +711,24 @@ impl AnyVec {
         mem::forget(value);
     }
 
-    /// Removes the last item from the vector and writes it to the given
-    /// buffer, then returns `Some`.
+    /// Removes the last item from the vector and writes it to the given buffer, then returns
+    /// `Some`.
     ///
-    /// If removing is successful, caller becomes to own the item in the
-    /// buffer, so that caller must call `drop()` on it correctly.
-    /// Otherwise, returns `None` without change to the buffer.
+    /// If removing is successful, caller becomes to own the item in the buffer, so that caller must
+    /// call `drop()` on it correctly. Otherwise, returns `None` without change to the buffer.
     ///
     /// # Safety
     ///
     /// Undefined behavior if conditions below are not met.
     /// - `buf` must have enough size to be copied an item.
-    /// - When `Some` is returned, `buf` must be correctly handled as an item.
-    ///   For example, if an item should be dropped, caller must call drop() on
-    ///   it.
+    /// - When `Some` is returned, `buf` must be correctly handled as an item. For example, if an
+    ///   item should be dropped, caller must call drop() on it.
     /// - When `None` is returned, `buf` must be correctly handled as it was.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     /// unsafe { v.push(42_i32) };
@@ -774,7 +762,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     ///
@@ -807,7 +795,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     ///
@@ -827,19 +815,18 @@ impl AnyVec {
         }
     }
 
-    /// Removes the last item from the vector without calling drop function on
-    /// it.
+    /// Removes the last item from the vector without calling drop function on it.
     ///
     /// # Safety
     ///
-    /// Rust safety doesn't include calling drop function. See
-    /// [`forget`](mem::forget) for more information. However, caller must
-    /// guarantee that not calling drop function is fine for the item.
+    /// Rust safety doesn't include calling drop function. See [`forget`](mem::forget) for more
+    /// information. However, caller must guarantee that not calling drop function is fine for the
+    /// item.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     ///
@@ -866,17 +853,16 @@ impl AnyVec {
             // Safety: Decreasing is safe.
             self.set_len(self.len() - 1);
 
-            // Safety: We're using `Layout::from_size_align` which restricts
-            // size to be under the limit.
+            // Safety: We're using `Layout::from_size_align` which restricts size to be under the
+            // limit.
             self.get_ptr(self.len())
         }
     }
 
-    /// Removes an item at the given index from the vector and writes it to the
-    /// given buffer.
+    /// Removes an item at the given index from the vector and writes it to the given buffer.
     ///
-    /// Therefore, the item is actually moved from the vector to the given
-    /// buffer. So caller must take care of calling drop on it.
+    /// Therefore, the item is actually moved from the vector to the given buffer. So caller must
+    /// take care of calling drop on it.
     ///
     /// # Panics
     ///
@@ -886,15 +872,14 @@ impl AnyVec {
     ///
     /// Undefined behavior if conditions below are not met.
     /// - `buf` must have enough size to be copied an item.
-    /// - When `Some` is returned, `buf` must be correctly handled as an item.
-    ///   For example, if an item should be dropped, caller must call drop() on
-    ///   it.
+    /// - When `Some` is returned, `buf` must be correctly handled as an item. For example, if an
+    ///   item should be dropped, caller must call drop() on it.
     /// - When `None` is returned, `buf` must be correctly handled as it was.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     /// unsafe {
@@ -934,7 +919,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     ///
@@ -953,8 +938,7 @@ impl AnyVec {
         unsafe { self.pop().unwrap() }
     }
 
-    /// Removes an item at the given index from the vector and drops it
-    /// immediately.
+    /// Removes an item at the given index from the vector and drops it immediately.
     ///
     /// Then the last item of the vector is moved to the vacant slot.
     ///
@@ -965,7 +949,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     ///
@@ -981,8 +965,7 @@ impl AnyVec {
         self.pop_drop();
     }
 
-    /// Removes an item at the given index from the vector without calling drop
-    /// function on it.
+    /// Removes an item at the given index from the vector without calling drop function on it.
     ///
     /// Then the last item of the vector is moved to the vacant slot.
     ///
@@ -992,14 +975,14 @@ impl AnyVec {
     ///
     /// # Safety
     ///
-    /// Rust safety doesn't include calling drop function. See
-    /// [`forget`](mem::forget) for more information. However, caller must
-    /// guarantee that not calling drop function is fine for the item.
+    /// Rust safety doesn't include calling drop function. See [`forget`](mem::forget) for more
+    /// information. However, caller must guarantee that not calling drop function is fine for the
+    /// item.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     ///
@@ -1024,7 +1007,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     ///
@@ -1054,7 +1037,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     ///
@@ -1083,7 +1066,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     ///
@@ -1113,7 +1096,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     ///
@@ -1143,7 +1126,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     ///
@@ -1167,9 +1150,8 @@ impl AnyVec {
 
     /// Resizes the vector to the given length.
     ///
-    /// If the new length is greater than previous length of the vector, then
-    /// the vector is extended with the given value. Otherwise, the vector is
-    /// shrunk.
+    /// If the new length is greater than previous length of the vector, then the vector is extended
+    /// with the given value. Otherwise, the vector is shrunk.
     ///
     /// # Panics
     ///
@@ -1178,7 +1160,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     ///
@@ -1199,9 +1181,8 @@ impl AnyVec {
 
     /// Resizes the vector to the given length.
     ///
-    /// If the new length is greater than previous length of the vector, then
-    /// the vector is extended with clones of a value pointed by the given
-    /// pointer. Otherwise, the vector is shrunk.
+    /// If the new length is greater than previous length of the vector, then the vector is extended
+    /// with clones of a value pointed by the given pointer. Otherwise, the vector is shrunk.
     ///
     /// # Panics
     ///
@@ -1214,7 +1195,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     /// use std::ptr::NonNull;
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
@@ -1256,10 +1237,9 @@ impl AnyVec {
 
     /// Resizes the vector to the given length.
     ///
-    /// If the new length is greater than previous length of the vector, then
-    /// the vector is extended with values the given function generates. In this
-    /// case, generated values are appended in order. Otherwise, the vector is
-    /// shrunk.
+    /// If the new length is greater than previous length of the vector, then the vector is extended
+    /// with values the given function generates. In this case, generated values are appended in
+    /// order. Otherwise, the vector is shrunk.
     ///
     /// # Panics
     ///
@@ -1268,7 +1248,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     ///
@@ -1313,13 +1293,13 @@ impl AnyVec {
 
     /// Shrinks the vector to the given length, and drops abandoned items.
     ///
-    /// If the given length is greater than or equal to the current length of
-    /// the vector, nothing takes place.
+    /// If the given length is greater than or equal to the current length of the vector, nothing
+    /// takes place.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     ///
@@ -1358,7 +1338,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     /// {
@@ -1394,7 +1374,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     /// unsafe {
@@ -1423,7 +1403,7 @@ impl AnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::AnyVec};
+    /// use my_utils::{tinfo, ds::AnyVec};
     ///
     /// let mut v = AnyVec::new(tinfo!(i32));
     /// unsafe { v.push(0_i32) };
@@ -1455,8 +1435,8 @@ impl AnyVec {
     ///
     /// Undefined behavior if conditions below are not met.
     /// - Current pointer must point to a valid memory location.
-    /// - `new_cap` x [`Self::item_size`] is greater than zero and lesser or
-    ///   equal to [`isize::MAX`].
+    /// - `new_cap` x [`Self::item_size`] is greater than zero and lesser or equal to
+    ///   [`isize::MAX`].
     unsafe fn realloc_unchecked(&mut self, new_cap: usize) {
         let item_size = self.item_size();
         let old_size = self.capacity() * item_size;
@@ -1495,11 +1475,10 @@ impl AnyVec {
         }
     }
 
-    /// Converts start index into start pointer offset from the beginning of the vector and stride in bytes.
-    /// If the type is zero sized, it will return all zeros.
-    /// So, you must not use offset as loop counter.
-    /// And caller must provide valid index.
-    /// This method assumes that, therefore doesn't check either index validity and arithmetic overflow.
+    /// Converts start index into start pointer offset from the beginning of the vector and stride
+    /// in bytes. If the type is zero sized, it will return all zeros. So, you must not use offset
+    /// as loop counter. And caller must provide valid index. This method assumes that, therefore
+    /// doesn't check either index validity and arithmetic overflow.
     const fn get_ptr_offset(&self, index: usize) -> (usize, usize) {
         if self.is_zst() {
             (0, 0)
@@ -1511,9 +1490,16 @@ impl AnyVec {
     }
 
     /// Mimics [`NonNull::dangling`].
-    /// This helps to use lots of ptr module's APIs because they request aligned pointer even if the type is zero sized.
+    ///
+    /// This helps to use lots of ptr module's APIs because they request aligned pointer even if the
+    /// type is zero sized.
     pub(crate) fn aligned_dangling(align: usize) -> NonNull<u8> {
-        NonNull::new(align as *mut u8).unwrap()
+        unsafe {
+            let mut ptr = NonNull::<u8>::dangling().as_ptr();
+            let addr = &mut ptr as *mut *mut u8 as *mut usize;
+            *addr = align; 
+            NonNull::new_unchecked(ptr)
+        }
     }
 
     pub fn flat_raw_iter(&self) -> FlatRawIter {
@@ -1549,9 +1535,23 @@ impl AnyVec {
 
 impl Clone for AnyVec {
     fn clone(&self) -> Self {
+        if !self.is_clone() {
+            panic!("{} is not Clone", self.tinfo.name);
+        }
+        if self.is_zst() {
+            return Self {
+                tinfo: self.tinfo,
+                ptr: self.ptr,
+                len: self.len(),
+                cap: self.capacity(), // Huge cap for ZST
+            };
+        }
+
         let ptr = if self.is_zst() || self.is_empty() {
             self.ptr
         } else {
+            // size of a value is always a multiple of its alignment, so stride = size.
+            // ref: https://doc.rust-lang.org/reference/type-layout.html#size-and-alignment
             let item_size = self.item_size();
 
             let size = self.len() * item_size;
@@ -1567,7 +1567,6 @@ impl Clone for AnyVec {
                 unsafe {
                     let src = self.ptr.as_ptr().add(offset);
                     let dst = ptr.add(offset);
-                    // If data type doesn't support clone, panics here.
                     fn_clone(src, dst);
                 }
                 offset += item_size;
@@ -1621,9 +1620,9 @@ impl<'data> IntoParallelRefIterator<'data> for AnyVec {
 
 /// A [`Vec`]-like type you can get from [`AnyVec`].
 ///
-/// This struct implements [`Deref`] and [`DerefMut`] for `Vec<T>`, so that you
-/// can access the struct as `Vec<T>`. When this struct is dropped, any changes
-/// you've made are reflected to the `AnyVec`.
+/// This struct implements [`Deref`] and [`DerefMut`] for `Vec<T>`, so that you can access the
+/// struct as `Vec<T>`. When this struct is dropped, any changes you've made are reflected to the
+/// `AnyVec`.
 pub struct TypedAnyVec<'a, T> {
     typed: Vec<T>,
     any: &'a mut AnyVec,
@@ -1881,19 +1880,16 @@ mod tests {
             assert!(v.is_empty());
             assert_eq!(v.capacity(), usize::MAX);
 
-            // Pushing ZST must be possible, and length must be grown by
-            // pushing.
+            // Pushing ZST must be possible, and length must be grown by pushing.
             for i in 1..10 {
                 v.push(());
                 assert_eq!(v.len(), i);
             }
 
-            // We've pushed ZST values, but the vector must not have allocated
-            // memory.
+            // We've pushed ZST values, but the vector must not have allocated memory.
             assert_eq!(v.ptr, AnyVec::aligned_dangling(crate::tinfo!(()).align));
 
-            // Popping ZST must be possible, and length must be shrunk by
-            // popping.
+            // Popping ZST must be possible, and length must be shrunk by popping.
             for i in (1..10).rev() {
                 v.pop_drop();
                 assert_eq!(v.len(), i - 1);

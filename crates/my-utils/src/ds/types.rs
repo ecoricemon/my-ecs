@@ -18,13 +18,13 @@ use std::{
 /// - Whether the type is [`Clone`] or not and type erased clone function.
 /// - Whether the type is [`Default`] or not and type erased default function.
 ///
-/// It's highly encouraged to use [`tinfo`] macro to construct this struct to
-/// avoid incorrect construction.
+/// It's highly encouraged to use [`tinfo`] macro to construct this struct to avoid incorrect
+/// construction.
 ///
 /// # Examples
 ///
 /// ```
-/// use my_ecs_util::tinfo;
+/// use my_utils::tinfo;
 ///
 /// let x = tinfo!(i32);
 /// assert!(x.is_send && x.is_sync && x.is_default && x.is_clone);
@@ -84,7 +84,7 @@ impl TypeInfo {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{TypeInfo, TypeHelper};
+    /// use my_utils::ds::{TypeInfo, TypeHelper};
     ///
     /// #[derive(Clone)]
     /// struct X;
@@ -106,8 +106,7 @@ impl TypeInfo {
         ///
         /// # Safety
         ///
-        /// `ptr` must be a properly aligned and nonnull pointer of a certain
-        /// type `T`.
+        /// `ptr` must be a properly aligned and nonnull pointer of a certain type `T`.
         /// `ptr` must be valid for writes.
         /// `ptr` must be valid for dropping.
         unsafe fn drop<T>(ptr: *mut u8) {
@@ -129,8 +128,8 @@ impl TypeInfo {
         TypeInfo {
             ty: TypeId::of::<T>(),
             name: any::type_name::<T>(),
-            size: size_of::<T>(),
-            align: align_of::<T>(),
+            size: mem::size_of::<T>(),
+            align: mem::align_of::<T>(),
             fn_drop: drop::<T>,
             is_send,
             is_sync,
@@ -146,7 +145,7 @@ impl TypeInfo {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::tinfo;
+    /// use my_utils::tinfo;
     ///
     /// let tinfo = tinfo!(i32);
     /// assert!(tinfo.is_type_of::<i32>());
@@ -167,42 +166,37 @@ impl Eq for TypeInfo {}
 /// Type-erased raw [`Drop::drop`] function pointer type.
 pub type FnDropRaw = unsafe fn(*mut u8);
 
-/// A helper struct used to determine whether a type implements traits like
-/// [`Send`], [`Sync`], and [`Clone`] by cooperating with helper traits like
-/// [`NotSend`] , [`NotSync`], and [`NotClone`].
+/// A helper struct used to determine whether a type implements traits like [`Send`], [`Sync`], and
+/// [`Clone`] by cooperating with helper traits like [`NotSend`] , [`NotSync`], and [`NotClone`].
 ///
-/// Helper traits basically have associated constants meaning whether a type
-/// imeplements a trait such as `Send`. They are set to `false` by default, and
-/// all types implement the helper types by blanket implementation. In other
-/// words, all types are not `Send`, `Sync` by the helper traits, etc. But
-/// [`TypeHelper`] can overwrite it for types that actually implement those
-/// traits thanks to its trait bound. As a result, clients can be aware of
-/// whether a type impelments a certain trait through `TypeHelper`. This is
-/// especially useful when you make a library that receives anonymous type and
-/// you need such type information.
+/// Helper traits basically have associated constants meaning whether a type imeplements a trait
+/// such as `Send`. They are set to `false` by default, and all types implement the helper types by
+/// blanket implementation. In other words, all types are not `Send`, `Sync` by the helper traits,
+/// etc. But [`TypeHelper`] can overwrite it for types that actually implement those traits thanks
+/// to its trait bound. As a result, clients can be aware of whether a type impelments a certain
+/// trait through `TypeHelper`. This is especially useful when you make a library that receives
+/// anonymous type and you need such type information.
 ///
 /// # How it works
 ///
-/// If a struct has function `foo<T: Send>` and it also implement `Foo` which
-/// has the same signature function `foo<T>`, then rust will look for callable
-/// function in the order below.
+/// If a struct has function `foo<T: Send>` and it also implement `Foo` which has the same signature
+/// function `foo<T>`, then rust will look for callable function in the order below.
 /// - Inherent function
 /// - Trait function
 ///
-/// So if the type is `Send`, then rust chooses inherent function due to the
-/// search order.  But rust will choose trait function if the type is not `Send`
-/// due to the `T: Send` bound.
+/// So if the type is `Send`, then rust chooses inherent function due to the search order.  But rust
+/// will choose trait function if the type is not `Send` due to the `T: Send` bound.
 ///
-/// See <https://doc.rust-lang.org/reference/expressions/method-call-expr.html>
-/// (Document describes about methods, but I believe the same rule is applied
-/// to associated functions as well)
+/// See [method-call-expr](https://doc.rust-lang.org/reference/expressions/method-call-expr.html).
+/// The document describes about methods, but I believe the same rule is applied to associated
+/// functions as well.
 ///
 /// Here, more specific rules are written.
-/// 1. <https://rust-lang.github.io/rfcs/0195-associated-items.html#via-an-id_segment-prefix>
-/// 2. <https://rust-lang.github.io/rfcs/0195-associated-items.html#via-a-type_segment-prefix>
+/// [1](https://rust-lang.github.io/rfcs/0195-associated-items.html#via-an-id_segment-prefix)
+/// [2](https://rust-lang.github.io/rfcs/0195-associated-items.html#via-a-type_segment-prefix)
 ///
-/// - `1` tells starting with ID_SEGMENT is equivalent to starting with
-///   TYPE_SEGMENT. 'A::b' is equivalent to '\<A\>::b'
+/// - `1` tells starting with ID_SEGMENT is equivalent to starting with TYPE_SEGMENT. 'A::b' is
+///   equivalent to '\<A\>::b'
 /// - `2` tells inherent members are prioritized over in-scope traits.
 pub struct TypeHelper<T: ?Sized>(PhantomData<T>);
 
@@ -267,11 +261,10 @@ impl<T: fmt::Debug> TypeHelper<T> {
     pub const IS_DEBUG: bool = true;
     pub const FN_FMT: FnFmtRaw = Self::fn_fmt();
 
-    /// Returns a raw function pointer of [`Debug::fmt`](fmt::Debug::fmt) for
-    /// the given type.
+    /// Returns a raw function pointer of [`Debug::fmt`](fmt::Debug::fmt) for the given type.
     ///
-    /// But the given type is not [`Debug`](fmt::Debug), then calling the
-    /// returned function will cause panic.
+    /// But the given type is not [`Debug`](fmt::Debug), then calling the returned function will
+    /// cause panic.
     pub const fn fn_fmt() -> FnFmtRaw {
         unsafe fn fmt<T: fmt::Debug>(
             this: *const u8,
@@ -288,19 +281,18 @@ impl<T: fmt::Debug> TypeHelper<T> {
 
 /// Type-erased raw [`Debug::fmt`](fmt::Debug::fmt) function pointer type.
 ///
-/// To get a function pointer from a certain type, you can call
-/// [`TypeHelper::fn_fmt`]. Also, there is a helper type [`DebugHelper`]. It
-/// allows you to use the raw function pointer in `{:?}` patterns.
+/// To get a function pointer from a certain type, you can call [`TypeHelper::fn_fmt`]. Also, there
+/// is a helper type [`DebugHelper`]. It allows you to use the raw function pointer in `{:?}`
+/// patterns.
 ///
 /// # Panics
 ///
-/// If the function pointer was generated from a type that is not
-/// [`Debug`](fmt::Debug), calling the function causes panic.
+/// If the function pointer was generated from a type that is not [`Debug`](fmt::Debug), calling the
+/// function causes panic.
 ///
 /// # Safety
 ///
-/// - `src` must be a properly aligned and non-null pointer of a certain type
-///   `T`.
+/// - `src` must be a properly aligned and non-null pointer of a certain type `T`.
 /// - `src` must be valid for read of `T`.
 pub type FnFmtRaw = unsafe fn(src: *const u8, &mut fmt::Formatter<'_>) -> Result<(), fmt::Error>;
 
@@ -315,13 +307,13 @@ pub unsafe fn unimpl_fmt(_: *const u8, _: &mut fmt::Formatter<'_>) -> Result<(),
 
 /// A helper type for the [`FnFmtRaw`].
 ///
-/// This type implements [`Deubg`](fmt::Debug), therefore it's useful when you
-/// want to print something out using the `FnFmtRaw`.
+/// This type implements [`Deubg`](fmt::Debug), therefore it's useful when you want to print
+/// something out using the `FnFmtRaw`.
 ///
 /// # Examples
 ///
 /// ```
-/// use my_ecs_util::ds::{TypeHelper, DebugHelper};
+/// use my_utils::ds::{TypeHelper, DebugHelper};
 ///
 /// let value = 123_i32;
 /// let fn_fmt = TypeHelper::<i32>::fn_fmt();
@@ -360,8 +352,7 @@ impl<T: Default> TypeHelper<T> {
 
     /// Returns raw function pointer of [`Default::default`] for the given type.
     ///
-    /// But the given type is not [`Default`], then calling the returned
-    /// function will cause panic.
+    /// But the given type is not [`Default`], then calling the returned function will cause panic.
     pub const fn fn_default() -> FnDefaultRaw {
         unsafe fn default<T: Default>(dst: *mut u8) {
             let src = <T as Default>::default();
@@ -382,13 +373,12 @@ impl<T: Default> TypeHelper<T> {
 ///
 /// # Panics
 ///
-/// If the function pointer was generated from a type that is not [`Default`],
-/// calling the function causes panic.
+/// If the function pointer was generated from a type that is not [`Default`], calling the function
+/// causes panic.
 ///
 /// # Safety
 ///
-/// - `dst` must be a properly aligned and nonnull pointer of a certain type
-///   `T`.
+/// - `dst` must be a properly aligned and nonnull pointer of a certain type `T`.
 /// - `dst` must be valid for write of `T`.
 pub type FnDefaultRaw = unsafe fn(dst: *mut u8);
 
@@ -419,8 +409,7 @@ impl<T: Clone> TypeHelper<T> {
 
     /// Returns raw function pointer of [`Clone::clone`] for the given type.
     ///
-    /// But the given type is not [`Clone`], then calling the returned function
-    /// will cause panic.
+    /// But the given type is not [`Clone`], then calling the returned function will cause panic.
     pub const fn fn_clone() -> FnCloneRaw {
         unsafe fn clone<T: Clone>(src: *const u8, dst: *mut u8) {
             let src = src.cast::<T>();
@@ -444,17 +433,15 @@ impl<T: Clone> TypeHelper<T> {
 ///
 /// # Panics
 ///
-/// If the function pointer was generated from a type that is not [`Clone`],
-/// calling the function causes panic.
+/// If the function pointer was generated from a type that is not [`Clone`], calling the function
+/// causes panic.
 ///
 /// # Safety
 ///
-/// This function calls [`copy_nonoverlapping`](ptr::copy_nonoverlapping)
-/// internally. Therefore, function follows the same safety conditions like
-/// below.
+/// This function calls [`copy_nonoverlapping`](ptr::copy_nonoverlapping) internally. Therefore,
+/// function follows the same safety conditions like below.
 ///
-/// - Both `src` and `dst` must be properly aligned and nonnull pointers of a
-///   certain type `T`.
+/// - Both `src` and `dst` must be properly aligned and nonnull pointers of a certain type `T`.
 /// - `src` must be valid for read of `T`.
 /// - `dst` must be valid for write of `T`.
 /// - Region of `src` memory must not overlap with region of `dst` memory.
@@ -484,63 +471,44 @@ impl<T> TypeHelper<(T, T)> {
     pub const IS_EQUAL_TYPE: bool = true;
 }
 
-/// Creates [`TypeInfo`] from the given type and reflects whether the type
-/// implements [`Send`], [`Sync`], [`Default`], and [`Clone`] to the TypeInfo.
+/// Creates [`TypeInfo`] from the given type and reflects whether the type implements [`Send`],
+/// [`Sync`], [`Default`], and [`Clone`] to the TypeInfo.
 ///
-/// If you want your own type name, you can call this macro like
-/// `tinfo!(T, "new-name")`.
+/// If you want your own type name, you can call this macro like `tinfo!(T, "new-name")`.
 ///
-/// This macro exploits Rust's function look-up procedures to determine if the
-/// type implements the traits. See [`TypeHelper`] for more details.
+/// This macro exploits Rust's function look-up procedures to determine if the type implements the
+/// traits. See [`TypeHelper`] for more details.
 ///
 /// # Examples
 ///
 /// ```
-/// use my_ecs_util::tinfo;
+/// use my_utils::tinfo;
 ///
-/// // - Clone detection
-///
+/// // Clone detection
+/// #[derive(Clone)]
 /// struct A;
 /// struct B;
-/// #[derive(Clone)]
-/// struct C;
-/// #[derive(Clone)]
-/// struct D;
+/// assert!(tinfo!(A).is_clone);
+/// assert!(!tinfo!(B).is_clone);
 ///
-/// let a = tinfo!(A); // for non-cloneable type A.
-/// let b = tinfo!(B); // for non-cloneable type B.
-/// let c = tinfo!(C); // for cloneable type C.
-/// let d = tinfo!(D); // for cloneable type D.
-///
-/// assert_eq!(a.fn_clone, b.fn_clone); // A and B have the same dummy clone function.
-/// assert_ne!(a.fn_clone, c.fn_clone); // But C has its own clone function.
-/// assert_ne!(a.fn_clone, d.fn_clone); // And so does D.
-/// assert_ne!(c.fn_clone, d.fn_clone);
-///
-/// // - Send & Sync detection
-///
+/// // Send & Sync detection
 /// struct SendSync(u8); // Both Send and Sync.
 /// struct NotSendSync(*mut u8); // Neither Send nor Sync.
-///
-/// let send_sync = tinfo!(SendSync);
-/// let not_send_sync = tinfo!(NotSendSync);
-///
-/// assert!(send_sync.is_send);
-/// assert!(send_sync.is_sync);
-/// assert!(!not_send_sync.is_send);
-/// assert!(!not_send_sync.is_sync);
+/// assert!(tinfo!(SendSync).is_send);
+/// assert!(tinfo!(SendSync).is_sync);
+/// assert!(!tinfo!(NotSendSync).is_send);
+/// assert!(!tinfo!(NotSendSync).is_sync);
 ///
 /// // Incorrect usage
-///
 /// fn is_clone<T: 'static>() -> bool {
-///     // The macro doesn't work if the type is passed through generic
-///     // parameter.
+///     // The macro doesn't work if the type is passed through generic parameter.
 ///     tinfo!(T).is_clone
 /// }
 ///
-/// // assert!(is_clone::<C>());
-/// # assert!(!is_clone::<C>());
+/// struct C;
 ///
+/// // assert!(is_clone::<C>());
+/// assert!(!is_clone::<C>());
 /// ```
 #[macro_export]
 macro_rules! tinfo {
@@ -570,16 +538,15 @@ macro_rules! tinfo {
     }};
 }
 
-// The macro is exported and will be shown up in crate level. So we can use the
-// macro like 'crate::tinfo!(..)'. In doc comments, however, the link to the
-// macro is generated something like 'crate::ds::types::tinfo'. Re-exporting
-// like this helps us address the issue.
+// The macro is exported and will be shown up in crate level. So we can use the macro like
+// 'crate::tinfo!(..)'. In doc comments, however, the link to the macro is generated something like
+// 'crate::ds::types::tinfo'. Re-exporting like this helps us address the issue.
 pub use crate::tinfo;
 
 /// Represents an extended [`TypeId`] with type name.
 ///
-/// This would be useful for enriching debug messages, but the type name is only
-/// included when `check` feature is enabled.
+/// This would be useful for enriching debug messages, but the type name is only included when
+/// `check` feature is enabled.
 #[cfg_attr(not(feature = "check"), repr(transparent))]
 pub struct TypeIdExt {
     inner: TypeId,
@@ -605,8 +572,8 @@ impl fmt::Debug for TypeIdExt {
 impl TypeIdExt {
     /// Creates a new [`TypeIdExt`] from the given [`TypeId`].
     ///
-    /// If `check` feature is enabled, type name is set to blank string. To set
-    /// a proper name, call [`TypeIdExt::with`].
+    /// If `check` feature is enabled, type name is set to blank string. To set a proper name, call
+    /// [`TypeIdExt::with`].
     pub const fn new(ty: TypeId) -> Self {
         Self {
             inner: ty,
@@ -712,9 +679,8 @@ impl From<&TypeInfo> for TypeIdExt {
 
 /// A [`TypeIdExt`] with a salt type.
 ///
-/// By adding a salt type, this type can be different from each other. For
-/// instance, if we have `ATypeId<i32>` and `ATypeId<u32>`, they are completely
-/// different types from perspective of Rust.
+/// By adding a salt type, this type can be different from each other. For instance, if we have
+/// `ATypeId<i32>` and `ATypeId<u32>`, they are completely different types from perspective of Rust.
 #[repr(transparent)]
 pub struct ATypeId<Salt> {
     inner: TypeIdExt,

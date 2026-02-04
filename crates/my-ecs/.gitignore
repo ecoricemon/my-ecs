@@ -19,6 +19,3 @@ Cargo.lock
 .vscode/
 .idea/
 .DS_Store/
-/temp/
-/debug.sh
-/examples/debug.rs

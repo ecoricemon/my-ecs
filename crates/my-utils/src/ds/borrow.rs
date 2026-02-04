@@ -13,8 +13,7 @@ impl<V: Clone> SimpleHolder<V> {
     pub fn new(value: V) -> Self {
         let fn_imm = |value: &V| -> V { value.clone() };
         let fn_mut = |value: &mut V| -> V { value.clone() };
-        // Safety: `fn_imm` and `fn_mut` clones the value so that they don't
-        // require borrow check.
+        // Safety: `fn_imm` and `fn_mut` clones the value so that they don't require borrow check.
         let inner = unsafe { Holder::new(value, fn_imm, fn_mut) };
         Self(inner)
     }
@@ -40,19 +39,17 @@ impl<V> DerefMut for SimpleHolder<V> {
 
 /// A type that holds a value and allows us borrow the value.
 ///
-/// When you want to borrow inner value you can call [`Holder::borrow`] or
-/// [`Holder::borrow_mut`]. They return the inner value wrapped in [`Borrowed`]
-/// which tracks borrow status.
+/// When you want to borrow inner value you can call [`Holder::borrow`] or [`Holder::borrow_mut`].
+/// They return the inner value wrapped in [`Borrowed`] which tracks borrow status.
 ///
-/// Multiple immutable borrowing is allowed, but mutable borrowing is exclusive.
-/// If this struct is dropped while any borrowed value is alive, it causes
-/// panic. You can check it out using [`Holder::borrow_count`] to see there's
-/// any borrowed value.
+/// Multiple immutable borrowing is allowed, but mutable borrowing is exclusive. If this struct is
+/// dropped while any borrowed value is alive, it causes panic. You can check it out using
+/// [`Holder::borrow_count`] to see there's any borrowed value.
 ///
 /// # Features
 ///
-/// Borrow check is enabled if and only if `check` feature is enabled.
-/// Otherwise, this struct does nothing special.
+/// Borrow check is enabled if and only if `check` feature is enabled. Otherwise, this struct does
+/// nothing special.
 #[derive(Debug)]
 pub struct Holder<V, BI, BM> {
     /// The inner value holder holds.
@@ -86,40 +83,35 @@ impl<V, BI, BM> Holder<V, BI, BM> {
 
     /// Creates a [`Holder`] with the given value.
     ///
-    /// `Holder` checks borrow rule at runtime by enabled feature `check`. But
-    /// it requires additional operations, so that if you are confident, you can
-    /// use the `Holder` without the borrow check.
+    /// `Holder` checks borrow rule at runtime by enabled feature `check`. But it requires
+    /// additional operations, so that if you are confident, you can use the `Holder` without the
+    /// borrow check.
     ///
-    /// * `fn_imm` - Function that borrows the value and returns borrowed
-    ///   immutable value.
-    /// * `fn_mut` - Function that borrows the value and returns borrowed
-    ///   mutable value.
+    /// * `fn_imm` - Function that borrows the value and returns borrowed immutable value.
+    /// * `fn_mut` - Function that borrows the value and returns borrowed mutable value.
     ///
     /// # Safety
     ///
-    /// `Holder` disables Rust default borrow checker. Borrow rule is not
-    /// checked even if the `fn_imm` and `fn_mut` return references to the inner
-    /// value. However, `Holder` checks the borrow rule at runtime by enabled
-    /// feature `check`. If the feature is not enabled, this function is unsafe
-    /// due to the disabled runtime borrow check.
+    /// `Holder` disables Rust default borrow checker. Borrow rule is not checked even if the
+    /// `fn_imm` and `fn_mut` return references to the inner value. However, `Holder` checks the
+    /// borrow rule at runtime by enabled feature `check`. If the feature is not enabled, this
+    /// function is unsafe due to the disabled runtime borrow check.
     ///
-    /// If the `fn_imm` and `fn_mut` returns static type instead of reference,
-    /// it's safe regardless of enabling the feature because they don't need
-    /// borrow check.
+    /// If the `fn_imm` and `fn_mut` returns static type instead of reference, it's safe regardless
+    /// of enabling the feature because they don't need borrow check.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Holder;
+    /// use my_utils::ds::Holder;
     ///
     /// let mut holder: Holder<i32, &i32, &mut i32> = unsafe {
     ///     Holder::new(0, |v| v, |v| v)
     /// };
     /// let a = holder.borrow_mut().unwrap();
-    /// holder.borrow_mut().unwrap(); // No panic without `check` feature
+    /// // holder.borrow_mut().unwrap(); // panic if `check` feature enabled
     /// println!("{a:?}");
     /// ```
-    //
     // Lifetime `v` allows us to put something in like example above.
     pub unsafe fn new<'v>(value: V, fn_imm: fn(&'v V) -> BI, fn_mut: fn(&'v mut V) -> BM) -> Self {
         let (fn_imm, fn_mut) = unsafe {
@@ -144,7 +136,7 @@ impl<V, BI, BM> Holder<V, BI, BM> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Holder;
+    /// use my_utils::ds::Holder;
     ///
     /// let holder = unsafe { Holder::new(0, |v| v, |v| v) };
     /// assert_eq!(holder.into_value(), 0);
@@ -174,13 +166,13 @@ impl<V, BI, BM> Holder<V, BI, BM> {
 
     /// Borrows inner value.
     ///
-    /// If `check` feature is enabled, runtime borrow checker works and blocks
-    /// try borrowing value after mutable borrow.
+    /// If `check` feature is enabled, runtime borrow checker works and blocks try borrowing value
+    /// after mutable borrow.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Holder;
+    /// use my_utils::ds::Holder;
     ///
     /// let holder = unsafe { Holder::new(0, |v| v, |v| v) };
     /// assert_eq!(*holder.borrow().unwrap(), &0);
@@ -202,13 +194,13 @@ impl<V, BI, BM> Holder<V, BI, BM> {
 
     /// Borrows inner value mutably.
     ///
-    /// If `check` feature is enabled, runtime borrow checker works and blocks
-    /// try borrowing value after mutable or immutable borrow.
+    /// If `check` feature is enabled, runtime borrow checker works and blocks try borrowing value
+    /// after mutable or immutable borrow.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Holder;
+    /// use my_utils::ds::Holder;
     ///
     /// let mut holder = unsafe { Holder::new(0, |v| v, |v| v) };
     /// **holder.borrow_mut().unwrap() = 1;
@@ -229,16 +221,16 @@ impl<V, BI, BM> Holder<V, BI, BM> {
         Ok(Borrowed::new(value))
     }
 
-    /// Returns shared reference to the inner value without calling immutable
-    /// borrow function that you inserted at [`Holder::new`].
+    /// Returns shared reference to the inner value without calling immutable borrow function that
+    /// you inserted at [`Holder::new`].
     ///
-    /// If `check` feature is enabled, runtime borrow checker works and blocks
-    /// try borrowing value after mutable borrow.
+    /// If `check` feature is enabled, runtime borrow checker works and blocks try borrowing value
+    /// after mutable borrow.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Holder;
+    /// use my_utils::ds::Holder;
     ///
     /// let holder = unsafe { Holder::new(0, |v| *v + 1, |v| *v + 1) };
     /// let value = holder.get().unwrap();
@@ -259,16 +251,16 @@ impl<V, BI, BM> Holder<V, BI, BM> {
         Ok(Borrowed::new(value))
     }
 
-    /// Returns mutable reference to the inner value without calling mutable
-    /// borrow function that you inserted at [`Holder::new`].
+    /// Returns mutable reference to the inner value without calling mutable borrow function that
+    /// you inserted at [`Holder::new`].
     ///
-    /// If `check` feature is enabled, runtime borrow checker works and blocks
-    /// try borrowing value after mutable or immutable borrow.
+    /// If `check` feature is enabled, runtime borrow checker works and blocks try borrowing value
+    /// after mutable or immutable borrow.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Holder;
+    /// use my_utils::ds::Holder;
     ///
     /// let mut holder = unsafe { Holder::new(0, |v| *v + 1, |v| *v + 1) };
     /// let value = holder.get_mut().unwrap();
@@ -298,7 +290,7 @@ impl<V, BI, BM> Holder<V, BI, BM> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Holder;
+    /// use my_utils::ds::Holder;
     ///
     /// let holder = unsafe { Holder::new(0, |v| v, |v| v) };
     /// let value = unsafe { holder.get_unchecked() };
@@ -317,7 +309,7 @@ impl<V, BI, BM> Holder<V, BI, BM> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Holder;
+    /// use my_utils::ds::Holder;
     ///
     /// let mut holder = unsafe { Holder::new(0, |v| v, |v| v) };
     /// let value = unsafe { holder.get_unchecked_mut() };
@@ -407,11 +399,11 @@ impl<V, BI, BM> Drop for Holder<V, BI, BM> {
 
 /// A type generated by [`Holder`] that wraps a value in it shallowly.
 ///
-/// This struct implements [`Deref`] and [`DerefMut`] for the inner value so
-/// that clients can use this struct like the inner value.
+/// This struct implements [`Deref`] and [`DerefMut`] for the inner value so that clients can use
+/// this struct like the inner value.
 ///
-/// If `check` feature is enabled, this struct tracks borrow status at runtime,
-/// and will warn you if borrow rule was violated.
+/// If `check` feature is enabled, this struct tracks borrow status at runtime, and will warn you if
+/// borrow rule was violated.
 #[derive(Debug)]
 pub struct Borrowed<B> {
     value: B,
@@ -436,13 +428,12 @@ impl<B> Borrowed<B> {
         }
     }
 
-    /// Converts inner value through the given function while maintaining borrow
-    /// state.
+    /// Converts inner value through the given function while maintaining borrow state.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Holder;
+    /// use my_utils::ds::Holder;
     ///
     /// let holder = unsafe { Holder::new(0, |v| v, |v| v) };
     /// let value = holder.borrow().unwrap();
@@ -455,14 +446,13 @@ impl<B> Borrowed<B> {
         res
     }
 
-    /// Turns inner value into another type, then returns converted value
-    /// wrapped in [`Borrowed`] while keeping borrow status.
+    /// Turns inner value into another type, then returns converted value wrapped in [`Borrowed`]
+    /// while keeping borrow status.
     ///
-    /// The operation looks like `move` with type-conversion. But `self` will
-    /// leave as it was, so caller must not use it any longer. That means caller
-    /// must not call even drop function on it. Consider using
-    /// [`forget`](mem::forget) or something like that to `self` after calling
-    /// this method.
+    /// The operation looks like `move` with type-conversion. But `self` will leave as it was, so
+    /// caller must not use it any longer. That means caller must not call even drop function on it.
+    /// Consider using [`forget`](mem::forget) or something like that to `self` after calling this
+    /// method.
     ///
     /// # Safety
     ///
@@ -515,8 +505,7 @@ pub type BorrowResult<B> = Result<Borrowed<B>, BorrowError>;
 
 /// An error type associated with borrow.
 ///
-/// This error type will be commonly seen with [`Holder`], which can borrow
-/// its inner value to you.
+/// This error type will be commonly seen with [`Holder`], which can borrow its inner value to you.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum BorrowError {

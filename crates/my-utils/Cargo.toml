@@ -1,10 +1,10 @@
 [package]
-name = "my-ecs-util"
+name = "my-utils"
 version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
-description = "A utility for my-ecs"
-readme = "README.md" 
+edition = "2021"
+rust-version = "1.75"
+description = "Utilities"
+readme = "README.md"
 repository = "https://github.com/ecoricemon/my-ecs"
 license = "Apache-2.0 OR MIT"
 
@@ -20,6 +20,8 @@ rayon = { workspace = true }
 paste = { workspace = true }
 libc = { workspace = true }
 dashmap = { workspace = true }
+fxhash = { workspace = true }
+rayon-core = "=1.12.1" # TODO: Remove this dependency
 
 [dev-dependencies]
-async-io = { workspace = true }
+async-io = "2.5.0"

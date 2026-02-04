@@ -2,8 +2,7 @@ pub mod ds;
 pub(crate) mod macros;
 pub mod str;
 
-#[allow(unused)]
-pub(crate) type DefaultRandomState = std::hash::RandomState;
+pub type FxBuildHasher = fxhash::FxBuildHasher;
 
 // === impl ===
 
@@ -17,15 +16,14 @@ use std::{
 
 /// A trait for taking inner value out.
 ///
-/// Various types have methods like `take()` to take something out by consuming
-/// the type itself. If the taken value also can be unwrapped, then clients
-/// need to write code like `take().take()`. This trait helps to avoid something
-/// like that and replace it with just one call.
+/// Various types have methods like `take()` to take something out by consuming the type itself. If
+/// the taken value also can be unwrapped, then clients need to write code like `take().take()`.
+/// This trait helps to avoid something like that and replace it with just one call.
 ///
 /// # Examples
 ///
 /// ```
-/// use my_ecs_util::TakeRecur;
+/// use my_utils::TakeRecur;
 ///
 /// struct A(B);
 /// struct B(C);
@@ -84,8 +82,8 @@ repeat_macro!(impl_take_recur_for_tuple, 2..=8);
 
 /// A type representing 2^k `usize`.
 ///
-/// Zero is not 2^k though you can create [`PowerOfTwo`] by zero. In that case,
-/// zero is considered as `usize::MAX + 1` which is another 2^k.
+/// Zero is not 2^k though you can create [`PowerOfTwo`] by zero. In that case, zero is considered
+/// as `usize::MAX + 1` which is another 2^k.
 #[derive(Debug, Clone, Copy)]
 pub struct PowerOfTwo {
     value: usize,
@@ -123,7 +121,7 @@ impl PowerOfTwo {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::PowerOfTwo;
+    /// use my_utils::PowerOfTwo;
     ///
     /// let v = PowerOfTwo::new(4).unwrap();
     /// assert_eq!(v.quotient(3), 0);
@@ -139,7 +137,7 @@ impl PowerOfTwo {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::PowerOfTwo;
+    /// use my_utils::PowerOfTwo;
     ///
     /// let v = PowerOfTwo::new(4).unwrap();
     /// assert_eq!(v.remainder(3), 3);
@@ -153,8 +151,7 @@ impl PowerOfTwo {
 
 impl PartialEq for PowerOfTwo {
     fn eq(&self, other: &Self) -> bool {
-        // It's sufficient to compare `value` only because others are determined
-        // by the value.
+        // It's sufficient to compare `value` only because others are determined by the value.
         self.value == other.value
     }
 }
@@ -169,16 +166,14 @@ impl PartialOrd for PowerOfTwo {
 
 impl Ord for PowerOfTwo {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // It's sufficient to compare `value` only because others are determined
-        // by the value.
+        // It's sufficient to compare `value` only because others are determined by the value.
         self.value.cmp(&other.value)
     }
 }
 
 impl hash::Hash for PowerOfTwo {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        // It's sufficient to hash `value` only because others are determined
-        // by the value.
+        // It's sufficient to hash `value` only because others are determined by the value.
         self.value.hash(state);
     }
 }
@@ -213,8 +208,7 @@ impl<A, B> Or<A, B> {
         }
     }
 
-    /// Applies the given functions to the value `A` and `B` respectively then
-    /// returns the result.
+    /// Applies the given functions to the value `A` and `B` respectively then returns the result.
     pub fn map_ab<F, G, X, Y>(self, op_a: F, op_b: G) -> Or<X, Y>
     where
         F: FnOnce(A) -> X,
@@ -238,9 +232,8 @@ impl<A: fmt::Debug, B: fmt::Debug> fmt::Debug for Or<A, B> {
 
 /// A value with another value.
 ///
-/// This type is almost the same as tuple `(T, U)` except how the type is
-/// displayed by [`Display`](fmt::Display). This type only prints first value
-/// only.
+/// This type is almost the same as tuple `(T, U)` except how the type is displayed by
+/// [`Display`](fmt::Display). This type only prints first value only.
 #[derive(Debug, Default, Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 #[repr(C)]
 pub struct With<T, U> {
@@ -266,8 +259,8 @@ impl<T, U> With<T, U> {
 
 /// A value with [`Result`].
 ///
-/// This type implements [`Deref`] and [`DerefMut`] for the value, therefore it
-/// looks like value. But the type provides some `Result` methods as well.
+/// This type implements [`Deref`] and [`DerefMut`] for the value, therefore it looks like value.
+/// But the type provides some `Result` methods as well.
 pub type WithResult<O, T, E> = With<O, Result<T, E>>;
 
 impl<O, T, E> WithResult<O, T, E> {
@@ -419,6 +412,11 @@ where
             }
         }
     }
+}
+
+/// * align - must be a power of 2
+pub(crate) const fn round_up(value: usize, align: usize) -> usize {
+    (value + align - 1) & (!(align - 1))
 }
 
 #[cfg(test)]

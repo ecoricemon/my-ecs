@@ -1,5 +1,4 @@
 use super::{
-    DynResult,
     cmd::{Command, CommandObject, RawCommand},
     entry::{Ecs, EcsEntry},
     sched::{
@@ -11,8 +10,9 @@ use super::{
         system::{InsertPos, Invoke, System, SystemData, SystemDesc, SystemId, SystemState},
     },
     worker::{Message, WorkerId},
+    DynResult,
 };
-use my_ecs_util::ds::ManagedMutPtr;
+use my_utils::ds::ManagedMutPtr;
 use std::{
     fmt,
     future::Future,
@@ -27,8 +27,7 @@ use std::{
 };
 use thiserror::Error;
 
-// TODO: (Low) Fields for main worker and sub worker are combined. Split the
-// struct.
+// TODO: (Low) Fields for main worker and sub worker are combined. Split the struct.
 pub struct RequestLockFuture<'buf, Req> {
     tx_cmd: CommandSender,
     tx_msg: ParkingSender<Message>,
@@ -74,8 +73,8 @@ impl<'buf, Req: Request> Future for RequestLockFuture<'buf, Req> {
                 // Sets the command to this struct.
                 this.cmd = Some(cmd);
 
-                // Retrieves system pointer from the command we just made,
-                // then makes system data using the pointer.
+                // Retrieves system pointer from the command we just made, then makes system data
+                // using the pointer.
                 let this_cmd = this.cmd.as_ref().unwrap_unchecked();
                 let sys = this_cmd.get_system();
                 let sys_ptr = sys as *const (dyn Invoke + Send);
@@ -89,8 +88,7 @@ impl<'buf, Req: Request> Future for RequestLockFuture<'buf, Req> {
                 lock.set_state_bits(RequestLockState::SCHED_CMD);
                 drop(lock);
 
-                // Creates command object using the command in this struct,
-                // then sends it.
+                // Creates command object using the command in this struct, then sends it.
                 let cmd_obj = CommandObject::Raw(RawCommand::new(this_cmd));
                 this.tx_cmd.send_or_cancel(cmd_obj);
 
@@ -99,8 +97,8 @@ impl<'buf, Req: Request> Future for RequestLockFuture<'buf, Req> {
                 let tx_msg = this.tx_msg.clone();
                 let sid = lock.take_system_id().unwrap();
                 let buf = lock.take_system_buffer().unwrap();
-                // Safety: Scheduler guarantees that we're the only one who
-                // references to the memory at `buf`.
+                // Safety: Scheduler guarantees that we're the only one who references to the memory
+                // at `buf`.
                 let resp = Response::new(&mut *buf.as_ptr());
 
                 Poll::Ready(Ok(RequestLockGuard::new(tx_msg, sid, resp)))
@@ -119,9 +117,8 @@ impl<Req> Drop for RequestLockFuture<'_, Req> {
     }
 }
 
-// Because we passed pointer through `RawCommand`, command or system could
-// access pointers inside the future. So we need to wait for them to be called
-// then cancelled.
+// Because we passed pointer through `RawCommand`, command or system could access pointers inside
+// the future. So we need to wait for them to be called then cancelled.
 fn cancel_future_or_abort(lock: &Mutex<RequestLock>) {
     const DELAY_MS: u64 = 10;
     const LIMIT_MS: u64 = 10_000;
@@ -203,8 +200,8 @@ impl<Req: Request> Command for RequestLockCommand<Req> {
         lock.set_state_bits(RequestLockState::SCHED_SYS);
         drop(lock);
 
-        // Dummy group index! Then just put the system in the first group.
-        // When will the group index be dummy? - Locked by a dedicated system.
+        // Dummy group index! Then just put the system in the first group. When will the group index
+        // be dummy? - Locked by a dedicated system.
         let gi = if self.group_index != WorkerId::dummy().group_index() {
             self.group_index
         } else {
@@ -241,8 +238,8 @@ struct RequestLockSystem<Req> {
     _marker: PhantomData<Req>,
 }
 
-// Safety: `lock_ptr` references to `RequestLockFuture::lock`, and the
-// `RequestLockFuture::lock` outlives `RequestLockSystem`. So it's safe.
+// Safety: `lock_ptr` references to `RequestLockFuture::lock`, and the `RequestLockFuture::lock`
+// outlives `RequestLockSystem`. So it's safe.
 unsafe impl<Req> Send for RequestLockSystem<Req> {}
 
 impl<Req: Request> RequestLockSystem<Req> {
@@ -278,8 +275,8 @@ impl<Req: Request> System for RequestLockSystem<Req> {
         if lock.state().intersects(RequestLockState::CANCEL) {
             lock.set_state_bits(RequestLockState::CANCELLED);
 
-            // Safety: Scheduler guarantees that we're the only one who
-            // references to the `buf` memory.
+            // Safety: Scheduler guarantees that we're the only one who references to the `buf`
+            // memory.
             let resp = unsafe { Response::<Req>::new(&mut *buf.as_ptr()) };
             let tx_msg = self.tx_msg.take().unwrap();
             drop(RequestLockGuard::new(tx_msg, sid, resp));
@@ -343,8 +340,8 @@ impl<Req: Request> DerefMut for RequestLockGuard<'_, Req> {
 
 impl<Req: Request> Drop for RequestLockGuard<'_, Req> {
     fn drop(&mut self) {
-        // The struct is a kind of hidden system. It needs to send Fin message
-        // to main worker like other systems.
+        // The struct is a kind of hidden system. It needs to send Fin message to main worker like
+        // other systems.
 
         // Drops `self.resp` first for the next borrow.
         self.resp.take();

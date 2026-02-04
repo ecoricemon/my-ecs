@@ -104,7 +104,7 @@ use my_ecs::prelude::*;
 #[derive(Resource)]
 struct Count(u32);
 
-Ecs::default(WorkerPool::new(), [])
+Ecs::create(WorkerPool::new(), [])
    .add_resource(Count(0))
    .add_once_systems((
        |rw: ResWrite<Count>| rw.take().0 += 1,
@@ -150,7 +150,7 @@ filter!(Fpos, Target = Position);
 filter!(Fmovpos, Target = Position, All = Movable);
 
 fn main() {
-    Ecs::default(WorkerPool::with_len(2), [2])
+    Ecs::create(WorkerPool::with_len(2), [2])
         .register_entity_of::<Object>()
         .register_entity_of::<MovableObject>()
         .add_once_systems((create, print, moves, print))

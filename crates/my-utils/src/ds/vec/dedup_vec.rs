@@ -10,6 +10,11 @@ pub trait AsDedupVec {
     /// Vector type.
     type Container;
 
+    /// Iterator yielding reference to `Item`.
+    type Iter<'a>: Iterator<Item = &'a Self::Item>
+    where
+        Self: 'a;
+
     /// Creates a new empty vector.
     fn new() -> Self;
 
@@ -34,27 +39,31 @@ pub trait AsDedupVec {
     fn extend(&mut self, iter: impl IntoIterator<Item = Self::Item>);
 
     /// Returns an iterator visiting all items in the vector.
-    fn iter(&self) -> impl Iterator<Item = &Self::Item>;
+    fn iter(&self) -> Self::Iter<'_>;
 }
 
-// ON = true means deduplication is activated. In this case, we keep the vector
-// deduplicated whenever insertion or removal occurs.
+// ON = true means deduplication is activated.
+//
+// In this case, we keep the vector deduplicated whenever insertion or removal occurs.
 impl<T> AsDedupVec for DedupVec<T, true>
 where
     T: Ord,
 {
     type Item = T;
     type Container = Vec<T>;
+    type Iter<'a>
+        = core::slice::Iter<'a, T>
+    where
+        Self: 'a;
 
     /// Creates a new empty vector.
     ///
-    /// The vector will automatically sort and deduplicate items for you due to
-    /// `ON = true`.
+    /// The vector will automatically sort and deduplicate items for you due to `ON = true`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{AsDedupVec, DedupVec};
+    /// use my_utils::ds::{AsDedupVec, DedupVec};
     ///
     /// let mut v = DedupVec::<i32, true>::new();
     /// ```
@@ -67,7 +76,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{AsDedupVec, DedupVec};
+    /// use my_utils::ds::{AsDedupVec, DedupVec};
     ///
     /// let mut v = DedupVec::<_, true>::new();
     /// v.push(0);
@@ -82,7 +91,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{AsDedupVec, DedupVec};
+    /// use my_utils::ds::{AsDedupVec, DedupVec};
     ///
     /// let mut v = DedupVec::<_, true>::new();
     /// v.push(0);
@@ -94,13 +103,12 @@ where
 
     /// Appends the given value to the end of the vector.
     ///
-    /// The vector will automatically sort and deduplicate items for you due to
-    /// `ON = true`.
+    /// The vector will automatically sort and deduplicate items for you due to `ON = true`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{AsDedupVec, DedupVec};
+    /// use my_utils::ds::{AsDedupVec, DedupVec};
     ///
     /// let mut v = DedupVec::<_, true>::new();
     /// v.push(0);
@@ -118,13 +126,12 @@ where
 
     /// Removes an item that is equal to the given value from the vector.
     ///
-    /// The vector will automatically sort and deduplicate items for you due to
-    /// `ON = true`.
+    /// The vector will automatically sort and deduplicate items for you due to `ON = true`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{AsDedupVec, DedupVec};
+    /// use my_utils::ds::{AsDedupVec, DedupVec};
     ///
     /// let mut v = DedupVec::<_, true>::new();
     /// v.push(0);
@@ -144,13 +151,12 @@ where
 
     /// Extends the vector with the given iterator.
     ///
-    /// The vector will automatically sort and deduplicate items for you due to
-    /// `ON = true`.
+    /// The vector will automatically sort and deduplicate items for you due to `ON = true`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{AsDedupVec, DedupVec};
+    /// use my_utils::ds::{AsDedupVec, DedupVec};
     ///
     /// let mut v = DedupVec::<_, true>::new();
     /// v.extend([0, 2, 1]);
@@ -168,7 +174,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{AsDedupVec, DedupVec};
+    /// use my_utils::ds::{AsDedupVec, DedupVec};
     ///
     /// let mut v = DedupVec::<_, true>::new();
     /// v.push(0);
@@ -177,14 +183,15 @@ where
     ///     println!("{x}");
     /// }
     /// ```
-    fn iter(&self) -> impl Iterator<Item = &Self::Item> {
+    fn iter(&self) -> Self::Iter<'_> {
         self.inner.iter()
     }
 }
 
 // ON = false means deduplication is not activated.
-// In release mode, we don't check duplication at all.
-// Clients have responsibility for keeping deduplicated state.
+//
+// In release mode, we don't check duplication at all. Clients have responsibility for keeping
+// deduplicated state.
 #[cfg(not(debug_assertions))]
 impl<T> AsDedupVec for DedupVec<T, false>
 where
@@ -192,6 +199,10 @@ where
 {
     type Item = T;
     type Container = Vec<T>;
+    type Iter<'a>
+        = core::slice::Iter<'a, T>
+    where
+        Self: 'a;
 
     fn new() -> Self {
         Self { inner: Vec::new() }
@@ -221,31 +232,35 @@ where
         self.inner.extend(iter);
     }
 
-    fn iter(&self) -> impl Iterator<Item = &Self::Item> {
+    fn iter(&self) -> Self::Iter<'_> {
         self.inner.iter()
     }
 }
 
-// ON = false means deduplication is not activated. However, in debug mode,
-// panics if the container gets duplicate items in it.
+// ON = false means deduplication is not activated.
+//
+// However, in debug mode, panics if the container gets duplicate items in it.
 #[cfg(debug_assertions)]
 impl<T> AsDedupVec for DedupVec<T, false>
 where
     T: hash::Hash + Eq + Default + Clone,
 {
     type Item = T;
-    type Container = crate::ds::list::SetValueList<T, crate::DefaultRandomState>;
+    type Container = crate::ds::list::SetValueList<T, crate::FxBuildHasher>;
+    type Iter<'a>
+        = crate::ds::list::Values<'a, T, crate::FxBuildHasher>
+    where
+        Self: 'a;
 
     /// Creates a new empty vector.
     ///
-    /// The vector won't do anything to keep the deduplicated status, but it
-    /// panics when you insert duplicate item into the vector in debug mode due
-    /// to `ON = false`.
+    /// The vector won't do anything to keep the deduplicated status, but it panics when you insert
+    /// duplicate item into the vector in debug mode due to `ON = false`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{AsDedupVec, DedupVec};
+    /// use my_utils::ds::{AsDedupVec, DedupVec};
     ///
     /// let mut v = DedupVec::<i32, false>::new();
     /// ```
@@ -260,7 +275,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{AsDedupVec, DedupVec};
+    /// use my_utils::ds::{AsDedupVec, DedupVec};
     ///
     /// let mut v = DedupVec::<_, false>::new();
     /// v.push(0);
@@ -275,7 +290,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{AsDedupVec, DedupVec};
+    /// use my_utils::ds::{AsDedupVec, DedupVec};
     ///
     /// let mut v = DedupVec::<_, false>::new();
     /// v.push(0);
@@ -287,14 +302,13 @@ where
 
     /// Appends the given value to the end of the vector.
     ///
-    /// The vector won't do anything to keep the deduplicated status, but it
-    /// panics when you insert duplicate item into the vector in debug mode due
-    /// to `ON = false`.
+    /// The vector won't do anything to keep the deduplicated status, but it panics when you insert
+    /// duplicate item into the vector in debug mode due to `ON = false`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{AsDedupVec, DedupVec};
+    /// use my_utils::ds::{AsDedupVec, DedupVec};
     ///
     /// let mut v = DedupVec::<_, false>::new();
     /// v.push(0);
@@ -311,14 +325,13 @@ where
 
     /// Removes an item that is equal to the given value from the vector.
     ///
-    /// The vector won't do anything to keep the deduplicated status, but it
-    /// panics when you insert duplicate item into the vector in debug mode due
-    /// to `ON = false`.
+    /// The vector won't do anything to keep the deduplicated status, but it panics when you insert
+    /// duplicate item into the vector in debug mode due to `ON = false`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{AsDedupVec, DedupVec};
+    /// use my_utils::ds::{AsDedupVec, DedupVec};
     ///
     /// let mut v = DedupVec::<_, false>::new();
     /// v.push(0);
@@ -334,14 +347,13 @@ where
 
     /// Extends the vector with the given iterator.
     ///
-    /// The vector won't do anything to keep the deduplicated status, but it
-    /// panics when you insert duplicate item into the vector in debug mode due
-    /// to `ON = false`.
+    /// The vector won't do anything to keep the deduplicated status, but it panics when you insert
+    /// duplicate item into the vector in debug mode due to `ON = false`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{AsDedupVec, DedupVec};
+    /// use my_utils::ds::{AsDedupVec, DedupVec};
     ///
     /// let mut v = DedupVec::<_, false>::new();
     /// v.extend([0, 2, 1]);
@@ -359,7 +371,7 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{AsDedupVec, DedupVec};
+    /// use my_utils::ds::{AsDedupVec, DedupVec};
     ///
     /// let mut v = DedupVec::<_, false>::new();
     /// v.push(0);
@@ -368,37 +380,32 @@ where
     ///     println!("{x}");
     /// }
     /// ```
-    fn iter(&self) -> impl Iterator<Item = &Self::Item> {
+    fn iter(&self) -> Self::Iter<'_> {
         self.inner.values()
     }
 }
 
 /// Deduplicated vector.
 ///
-/// - If ON is true, then the vector keeps *sorted* and *deduplicated* status.
-///   It means the vector will conduct sorting and binary search whenever you
-///   insert or remove items into or from the vector. In this case, [`Vec`] is
-///   used as data container.
+/// - If ON is true, then the vector keeps *sorted* and *deduplicated* status. It means the vector
+///   will conduct sorting and binary search whenever you insert or remove items into or from the
+///   vector. In this case, [`Vec`] is used as data container.
 ///
-/// - If ON is false, on the other hand, the vector acts differently according
-///   to build mode.
+/// - If ON is false, on the other hand, the vector acts differently according to build mode.
 ///   * *debug mode* : Vector will panic when duplication detected.
-///     [`SetValueList`](crate::ds::SetValueList) is used as data container in
-///     this case. The container keeps insertion order.
-///   * *release mode* : Vector does nothing to keep the deduplicated status.
-///     Clients must keep the status on their code. In this case, [`Vec`] is
-///     used as data container.
+///     [`SetValueList`](crate::ds::SetValueList) is used as data container in this case. The
+///     container keeps insertion order.
+///   * *release mode* : Vector does nothing to keep the deduplicated status. Clients must keep the
+///     status on their code. In this case, [`Vec`] is used as data container.
 ///
 /// # How to determine `ON`
 ///
-/// If sorting is not a burden to you, and you're going to insert/remove items
-/// in any orders, then set ON to `true`. The vector will keep the deduplicated
-/// status always.
+/// If sorting is not a burden to you, and you're going to insert/remove items in any orders, then
+/// set ON to `true`. The vector will keep the deduplicated status always.
 ///
-/// If you can guarantee the deduplicated status on your own, then set ON to
-/// `false`. The vector will warn you if the guarantee has been broken in debug
-/// mode. In release mode, there won't be any additional operations to avoid
-/// performance penalty.
+/// If you can guarantee the deduplicated status on your own, then set ON to `false`. The vector
+/// will warn you if the guarantee has been broken in debug mode. In release mode, there won't be
+/// any additional operations to avoid performance penalty.
 #[repr(transparent)]
 pub struct DedupVec<T, const ON: bool = true>
 where

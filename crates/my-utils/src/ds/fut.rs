@@ -5,8 +5,8 @@ use std::{
     pin::Pin,
     ptr::NonNull,
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
+        Arc,
     },
     task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
     thread::{self, Thread},
@@ -20,18 +20,17 @@ pub trait WakeSend: Send + Sync + Clone + 'static {
 
 /// A handle to a future data.
 ///
-/// Name contains `future`, but this struct doesn't implement [`Future`] trait.
-/// It provides you poll function instead. You can call poll function on a
-/// handle and get the result if the `FutureData` is ready.
+/// Name contains `future`, but this struct doesn't implement [`Future`] trait. It provides you poll
+/// function instead. You can call poll function on a handle and get the result if the `FutureData`
+/// is ready.
 ///
-/// Plus, this is actually a type-erased pointer to a `FutureData` so that
-/// owners must deal with the pointer carefully. See the example below to get a
-/// feel for how to use the struct.
+/// Plus, this is actually a type-erased pointer to a `FutureData` so that owners must deal with the
+/// pointer carefully. See the example below to get a feel for how to use the struct.
 ///
 /// # Examples
 ///
 /// ```
-/// use my_ecs_util::ds::{WakeSend, UnsafeFuture, ReadyFuture};
+/// use my_utils::ds::{WakeSend, UnsafeFuture, ReadyFuture};
 /// use std::{
 ///     future::Future,
 ///     task::{Poll, Context},
@@ -78,7 +77,7 @@ pub trait WakeSend: Send + Sync + Clone + 'static {
 ///         pending += 1;
 ///     }
 ///     let r_fut = ReadyFuture::new(u_fut);
-///     let res: u32 = r_fut.consume(1);
+///     let res: u32 = r_fut.consume(1_u32);
 ///
 ///     assert_eq!(pending, 2);
 ///     assert_eq!(res, consume(10, 1));
@@ -103,8 +102,8 @@ impl UnsafeFuture {
     /// There will be memory leak if caller doesn't deallocate the future data.
     /// Future data can be deallocated by
     /// - Calling [`UnsafeFuture::destroy`].
-    /// - Turning [`UnsafeFuture`] into [`ReadyFuture`] then dropping it.
-    ///   `ReadyFuture` calls [`UnsafeFuture::destroy`] when it's dropped.
+    /// - Turning [`UnsafeFuture`] into [`ReadyFuture`] then dropping it. `ReadyFuture` calls
+    ///   [`UnsafeFuture::destroy`] when it's dropped.
     ///
     /// # Examples
     ///
@@ -160,11 +159,10 @@ impl UnsafeFuture {
 
     /// Tries to make more progress on the associated future data.
     ///
-    /// Returning value [`Poll::Ready`] means the `FutureData` is completely
-    /// resolved and ready to provide its output. [`Poll::Pending`], on the
-    /// other hand, means the `FutureData` is not yet ready and will wake async
-    /// runtime via the waker you inserted at [`UnsafeFuture::new`] when it can
-    /// make more progress.
+    /// Returning value [`Poll::Ready`] means the `FutureData` is completely resolved and ready to
+    /// provide its output. [`Poll::Pending`], on the other hand, means the `FutureData` is not yet
+    /// ready and will wake async runtime via the waker you inserted at [`UnsafeFuture::new`] when
+    /// it can make more progress.
     ///
     /// # Safety
     ///
@@ -189,8 +187,7 @@ impl UnsafeFuture {
     ///
     /// # Safety
     ///
-    /// Waker type `W` must be the same as the type you inserted at
-    /// [`UnsafeFuture::new`].
+    /// Waker type `W` must be the same as the type you inserted at [`UnsafeFuture::new`].
     pub unsafe fn will_wake<W>(self, other: &W) -> bool
     where
         W: WakeSend + PartialEq,
@@ -205,8 +202,7 @@ impl UnsafeFuture {
     ///
     /// # Safety
     ///
-    /// Waker type `W` must be the same as the type you inserted at
-    /// [`UnsafeFuture::new`].
+    /// Waker type `W` must be the same as the type you inserted at [`UnsafeFuture::new`].
     pub unsafe fn set_waker<W>(self, waker: W) -> W
     where
         W: WakeSend,
@@ -217,8 +213,8 @@ impl UnsafeFuture {
 
     /// # Safety
     ///
-    /// Argument types `Arg` and `CR` must be the same as the types determined
-    /// on [`UnsafeFuture::new`].
+    /// Argument types `Arg` and `CR` must be the same as the types determined on
+    /// [`UnsafeFuture::new`].
     unsafe fn consume<Arg, CR>(self, arg: Arg) -> CR {
         unsafe {
             let vtable = self.data.cast::<FutureVTable>().as_mut();
@@ -232,10 +228,9 @@ impl UnsafeFuture {
 
 /// A handle to a *ready* future data.
 ///
-/// The struct can be created from ready [`UnsafeFuture`] only, and it doesn't
-/// provide methods such as poll except [`ReadyFuture::consume`]. You can get
-/// the result from the ready `FutureData` through the consume method, then
-/// associated `FutureData` will be dropped and deallocated.
+/// The struct can be created from ready [`UnsafeFuture`] only, and it doesn't provide methods such
+/// as poll except [`ReadyFuture::consume`]. You can get the result from the ready `FutureData`
+/// through the consume method, then associated `FutureData` will be dropped and deallocated.
 ///
 /// See [`UnsafeFuture`] documentation to see how this struct is used.
 #[derive(Debug)]
@@ -262,17 +257,15 @@ impl ReadyFuture {
         Self(future)
     }
 
-    /// Takes the result out of associated future data, then converts it by
-    /// the consume function registered at [`UnsafeFuture::new`], and then
-    /// returns the converted result.
+    /// Takes the result out of associated future data, then converts it by the consume function
+    /// registered at [`UnsafeFuture::new`], and then returns the converted result.
     ///
-    /// By taking `self`, it's dropped at the end of the method, then drops and
-    /// deallocates the associated future data as well.
+    /// By taking `self`, it's dropped at the end of the method, then drops and deallocates the
+    /// associated future data as well.
     ///
     /// # Safety
     ///
-    /// `Arg` and `CR` must be the same as the types determined on
-    /// [`UnsafeFuture::new`].
+    /// `Arg` and `CR` must be the same as the types determined on [`UnsafeFuture::new`].
     ///
     /// # Examples
     ///
@@ -294,16 +287,15 @@ impl Drop for ReadyFuture {
 struct FutureData<F, R, W, Arg, CR> {
     /// Functions that receive a pointer to this struct as first parameter.
     //
-    // This field must be located at the first position of this struct, So, raw
-    // pointers to this structs can be translated as `FutureVTable`s as well,
-    // in turn, clients can call to various functions in vtable just using the
-    // one pointer.
+    // This field must be located at the first position of this struct, So, raw pointers to this
+    // structs can be translated as `FutureVTable`s as well, in turn, clients can call to various
+    // functions in vtable just using the one pointer.
     vtable: FutureVTable,
 
     /// Waker that wakes up the polling thread, a.k.a. executor or runtime.
     //
-    // This field must be located at the second position of this struct, So, raw
-    // pointers to this structs can be translated as `W`s as well,
+    // This field must be located at the second position of this struct, So, raw pointers to this
+    // structs can be translated as `W`s as well,
     waker: W,
 
     /// Future data.
@@ -358,7 +350,7 @@ where
     ///
     /// # Safety
     ///
-    /// - The given pointer must be a valid pointer to *pinned* [`FutureData`].
+    /// The given pointer must be a valid pointer to *pinned* [`FutureData`].
     unsafe fn is_ready(data: NonNull<u8>) -> bool {
         let this = unsafe { data.cast::<FutureData<F, R, W, Arg, CR>>().as_mut() };
         this.output.is_some()
@@ -368,21 +360,18 @@ where
     ///
     /// # Safety
     ///
-    /// - The given pointer must be a valid pointer to *pinned* [`FutureData`].
+    /// The given pointer must be a valid pointer to *pinned* [`FutureData`].
     unsafe fn poll_unchecked(data: NonNull<u8>) -> bool {
         let this = unsafe { data.cast::<FutureData<F, R, W, Arg, CR>>().as_mut() };
 
         // Synchronize memory.
         //
-        // Future data, `FutureData`, and its handle, `UnsafeFuture` are designed
-        // to be stolen by other workers, which makes a problem in terms of
-        // synchronization.
-        // Imagine `A` polled on a future data and wrote something on it. `B`
-        // wakes `C` up and gives future handle through `WakeSend`
-        // implementation. Here's the problem. `B` and `C` may be synchronized,
-        // but `A` and `C` isn't. Therefore, `C` cannot see what `A` made on the
-        // future data.
-        // This atomic variable synchronizes memory for polling workers.
+        // Future data, `FutureData`, and its handle, `UnsafeFuture` are designed to be stolen by
+        // other workers, which makes a problem in terms of synchronization. Imagine `A` polled on a
+        // future data and wrote something on it. `B` wakes `C` up and gives future handle through
+        // `WakeSend` implementation. Here's the problem. `B` and `C` may be synchronized, but `A`
+        // and `C` isn't. Therefore, `C` cannot see what `A` made on the future data. This atomic
+        // variable synchronizes memory for polling workers.
         //
         // Is spin lock without limit fine?
         // Blocking here means that poll() below results in wake-poll by another
@@ -419,8 +408,8 @@ where
         res
     }
 
-    /// Calls drop methods on [`FutureData`] pointed by the given data pointer,
-    /// then release the memory.
+    /// Calls drop methods on [`FutureData`] pointed by the given data pointer, then release the
+    /// memory.
     ///
     /// * data - A pointer to [`FutureData`].
     ///
@@ -454,9 +443,8 @@ where
 }
 
 impl<W> FutureData<(), (), W, (), ()> {
-    // Address of waker is determined by its alignment only.
-    // It doesn't depend on `F` and `R` because it is located right after
-    // `FutureVTable` which has fixed size.
+    // Address of waker is determined by its alignment only. It doesn't depend on `F` and `R`
+    // because it is located right after `FutureVTable` which has fixed size.
     unsafe fn waker_ptr(data: NonNull<u8>) -> NonNull<W> {
         unsafe {
             let this = data.cast::<FutureData<(), (), W, (), ()>>().as_mut();
@@ -482,9 +470,8 @@ struct FutureVTable {
 
     /// A function pointer to [`FutureData::delegate_consume`].
     //
-    // Since future return type is unknown here, this type erased function
-    // pointer must be cast with correct type like
-    // 'unsafe fn(NonNull<u8>, Arg)'.
+    // Since future return type is unknown here, this type erased function pointer must be cast with
+    // correct type like 'unsafe fn(NonNull<u8>, Arg)'.
     delegate_consume: unsafe fn(),
 }
 
@@ -510,9 +497,8 @@ fn raw_waker_vtable() -> &'static RawWakerVTable {
 
     /// * data - A pointer to [`FutureData`].
     //
-    // This is a drop function for `std::task::RawWaker`, not for `FutureData`.
-    // We're treating `UnsafeFuture` as the `RawWaker`,
-    // So we don't have to do something here.
+    // This is a drop function for `std::task::RawWaker`, not for `FutureData`. We're treating
+    // `UnsafeFuture` as the `RawWaker`, So we don't have to do something here.
     unsafe fn drop(_data: *const ()) {}
 
     static VTABLE: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_by_ref, drop);
@@ -522,13 +508,12 @@ fn raw_waker_vtable() -> &'static RawWakerVTable {
 
 /// Runs the given future to completion on the current worker.
 ///
-/// This blocks until the given future is complete, then returns the result of
-/// the future.
+/// This blocks until the given future is complete, then returns the result of the future.
 ///
 /// # Examples
 ///
 /// ```
-/// use my_ecs_util::ds::block_on;
+/// use my_utils::ds::block_on;
 /// use std::{
 ///     future::Future,
 ///     task::{Poll, Context},
@@ -631,6 +616,7 @@ mod tests {
     #[allow(unused)]
     use super::*;
 
+    #[cfg(not(miri))]
     #[test]
     fn test_block_on() {
         use async_io::Timer;

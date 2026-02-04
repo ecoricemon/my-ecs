@@ -2,14 +2,13 @@ use std::{collections::VecDeque, ops::Deref};
 
 /// A queue with generation.
 ///
-/// Generation increases whenever you take a value out of the queue, so that
-/// this would be useful when you need to know how many items are taken out
-/// since a specific time.
+/// Generation increases whenever you take a value out of the queue, so that this would be useful
+/// when you need to know how many items are taken out since a specific time.
 ///
 /// # Examples
 ///
 /// ```
-/// use my_ecs_util::ds::GenQueue;
+/// use my_utils::ds::GenQueue;
 ///
 /// let mut queue = GenQueue::new();
 ///
@@ -62,8 +61,7 @@ impl<T> GenQueue<T> {
 
     /// Returns current generation of the queue.
     ///
-    /// Note that generation increases by 1 whenever you call
-    /// [`GenQueue::pop_front`].
+    /// Note that generation increases by 1 whenever you call [`GenQueue::pop_front`].
     ///
     /// # Examples
     ///
@@ -77,7 +75,7 @@ impl<T> GenQueue<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::GenQueue;
+    /// use my_utils::ds::GenQueue;
     ///
     /// let mut queue = GenQueue::new();
     /// queue.push_back(0);
@@ -93,7 +91,7 @@ impl<T> GenQueue<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::GenQueue;
+    /// use my_utils::ds::GenQueue;
     ///
     /// let mut queue = GenQueue::new();
     /// queue.push_back(0);

@@ -10,9 +10,9 @@ use crossbeam_deque as cb;
 use std::{
     cell::Cell,
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, SendError, Sender, TryRecvError},
+        Arc, Mutex,
     },
     thread::{self, Thread},
 };
@@ -24,16 +24,15 @@ thread_local! {
 #[derive(Debug)]
 pub(crate) struct SubComm {
     /// Global task queue contains [`Task::System`] only.
-    /// It works in 'single producer multiple consumers' fashion and push/pop
-    /// occurs as follows.
+    ///
+    /// It works in 'single producer multiple consumers' fashion and push/pop occurs as follows.
     /// - 'Push' occurs by main worker.
     /// - 'Pop' occurs by all sub workers.
     injector: Arc<cb::Injector<Task>>,
 
-    /// Local task queue contains [`Task::System`], [`Task::Parallel`], and
-    /// [`Task::Future`].
-    /// It works in 'single producer multiple consumers' fashion and push/pop
-    /// occurs as follows.
+    /// Local task queue contains [`Task::System`], [`Task::Parallel`], and [`Task::Future`].
+    ///
+    /// It works in 'single producer multiple consumers' fashion and push/pop occurs as follows.
     /// - 'Push' occurs by sub worker.
     /// - 'Pop' occurs by both this sub worker and siblings via [`cb::Stealer`].
     local: cb::Worker<Task>,
@@ -42,14 +41,14 @@ pub(crate) struct SubComm {
     siblings: Arc<[cb::Stealer<Task>]>,
 
     /// Local future task queue contains [`Task::Future`] only.
-    /// It works in 'multiple producers multiple consumers' fashion and
-    /// push/pop occurs as follows.
+    ///
+    /// It works in 'multiple producers multiple consumers' fashion and push/pop occurs as follows.
     /// - 'Push' occurs by a thread that called the most inner future's poll().
     /// - 'Pop' occurs by each sub worker.
     //
-    // `crossbeam::Worker<T>` is not a 'multiple producers multiple consumers'
-    // queue, so uses another `Injector` instead. But if it causes some kind of
-    // performance issue, then consider using another queue.
+    // `crossbeam::Worker<T>` is not a 'multiple producers multiple consumers' queue, so uses
+    // another `Injector` instead. But if it causes some kind of performance issue, then consider
+    // using another queue.
     futures: Arc<[cb::Injector<Task>]>,
 
     /// Channel sending messages to main worker.
@@ -111,8 +110,7 @@ impl SubComm {
         &self.signal
     }
 
-    /// We can also get the worker id from
-    /// [`WORKER_ID`](crate::ecs::sched::ctrl::WORKER_ID).
+    /// We can also get the worker id from [`WORKER_ID`](crate::ecs::sched::ctrl::WORKER_ID).
     pub(crate) fn worker_id(&self) -> WorkerId {
         let wid = self.maybe_uninit_worker_id();
 
@@ -265,46 +263,51 @@ impl SubComm {
 
 #[derive(Debug)]
 pub(crate) struct GlobalSignal {
-    /// Handle of main worker.  
+    /// Handle of main worker.
+    ///
     /// Sub workers can wake the main worker up through this handle.
     main: Thread,
 
-    /// [`Signal`] for sub workers.  
+    /// [`Signal`] for sub workers.
+    ///
     /// Main or sub worker can wake up any sub worker through this signal.
     sub: Signal,
 
-    /// Abort flag.  
-    /// This flag is written by main worker only.
-    /// If this is true, sub workers will be closed soon.
+    /// Abort flag.
+    ///
+    /// This flag is written by main worker only. If this is true, sub workers will be closed soon.
     is_abort: AtomicBool,
 
-    /// Number of open sub workers.  
-    /// This count is written by sub workers only.
-    /// Main worker will make use of this count for making some decisions.
+    /// Number of open sub workers.
+    ///
+    /// This count is written by sub workers only. Main worker will make use of this count for
+    /// making some decisions.
     open_cnt: AtomicU32,
 
-    /// Number of working sub workers.  
-    /// This count is written by sub workers only.
-    /// Main worker will make use of this count for making some decisions.
+    /// Number of working sub workers.
+    ///
+    /// This count is written by sub workers only. Main worker will make use of this count for
+    /// making some decisions.
     work_cnt: AtomicU32,
 
-    /// Number of running future tasks.  
-    /// This count is written by sub workers only.
-    /// Main worker will make use of this count for making some decisions.
+    /// Number of running future tasks.
+    ///
+    /// This count is written by sub workers only. Main worker will make use of this count for
+    /// making some decisions.
     fut_cnt: AtomicU32,
 }
 
 impl GlobalSignal {
-    /// Some atomic counts are composed of 'target' and 'count' bits.
-    /// 'target' bits are located at MSB, and 'count' bits are located at LSB.
-    /// This shift is the offset bits of the 'target' bits from LSB.
+    /// Some atomic counts are composed of 'target' and 'count' bits. 'target' bits are located at
+    /// MSB, and 'count' bits are located at LSB. This shift is the offset bits of the 'target' bits
+    /// from LSB.
     const TARGET_SHIFT: u32 = 16;
 
     /// Mask to filter 'target' bits out, so that we can get 'count' bits only.
     const COUNT_MASK: u32 = (1 << Self::TARGET_SHIFT) - 1;
 
-    /// Mask to filter 'count' bits out, so that we can get 'target' bits only.
-    /// Don't forget to r-shift on the filtered value to get 'target' number.
+    /// Mask to filter 'count' bits out, so that we can get 'target' bits only. Don't forget to
+    /// r-shift on the filtered value to get 'target' number.
     const TARGET_MASK: u32 = !Self::COUNT_MASK;
 
     pub(super) fn new(sub_handles: Vec<Thread>) -> Self {
@@ -562,8 +565,8 @@ mod parking_receiver_release {
     pub(crate) struct ParkingReceiver<T> {
         rx: Receiver<T>,
 
-        /// Takes the next value out of the channel and holds it.
-        /// to cooperate with `thread::park_timeout`.
+        /// Takes the next value out of the channel and holds it to cooperate with
+        /// `thread::park_timeout`.
         next: Cell<Option<T>>,
     }
 
@@ -659,11 +662,11 @@ mod parking_receiver_debug {
         //
         // Why `thread::park_timeout()` instead of `Receiver::recv_timeout()`?
         //
-        // In web, we cannot get time, but `Receiver::recv_timeout()` tries
-        // to get current time, so it fails to compile.
-        // Fortunately, in nightly-2024-06-20, `thread::park_timeout()` is
+        // In web, we cannot get time, but `Receiver::recv_timeout()` tries to get current time, so
+        // it fails to compile. Fortunately, in nightly-2024-06-20, `thread::park_timeout()` is
         // implemented via wasm32::memory_atomic_wait32(), so it works.
-        // See "nightly-2024-06-20-.../lib/rustlib/src/rust/library/std/src/sys/pal/wasm/atomics/futex.rs"
+        // See "nightly-2024-06-20-.../lib/rustlib/src/rust/library/std/src/sys/pal/wasm/atomics/
+        // futex.rs"
         pub(crate) fn recv_timeout(&self, timeout: Duration) -> Result<T, RecvTimeoutError> {
             if let Ok(value) = self.try_recv() {
                 Ok(value)
@@ -678,12 +681,11 @@ mod parking_receiver_debug {
 
         /// Blocks until a message arrives through the channel.
         ///
-        /// If there is arleady a received message, returns immediately.
-        /// Otherwise, blocks for the given duration, but it may return
-        /// spuriously.
+        /// If there is arleady a received message, returns immediately. Otherwise, blocks for the
+        /// given duration, but it may return spuriously.
         ///
-        /// Also note that this method doesn't consume any messages. You will
-        /// get the message through other receving methods.
+        /// Also note that this method doesn't consume any messages. You will get the message
+        /// through other receving methods.
         pub(crate) fn wait_timeout(&self, timeout: Duration) {
             if let Ok(value) = self.try_recv() {
                 self.buf.borrow_mut().push_front(value);

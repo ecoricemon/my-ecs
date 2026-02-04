@@ -1,8 +1,9 @@
 use super::ptr::SendSyncPtr;
-use rayon::iter::{IntoParallelIterator, plumbing::Producer};
+use rayon::iter::{plumbing::Producer, IntoParallelIterator};
 use std::{
     iter,
     marker::PhantomData,
+    mem,
     num::NonZeroUsize,
     ops::{Deref, DerefMut},
     ptr::NonNull,
@@ -11,19 +12,18 @@ use std::{
 
 /// A trait to create type-erased iterators.
 ///
-/// Type-erased iterator [`RawIter`] is commonly used in type-erased data
-/// containers. Also, the iterators can become parallel iterators that can be
-/// split over multiple CPU cores for parallel comuputing.
+/// Type-erased iterator [`RawIter`] is commonly used in type-erased data containers. Also, the
+/// iterators can become parallel iterators that can be split over multiple CPU cores for parallel
+/// comuputing.
 pub trait AsRawIter {
     /// Returns a new [`RawIter`].
     ///
-    /// Give [`par_iter`](`AsRawIter::par_iter`) a try if you need CPU parallel
-    /// computing.
+    /// Give [`par_iter`](`AsRawIter::par_iter`) a try if you need CPU parallel computing.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{AnyVec, AsRawIter}};
+    /// use my_utils::{tinfo, ds::{AnyVec, AsRawIter}};
     ///
     /// // `AnyVec` implements `AsRawIter`.
     /// let v = AnyVec::new(tinfo!(i32));
@@ -33,15 +33,14 @@ pub trait AsRawIter {
 
     /// Returns a new [`ParRawIter`].
     ///
-    /// Unlike [`RawIter`], this iterator can be split over multiple CPU cores
-    /// then consumed at the same time for performance. But note that this is
-    /// not a silver bullet. It could be worse than sequential iterator
-    /// `RawIter` for a short iteration.
+    /// Unlike [`RawIter`], this iterator can be split over multiple CPU cores then consumed at the
+    /// same time for performance. But note that this is not a silver bullet. It could be worse than
+    /// sequential iterator `RawIter` for a short iteration.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{AnyVec, AsRawIter}};
+    /// use my_utils::{tinfo, ds::{AnyVec, AsRawIter}};
     ///
     /// // `AnyVec` implements `AsRawIter`.
     /// let v = AnyVec::new(tinfo!(i32));
@@ -61,7 +60,7 @@ pub trait AsRawIter {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{AnyVec, AsRawIter}};
+    /// use my_utils::{tinfo, ds::{AnyVec, AsRawIter}};
     ///
     /// // `AnyVec` implements `AsRawIter`.
     /// let mut v = AnyVec::new(tinfo!(i32));
@@ -87,7 +86,7 @@ pub trait AsRawIter {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{AnyVec, AsRawIter}};
+    /// use my_utils::{tinfo, ds::{AnyVec, AsRawIter}};
     ///
     /// // `AnyVec` implements `AsRawIter`.
     /// let mut v = AnyVec::new(tinfo!(i32));
@@ -114,7 +113,7 @@ pub trait AsRawIter {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{AnyVec, AsRawIter}};
+    /// use my_utils::{tinfo, ds::{AnyVec, AsRawIter}};
     ///
     /// // `AnyVec` implements `AsRawIter`.
     /// let mut v = AnyVec::new(tinfo!(i32));
@@ -140,7 +139,7 @@ pub trait AsRawIter {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{AnyVec, AsRawIter}};
+    /// use my_utils::{tinfo, ds::{AnyVec, AsRawIter}};
     ///
     /// // `AnyVec` implements `AsRawIter`.
     /// let mut v = AnyVec::new(tinfo!(i32));
@@ -167,8 +166,9 @@ impl<T> AsRawIter for [T] {
             // Safety: Infallible.
             let ptr = NonNull::new_unchecked(ptr.cast_mut());
 
-            // Safety: Alignment must be at least 1.
-            let stride = NonZeroUsize::new_unchecked(size_of::<T>().max(align_of::<T>()));
+            // Safety: Stride is at least 1 due to alignment.
+            let stride = crate::round_up(mem::size_of::<T>(), mem::align_of::<T>());
+            let stride = NonZeroUsize::new_unchecked(stride);
 
             // Safety: slice guarantees.
             RawIter::new(ptr.cast(), len, stride)
@@ -176,12 +176,11 @@ impl<T> AsRawIter for [T] {
     }
 }
 
-/// A trait to create type-erased flatten iterators from nested types such as
-/// `Vec<Vec<T>>`.
+/// A trait to create type-erased flatten iterators from nested types such as `Vec<Vec<T>>`.
 ///
-/// Type-erased iterator [`FlatRawIter`] is commonly used in type-erased data
-/// containers. Also, the iterators can become parallel iterators that can be
-/// split over mupltiple CPU cores for parallel computing.
+/// Type-erased iterator [`FlatRawIter`] is commonly used in type-erased data containers. Also, the
+/// iterators can become parallel iterators that can be split over mupltiple CPU cores for parallel
+/// computing.
 pub trait AsFlatRawIter {
     /// Returns a new [`FlatRawIter`].
     ///
@@ -192,7 +191,7 @@ pub trait AsFlatRawIter {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{ChunkAnyVec, AsFlatRawIter}};
+    /// use my_utils::{tinfo, ds::{ChunkAnyVec, AsFlatRawIter}};
     ///
     /// // `ChunkAnyVec` implements `AsFlatRawIter`.
     /// let chunk_cap = 2;
@@ -200,8 +199,8 @@ pub trait AsFlatRawIter {
     /// let iter = unsafe { v.iter() };
     /// ```
     //
-    // Unlike `AsRawIter::iter`, this method need the container to be accessible
-    // even if the iterator yields poniters. That's why this method is unsafe.
+    // Unlike `AsRawIter::iter`, this method need the container to be accessible even if the
+    // iterator yields poniters. That's why this method is unsafe.
     unsafe fn iter(&self) -> FlatRawIter;
 
     /// Returns a new [`ParFlatRawIter`].
@@ -213,7 +212,7 @@ pub trait AsFlatRawIter {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{ChunkAnyVec, AsFlatRawIter}};
+    /// use my_utils::{tinfo, ds::{ChunkAnyVec, AsFlatRawIter}};
     ///
     /// // `ChunkAnyVec` implements `AsFlatRawIter`.
     /// let chunk_cap = 2;
@@ -221,9 +220,8 @@ pub trait AsFlatRawIter {
     /// let iter = unsafe { v.par_iter() };
     /// ```
     //
-    // Unlike `AsRawIter::par_iter`, this method need the container to be
-    // accessible even if the iterator yields poniters. That's why this method
-    // is unsafe.
+    // Unlike `AsRawIter::par_iter`, this method need the container to be accessible even if the
+    // iterator yields poniters. That's why this method is unsafe.
     unsafe fn par_iter(&self) -> ParFlatRawIter {
         ParFlatRawIter(unsafe { self.iter() })
     }
@@ -237,7 +235,7 @@ pub trait AsFlatRawIter {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{ChunkAnyVec, AsFlatRawIter}};
+    /// use my_utils::{tinfo, ds::{ChunkAnyVec, AsFlatRawIter}};
     ///
     /// // `ChunkAnyVec` implements `AsFlatRawIter`.
     /// let chunk_cap = 2;
@@ -264,7 +262,7 @@ pub trait AsFlatRawIter {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{ChunkAnyVec, AsFlatRawIter}};
+    /// use my_utils::{tinfo, ds::{ChunkAnyVec, AsFlatRawIter}};
     ///
     /// // `ChunkAnyVec` implements `AsFlatRawIter`.
     /// let chunk_cap = 2;
@@ -292,7 +290,7 @@ pub trait AsFlatRawIter {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{ChunkAnyVec, AsFlatRawIter}};
+    /// use my_utils::{tinfo, ds::{ChunkAnyVec, AsFlatRawIter}};
     ///
     /// // `ChunkAnyVec` implements `AsFlatRawIter`.
     /// let chunk_cap = 2;
@@ -319,7 +317,7 @@ pub trait AsFlatRawIter {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{ChunkAnyVec, AsFlatRawIter}};
+    /// use my_utils::{tinfo, ds::{ChunkAnyVec, AsFlatRawIter}};
     ///
     /// // `ChunkAnyVec` implements `AsFlatRawIter`.
     /// let chunk_cap = 2;
@@ -341,24 +339,24 @@ pub trait AsFlatRawIter {
 
 /// A type-erased iterator of a slice.
 ///
-/// This iterator yields type-erased raw pointer instead of concrete type. If
-/// you can, wrap this iterator in [`Iter`] which bounds concrete type and
-/// lifetime.
+/// This iterator yields type-erased raw pointer instead of concrete type. If you can, wrap this
+/// iterator in [`Iter`] which bounds concrete type and lifetime.
 ///
 /// # Safety
 ///
-/// The iterator includes raw pointers, but it implements [`Send`] ans [`Sync`].
-/// You must carefully send this iterator to another worker.
+/// The iterator includes raw pointers, but it implements [`Send`] ans [`Sync`]. You must carefully
+/// send this iterator to another worker.
 #[derive(Debug, Clone, Copy)]
 pub struct RawIter {
-    cur: SendSyncPtr<u8>,
-    end: SendSyncPtr<u8>,
+    /// Inclusive
+    left: SendSyncPtr<u8>,
+    /// Exclusive
+    right: SendSyncPtr<u8>,
     stride: NonZeroUsize,
 }
 
 impl RawIter {
-    /// Creates a new [`RawIter`] from start address, number of items, and
-    /// stride in bytes.
+    /// Creates a new [`RawIter`] from start address, number of items, and stride in bytes.
     ///
     /// # Safety
     ///
@@ -367,7 +365,7 @@ impl RawIter {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::RawIter;
+    /// use my_utils::ds::RawIter;
     /// use std::{ptr::NonNull, num::NonZeroUsize};
     ///
     /// let arr = [0, 1, 2];
@@ -378,13 +376,13 @@ impl RawIter {
     #[inline]
     pub unsafe fn new(ptr: NonNull<u8>, len: usize, stride: NonZeroUsize) -> Self {
         unsafe {
-            let end = ptr.add(len * stride.get());
+            let end = ptr.as_ptr().add(len * stride.get());
+            let end = NonNull::new_unchecked(end);
             Self::from_range(ptr, end, stride)
         }
     }
 
-    /// Creates a new [`RawIter`] from start address, end address, and stride
-    /// in bytes.
+    /// Creates a new [`RawIter`] from start address, end address, and stride in bytes.
     ///
     /// # Safety
     ///
@@ -395,7 +393,7 @@ impl RawIter {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::RawIter;
+    /// use my_utils::ds::RawIter;
     /// use std::{ptr::NonNull, num::NonZeroUsize};
     ///
     /// let arr = [0, 1, 2];
@@ -415,8 +413,8 @@ impl RawIter {
         );
 
         Self {
-            cur: SendSyncPtr::new(start),
-            end: SendSyncPtr::new(end),
+            left: SendSyncPtr::new(start),
+            right: SendSyncPtr::new(end),
             stride,
         }
     }
@@ -426,14 +424,14 @@ impl RawIter {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::RawIter;
+    /// use my_utils::ds::RawIter;
     ///
     /// let empty_iter = RawIter::empty();
     /// ```
     pub const fn empty() -> Self {
         Self {
-            cur: SendSyncPtr::dangling(),
-            end: SendSyncPtr::dangling(),
+            left: SendSyncPtr::dangling(),
+            right: SendSyncPtr::dangling(),
             stride: NonZeroUsize::MIN,
         }
     }
@@ -443,7 +441,7 @@ impl RawIter {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::RawIter;
+    /// use my_utils::ds::RawIter;
     /// use std::{ptr::NonNull, num::NonZeroUsize};
     ///
     /// let arr = [0, 1, 2];
@@ -454,19 +452,18 @@ impl RawIter {
     /// ```
     #[inline]
     pub const fn len(&self) -> usize {
-        let end = self.end.as_ptr();
-        let cur = self.cur.as_ptr();
+        let right = self.right.as_ptr();
+        let left = self.left.as_ptr();
         // Safety: Owners guarantee safety.
-        unsafe { end.offset_from(cur) as usize / self.stride.get() }
+        unsafe { right.offset_from(left) as usize / self.stride.get() }
     }
 
-    /// Returns true if the iterator has consumed completely so that it cannot
-    /// yield anything.
+    /// Returns true if the iterator has consumed completely so that it cannot yield anything.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::RawIter;
+    /// use my_utils::ds::RawIter;
     /// use std::{ptr::NonNull, num::NonZeroUsize};
     ///
     /// let arr: [i32; 0] = [];
@@ -488,10 +485,10 @@ impl RawIter {
     /// - Lifetime define by caller must be sufficient to the iterator.
     pub unsafe fn as_slice<'o, T>(&self) -> &'o [T] {
         // We need properly aligned pointer for the type `T`, not `u8`.
-        let ptr = if self.cur.is_dangling() {
+        let ptr = if self.left.is_dangling() {
             NonNull::<T>::dangling().as_ptr().cast_const()
         } else {
-            self.cur.as_ptr().cast::<T>().cast_const()
+            self.left.as_ptr().cast::<T>().cast_const()
         };
         unsafe { slice::from_raw_parts(ptr, self.len()) }
     }
@@ -504,10 +501,10 @@ impl RawIter {
     /// - Lifetime define by caller must be sufficient to the iterator.
     pub unsafe fn as_mut_slice<'o, T>(&mut self) -> &'o mut [T] {
         // We need properly aligned pointer for the type `T`, not `u8`.
-        let ptr = if self.cur.is_dangling() {
+        let ptr = if self.left.is_dangling() {
             NonNull::<T>::dangling().as_ptr()
         } else {
-            self.cur.as_ptr().cast::<T>()
+            self.left.as_ptr().cast::<T>()
         };
         unsafe { slice::from_raw_parts_mut(ptr, self.len()) }
     }
@@ -518,10 +515,10 @@ impl Iterator for RawIter {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        if self.cur < self.end {
-            let res = self.cur;
+        if self.left < self.right {
+            let res = self.left;
             // Safety: Owners guarantee safety.
-            self.cur = unsafe { self.cur.add(self.stride.get()) };
+            self.left = unsafe { self.left.add(self.stride.get()) };
             Some(res)
         } else {
             None
@@ -547,10 +544,10 @@ impl ExactSizeIterator for RawIter {
 impl DoubleEndedIterator for RawIter {
     #[inline]
     fn next_back(&mut self) -> Option<Self::Item> {
-        if self.cur < self.end {
+        if self.left < self.right {
             // Safety: Owners guarantee safety.
-            self.end = unsafe { self.end.sub(self.stride.get()) };
-            Some(self.end)
+            self.right = unsafe { self.right.sub(self.stride.get()) };
+            Some(self.right)
         } else {
             None
         }
@@ -559,18 +556,15 @@ impl DoubleEndedIterator for RawIter {
 
 /// A type-erased parallel iterator of a slice.
 ///
-/// This is a new type of [`RawIter`]. [`Iterator`] and
-/// [`rayon::iter::ParallelIterator`] have the same signature methods, So
-/// clients have to write fully-qualified syntax to specify a method. This new
-/// type helps clients avoid it. If you don't want parallelism, just use
-/// [`RawIter`].
+/// This is a new type of [`RawIter`]. [`Iterator`] and [`rayon::iter::ParallelIterator`] have the
+/// same signature methods, So clients have to write fully-qualified syntax to specify a method.
+/// This new type helps clients avoid it. If you don't want parallelism, just use [`RawIter`].
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
 pub struct ParRawIter(pub RawIter);
 
 impl ParRawIter {
-    /// Converts the parallel iterator into sequential iterator by unwrapping
-    /// self.
+    /// Converts the parallel iterator into sequential iterator by unwrapping self.
     #[inline]
     pub const fn into_seq(self) -> RawIter {
         self.0
@@ -582,8 +576,7 @@ impl ParRawIter {
         self.0.len()
     }
 
-    /// Returns true if the iterator has consumed completely so that it cannot
-    /// yield anything.
+    /// Returns true if the iterator has consumed completely so that it cannot yield anything.
     #[inline]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
@@ -617,16 +610,16 @@ impl Producer for ParRawIter {
 
     #[inline]
     fn split_at(self, index: usize) -> (Self, Self) {
-        let l_cur = self.cur;
-        let l_end = unsafe { self.cur.add(index * self.stride.get()) };
-        let r_cur = l_end;
-        let r_end = self.end;
+        let l_l = self.left;
+        let l_r = unsafe { self.left.add(index * self.stride.get()) };
+        let r_l = l_r;
+        let r_r = self.right;
 
         // Safety: Splitting is safe.
         let (l, r) = unsafe {
             (
-                RawIter::from_range(l_cur.as_nonnull(), l_end.as_nonnull(), self.stride),
-                RawIter::from_range(r_cur.as_nonnull(), r_end.as_nonnull(), self.stride),
+                RawIter::from_range(l_l.as_nonnull(), l_r.as_nonnull(), self.stride),
+                RawIter::from_range(r_l.as_nonnull(), r_r.as_nonnull(), self.stride),
             )
         };
         (ParRawIter(l), ParRawIter(r))
@@ -643,12 +636,10 @@ crate::impl_unindexed_producer!(
     "for" = ParRawIter; "item" = SendSyncPtr<u8>;
 );
 
-/// An iterator that can be created from [`RawIter`] with concrete type and
-/// lifetime.
+/// An iterator that can be created from [`RawIter`] with concrete type and lifetime.
 ///
-/// This iterator is useful when you have `RawIter` and know what type the
-/// iterator visits. You can create this iterator from the `RawIter` then use it
-/// like normal Rust iterators.
+/// This iterator is useful when you have `RawIter` and know what type the iterator visits. You can
+/// create this iterator from the `RawIter` then use it like normal Rust iterators.
 #[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct Iter<'cont, T: 'cont> {
@@ -666,7 +657,7 @@ impl<'cont, T> Iter<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Iter;
+    /// use my_utils::ds::Iter;
     ///
     /// let arr = &[1, 2, 3][..]; // [T] implements `AsRawIter`.
     /// let iter = unsafe { Iter::<i32>::new(arr) };
@@ -690,7 +681,7 @@ impl<'cont, T> Iter<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{RawIter, Iter};
+    /// use my_utils::ds::{RawIter, Iter};
     /// use std::{ptr::NonNull, num::NonZeroUsize};
     ///
     /// let arr = [0, 1, 2];
@@ -714,7 +705,7 @@ impl<'cont, T> Iter<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Iter;
+    /// use my_utils::ds::Iter;
     ///
     /// let arr = &[1, 2, 3][..]; // [T] implements `AsRawIter`.
     /// let iter = unsafe { Iter::<i32>::new(arr) };
@@ -725,13 +716,12 @@ impl<'cont, T> Iter<'cont, T> {
         self.inner.len()
     }
 
-    /// Returns true if the iterator has been consumed completely so that it
-    /// cannot yield anything.
+    /// Returns true if the iterator has been consumed completely so that it cannot yield anything.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Iter;
+    /// use my_utils::ds::Iter;
     ///
     /// let arr: &[i32] = &[][..]; // [T] implements `AsRawIter`.
     /// let mut iter = unsafe { Iter::<i32>::new(arr) };
@@ -776,12 +766,10 @@ impl<T> DoubleEndedIterator for Iter<'_, T> {
     }
 }
 
-/// A mutable iterator that can be created from [`RawIter`] with concrete type
-/// and lifetime.
+/// A mutable iterator that can be created from [`RawIter`] with concrete type and lifetime.
 ///
-/// This iterator is useful when you have `RawIter` and know what type the
-/// iterator visits. You can create this iterator from the `RawIter` then use it
-/// like normal Rust iterators.
+/// This iterator is useful when you have `RawIter` and know what type the iterator visits. You can
+/// create this iterator from the `RawIter` then use it like normal Rust iterators.
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct IterMut<'cont, T: 'cont> {
@@ -790,8 +778,7 @@ pub struct IterMut<'cont, T: 'cont> {
 }
 
 impl<'cont, T> IterMut<'cont, T> {
-    /// Borrows the given container then returns a mutable iterator of the
-    /// container.
+    /// Borrows the given container then returns a mutable iterator of the container.
     ///
     /// # Safety
     ///
@@ -800,7 +787,7 @@ impl<'cont, T> IterMut<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IterMut;
+    /// use my_utils::ds::IterMut;
     ///
     /// let arr = &mut [1, 2, 3][..]; // [T] implements `AsRawIter`.
     /// let iter = unsafe { IterMut::<i32>::new(arr) };
@@ -819,14 +806,14 @@ impl<'cont, T> IterMut<'cont, T> {
     /// # Safety
     ///
     /// - The `RawIter` must yield pointers to type `T`.
-    /// - The `RawIter` must not be used elsewhere at the same time because
-    ///   created iterator must be exclusive.
+    /// - The `RawIter` must not be used elsewhere at the same time because created iterator must be
+    ///   exclusive.
     /// - Lifetime defined by caller must be sufficient to the `RawIter`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{RawIter, IterMut};
+    /// use my_utils::ds::{RawIter, IterMut};
     /// use std::{ptr::NonNull, num::NonZeroUsize};
     ///
     /// let arr = [0, 1, 2];
@@ -850,7 +837,7 @@ impl<'cont, T> IterMut<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IterMut;
+    /// use my_utils::ds::IterMut;
     ///
     /// let arr = &mut [1, 2, 3][..]; // [T] implements `AsRawIter`.
     /// let iter = unsafe { IterMut::<i32>::new(arr) };
@@ -861,13 +848,12 @@ impl<'cont, T> IterMut<'cont, T> {
         self.inner.len()
     }
 
-    /// Returns true if the iterator has been consumed completely so that it
-    /// cannot yield anything.
+    /// Returns true if the iterator has been consumed completely so that it cannot yield anything.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IterMut;
+    /// use my_utils::ds::IterMut;
     ///
     /// let arr: &mut [i32] = &mut [][..]; // [T] implements `AsRawIter`.
     /// let mut iter = unsafe { IterMut::<i32>::new(arr) };
@@ -912,12 +898,10 @@ impl<T> DoubleEndedIterator for IterMut<'_, T> {
     }
 }
 
-/// An iterator that can be created from [`ParRawIter`] with concrete type and
-/// lifetime.
+/// An iterator that can be created from [`ParRawIter`] with concrete type and lifetime.
 ///
-/// This iterator is useful when you have `ParRawIter` and know what type the
-/// iterator visits. You can create this iterator from the `ParRawIter` then use
-/// it like normal Rust iterators.
+/// This iterator is useful when you have `ParRawIter` and know what type the iterator visits. You
+/// can create this iterator from the `ParRawIter` then use it like normal Rust iterators.
 #[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct ParIter<'cont, T: 'cont> {
@@ -935,7 +919,7 @@ impl<'cont, T> ParIter<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ParIter;
+    /// use my_utils::ds::ParIter;
     ///
     /// let arr = &[1, 2, 3][..]; // [T] implements `AsRawIter`.
     /// let iter = unsafe { ParIter::<i32>::new(arr) };
@@ -959,7 +943,7 @@ impl<'cont, T> ParIter<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{RawIter, ParRawIter, ParIter};
+    /// use my_utils::ds::{RawIter, ParRawIter, ParIter};
     /// use std::{ptr::NonNull, num::NonZeroUsize};
     ///
     /// let arr = [0, 1, 2];
@@ -984,7 +968,7 @@ impl<'cont, T> ParIter<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ParIter;
+    /// use my_utils::ds::ParIter;
     ///
     /// let arr = &[1, 2, 3][..]; // [T] implements `AsRawIter`.
     /// let iter = unsafe { ParIter::<i32>::new(arr) };
@@ -1001,7 +985,7 @@ impl<'cont, T> ParIter<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ParIter;
+    /// use my_utils::ds::ParIter;
     ///
     /// let arr = &[1, 2, 3][..]; // [T] implements `AsRawIter`.
     /// let iter = unsafe { ParIter::<i32>::new(arr) };
@@ -1012,13 +996,12 @@ impl<'cont, T> ParIter<'cont, T> {
         self.inner.len()
     }
 
-    /// Returns true if the iterator has been consumed completely so that it
-    /// cannot yield anything.
+    /// Returns true if the iterator has been consumed completely so that it cannot yield anything.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ParIter;
+    /// use my_utils::ds::ParIter;
     ///
     /// let arr: &[i32] = &[][..]; // [T] implements `AsRawIter`.
     /// let mut iter = unsafe { ParIter::<i32>::new(arr) };
@@ -1059,12 +1042,10 @@ crate::impl_unindexed_producer!(
     "for" = ParIter; "item" = &'cont T;
 );
 
-/// A mutable iterator that can be created from [`ParRawIter`] with concrete
-/// type and lifetime.
+/// A mutable iterator that can be created from [`ParRawIter`] with concrete type and lifetime.
 ///
-/// This iterator is useful when you have `ParRawIter` and know what type the
-/// iterator visits. You can create this iterator from the `ParRawIter` then use
-/// it like normal Rust iterators.
+/// This iterator is useful when you have `ParRawIter` and know what type the iterator visits. You
+/// can create this iterator from the `ParRawIter` then use it like normal Rust iterators.
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct ParIterMut<'cont, T: 'cont> {
@@ -1073,8 +1054,7 @@ pub struct ParIterMut<'cont, T: 'cont> {
 }
 
 impl<'cont, T> ParIterMut<'cont, T> {
-    /// Borrows the given container then returns a mutable iterator of the
-    /// container.
+    /// Borrows the given container then returns a mutable iterator of the container.
     ///
     /// # Safety
     ///
@@ -1083,7 +1063,7 @@ impl<'cont, T> ParIterMut<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ParIterMut;
+    /// use my_utils::ds::ParIterMut;
     ///
     /// let arr = &mut [1, 2, 3][..]; // [T] implements `AsRawIter`.
     /// let iter = unsafe { ParIterMut::<i32>::new(arr) };
@@ -1102,14 +1082,14 @@ impl<'cont, T> ParIterMut<'cont, T> {
     /// # Safety
     ///
     /// - The `ParRawIter` must yield pointers to type `T`.
-    /// - The `ParRawIter` must not be used elsewhere at the same time because
-    ///   created iterator must be exclusive.
+    /// - The `ParRawIter` must not be used elsewhere at the same time because created iterator must
+    ///   be exclusive.
     /// - Lifetime defined by caller must be sufficient to the `ParRawIter`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::{RawIter, ParRawIter, ParIterMut};
+    /// use my_utils::ds::{RawIter, ParRawIter, ParIterMut};
     /// use std::{ptr::NonNull, num::NonZeroUsize};
     ///
     /// let arr = [0, 1, 2];
@@ -1134,7 +1114,7 @@ impl<'cont, T> ParIterMut<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ParIterMut;
+    /// use my_utils::ds::ParIterMut;
     ///
     /// let arr = &mut [1, 2, 3][..]; // [T] implements `AsRawIter`.
     /// let iter = unsafe { ParIterMut::<i32>::new(arr) };
@@ -1151,7 +1131,7 @@ impl<'cont, T> ParIterMut<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ParIterMut;
+    /// use my_utils::ds::ParIterMut;
     ///
     /// let arr = &mut [1, 2, 3][..]; // [T] implements `AsRawIter`.
     /// let iter = unsafe { ParIterMut::<i32>::new(arr) };
@@ -1162,13 +1142,12 @@ impl<'cont, T> ParIterMut<'cont, T> {
         self.inner.len()
     }
 
-    /// Returns true if the iterator has been consumed completely so that it
-    /// cannot yield anything.
+    /// Returns true if the iterator has been consumed completely so that it cannot yield anything.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ParIterMut;
+    /// use my_utils::ds::ParIterMut;
     ///
     /// let arr: &mut [i32] = &mut [][..]; // [T] implements `AsRawIter`.
     /// let mut iter = unsafe { ParIterMut::<i32>::new(arr) };
@@ -1220,23 +1199,22 @@ crate::impl_unindexed_producer!(
 
 /// A type-erased nested iterator.
 ///
-/// This iterator is intended to be used by containers that has nested structure
-/// like `Vec<Vec<T>>`. [`ChunkAnyVec`](crate::ds::ChunkAnyVec) is one of
-/// containers that support this iterator. Plus, the iterator is using some
-/// terminologies such as 'chunk' used in `ChunkAnyVec`, but you can think of it
-/// as inner vector in `Vec<Vec<T>>`.
+/// This iterator is intended to be used by containers that has nested structure like `Vec<Vec<T>>`.
+/// [`ChunkAnyVec`](crate::ds::ChunkAnyVec) is one of containers that support this iterator. Plus,
+/// the iterator is using some terminologies such as 'chunk' used in `ChunkAnyVec`, but you can
+/// think of it as inner vector in `Vec<Vec<T>>`.
 ///
-/// For better compiler optimization, the iterator is manually flattened, so it
-/// is quite big in terms of size, but we can expect high iteration performance.
+/// For better compiler optimization, the iterator is manually flattened, so it is quite big in
+/// terms of size, but we can expect high iteration performance.
 ///
 /// # Safety
 ///
-/// The iterator includes raw pointers, but it implements [`Send`] ans [`Sync`].
-/// You must carefully send this iterator to another worker.
+/// The iterator includes raw pointers, but it implements [`Send`] ans [`Sync`]. You must carefully
+/// send this iterator to another worker.
 //
-// To implement rayon's ParallelIterator, we have to implement
-// `ExactSizeIterator` and `DoubleEndedIterator`. So we track right side status
-// and total number of items which are not needed for just `Iterator`.
+// To implement rayon's ParallelIterator, we have to implement `ExactSizeIterator` and
+// `DoubleEndedIterator`. So we track right side status and total number of items which are not
+// needed for just `Iterator`.
 #[derive(Debug, Clone, Copy)]
 pub struct FlatRawIter {
     /// Left [RawIter::cur].
@@ -1246,8 +1224,7 @@ pub struct FlatRawIter {
 
     /// Left [RawIter::end], which is right boundary of the left iterator.
     ///
-    /// Note that `end` is not included in the range. It's the next pointer of
-    /// the right bound.
+    /// Note that `end` is not included in the range. It's the next pointer of the right bound.
     pub(crate) lr: SendSyncPtr<u8>,
 
     /// Right [RawIter::cur], which is left boundary of the right iterator.
@@ -1255,9 +1232,8 @@ pub struct FlatRawIter {
 
     /// Right [RawIter::end].
     ///
-    /// When [DoubleEndedIterator::next_back] is called, the pointer before this
-    /// may be returned. Note that `end` is not included in the range. It's the
-    /// next pointer of the right bound.
+    /// When [DoubleEndedIterator::next_back] is called, the pointer before this may be returned.
+    /// Note that `end` is not included in the range. It's the next pointer of the right bound.
     pub(crate) rr: SendSyncPtr<u8>,
 
     /// Pointer to the actual container.
@@ -1265,14 +1241,12 @@ pub struct FlatRawIter {
 
     /// Left chunk index for the next left [RawIter].
     ///
-    /// This index always points to the next left iterator, not current one,
-    /// and starts from 0.
+    /// This index always points to the next left iterator, not current one, and starts from 0.
     pub(crate) li: usize,
 
     /// Right chunk index for the current right [RawIter].
     ///
-    /// This index always points to the current right iterator, and starts from
-    /// number of chunks.
+    /// This index always points to the current right iterator, and starts from number of chunks.
     pub(crate) ri: usize,
 
     /// Function that returns [`RawIter`] of a chunk for the given chunk index.
@@ -1280,8 +1254,7 @@ pub struct FlatRawIter {
     /// If the chunk index is out of bounds, empty [`RawIter`] is returned.
     pub(crate) fn_iter: unsafe fn(this: NonNull<u8>, chunk_idx: usize) -> RawIter,
 
-    /// Function that returns [`RawIter`], chunk index, and offset from an item
-    /// index.
+    /// Function that returns [`RawIter`], chunk index, and offset from an item index.
     ///
     /// If the item index is out of bounds, empty [`RawIter`] is returned.
     pub(crate) fn_find: unsafe fn(this: NonNull<u8>, item_idx: usize) -> (RawIter, usize, usize),
@@ -1307,8 +1280,8 @@ impl FlatRawIter {
     ///
     /// # Safety
     ///
-    /// Caller must guarantee that the created iterator must have valid access
-    /// to the given pointer while it is in use.
+    /// Caller must guarantee that the created iterator must have valid access to the given pointer
+    /// while it is in use.
     #[inline]
     pub const unsafe fn new(
         this: NonNull<u8>,
@@ -1339,7 +1312,7 @@ impl FlatRawIter {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{ChunkAnyVec, FlatRawIter, AsFlatRawIter}};
+    /// use my_utils::{tinfo, ds::{ChunkAnyVec, FlatRawIter, AsFlatRawIter}};
     ///
     /// // `ChunkAnyVec` supports `FlatRawIter`.
     /// let chunk_cap = 2;
@@ -1354,13 +1327,12 @@ impl FlatRawIter {
         self.len
     }
 
-    /// Returns true if the iterator has consumed completely so that it cannot
-    /// yield anything.
+    /// Returns true if the iterator has consumed completely so that it cannot yield anything.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{ChunkAnyVec, FlatRawIter, AsFlatRawIter}};
+    /// use my_utils::{tinfo, ds::{ChunkAnyVec, FlatRawIter, AsFlatRawIter}};
     ///
     /// // `ChunkAnyVec` supports `FlatRawIter`.
     /// let chunk_cap = 2;
@@ -1418,7 +1390,7 @@ impl Iterator for FlatRawIter {
             (self.ll, self.lr) = if self.li < self.ri {
                 // Safety: Owners guarantee validity.
                 let next = unsafe { (self.fn_iter)(self.this.as_nonnull(), self.li) };
-                (next.cur, next.end)
+                (next.left, next.right)
             } else {
                 (self.rl, self.rr)
             };
@@ -1461,7 +1433,7 @@ impl DoubleEndedIterator for FlatRawIter {
             (self.rl, self.rr) = if self.li < self.ri {
                 // Safety: Owners guarantee validity.
                 let next = unsafe { (self.fn_iter)(self.this.as_nonnull(), self.ri - 1) };
-                (next.cur, next.end)
+                (next.left, next.right)
             } else {
                 (self.ll, self.lr)
             };
@@ -1483,18 +1455,15 @@ impl DoubleEndedIterator for FlatRawIter {
 
 /// A type-erased parallel nested iterator.
 ///
-/// This is a new type of [`FlatRawIter`]. [`Iterator`] and
-/// [`rayon::iter::ParallelIterator`] have the same signature methods, So
-/// clients have to write fully-qualified syntax to specify a method. This new
-/// type helps clients avoid it. If you don't want parallelism, just use
-/// [`FlatRawIter`].
+/// This is a new type of [`FlatRawIter`]. [`Iterator`] and [`rayon::iter::ParallelIterator`] have
+/// the same signature methods, So clients have to write fully-qualified syntax to specify a method.
+/// This new type helps clients avoid it. If you don't want parallelism, just use [`FlatRawIter`].
 #[derive(Debug, Clone, Copy)]
 #[repr(transparent)]
 pub struct ParFlatRawIter(pub FlatRawIter);
 
 impl ParFlatRawIter {
-    /// Converts the parallel iterator into sequential iterator by unwrapping
-    /// self.
+    /// Converts the parallel iterator into sequential iterator by unwrapping self.
     #[inline]
     pub const fn into_seq(self) -> FlatRawIter {
         self.0
@@ -1506,8 +1475,7 @@ impl ParFlatRawIter {
         self.0.len()
     }
 
-    /// Returns true if the iterator has consumed completely so that it cannot
-    /// yield anything.
+    /// Returns true if the iterator has consumed completely so that it cannot yield anything.
     #[inline]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
@@ -1543,7 +1511,9 @@ impl Producer for ParFlatRawIter {
     fn split_at(self, index: usize) -> (Self, Self) {
         let (
             RawIter {
-                cur: ml, end: mr, ..
+                left: ml,
+                right: mr,
+                ..
             },
             mi,
             off,
@@ -1562,8 +1532,7 @@ impl Producer for ParFlatRawIter {
         // |---- Left child -----||---- Right child ----|
         //
         // But, we must consider something like
-        // - Imagine that mid-chunk is left chunk, but not split
-        //   as depicted below.
+        // - Imagine that mid-chunk is left chunk, but not split as depicted below.
         //
         // ml              mm   mr
         // v               v    v
@@ -1652,12 +1621,10 @@ crate::impl_unindexed_producer!(
     "for" = ParFlatRawIter; "item" = SendSyncPtr<u8>;
 );
 
-/// An iterator that can be created from [`FlatRawIter`] with concrete type and
-/// lifetime.
+/// An iterator that can be created from [`FlatRawIter`] with concrete type and lifetime.
 ///
-/// This iterator is useful when you have `FlatRawIter` and know what type the
-/// iterator visits. You can create this iterator from the `FlatRawIter` then
-/// use it like normal Rust iterators.
+/// This iterator is useful when you have `FlatRawIter` and know what type the iterator visits. You
+/// can create this iterator from the `FlatRawIter` then use it like normal Rust iterators.
 #[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct FlatIter<'cont, T: 'cont> {
@@ -1675,7 +1642,7 @@ impl<'cont, T> FlatIter<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{ChunkAnyVec, FlatIter}};
+    /// use my_utils::{tinfo, ds::{ChunkAnyVec, FlatIter}};
     ///
     /// // `ChunkAnyVec` implements `AsFlatRawIter`.
     /// let chunk_cap = 2;
@@ -1701,7 +1668,7 @@ impl<'cont, T> FlatIter<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{ChunkAnyVec, AsFlatRawIter, FlatIter}};
+    /// use my_utils::{tinfo, ds::{ChunkAnyVec, AsFlatRawIter, FlatIter}};
     ///
     /// // `ChunkAnyVec` implements `AsFlatRawIter`.
     /// let chunk_cap = 2;
@@ -1724,7 +1691,7 @@ impl<'cont, T> FlatIter<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{ChunkAnyVec, FlatIter}};
+    /// use my_utils::{tinfo, ds::{ChunkAnyVec, FlatIter}};
     ///
     /// // `ChunkAnyVec` implements `AsFlatRawIter`.
     /// let chunk_cap = 2;
@@ -1739,13 +1706,12 @@ impl<'cont, T> FlatIter<'cont, T> {
         self.inner.len()
     }
 
-    /// Returns true if the iterator has been consumed completely so that it
-    /// cannot yield anything.
+    /// Returns true if the iterator has been consumed completely so that it cannot yield anything.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{ChunkAnyVec, FlatIter}};
+    /// use my_utils::{tinfo, ds::{ChunkAnyVec, FlatIter}};
     ///
     /// // `ChunkAnyVec` implements `AsFlatRawIter`.
     /// let chunk_cap = 2;
@@ -1793,12 +1759,10 @@ impl<T> DoubleEndedIterator for FlatIter<'_, T> {
     }
 }
 
-/// A mutable iterator that can be created from [`FlatRawIter`] with concrete
-/// type and lifetime.
+/// A mutable iterator that can be created from [`FlatRawIter`] with concrete type and lifetime.
 ///
-/// This iterator is useful when you have `FlatRawIter` and know what type the
-/// iterator visits. You can create this iterator from the `FlatRawIter` then
-/// use it like normal Rust iterators.
+/// This iterator is useful when you have `FlatRawIter` and know what type the iterator visits. You
+/// can create this iterator from the `FlatRawIter` then use it like normal Rust iterators.
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct FlatIterMut<'cont, T: 'cont> {
@@ -1816,7 +1780,7 @@ impl<'cont, T> FlatIterMut<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{ChunkAnyVec, FlatIterMut}};
+    /// use my_utils::{tinfo, ds::{ChunkAnyVec, FlatIterMut}};
     ///
     /// // `ChunkAnyVec` implements `AsFlatRawIter`.
     /// let chunk_cap = 2;
@@ -1837,14 +1801,14 @@ impl<'cont, T> FlatIterMut<'cont, T> {
     /// # Safety
     ///
     /// - The `FlatRawIter` must yield pointers to type `T`.
-    /// - The `FlatRawIter` must not be used elsewhere at the same time because
-    ///   created iterator must be exclusive.
+    /// - The `FlatRawIter` must not be used elsewhere at the same time because created iterator
+    ///   must be exclusive.
     /// - Lifetime defined by caller must be sufficient to the `FlatRawIter`.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{ChunkAnyVec, AsFlatRawIter, FlatIterMut}};
+    /// use my_utils::{tinfo, ds::{ChunkAnyVec, AsFlatRawIter, FlatIterMut}};
     ///
     /// // `ChunkAnyVec` implements `AsFlatRawIter`.
     /// let chunk_cap = 2;
@@ -1867,7 +1831,7 @@ impl<'cont, T> FlatIterMut<'cont, T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{ChunkAnyVec, FlatIterMut}};
+    /// use my_utils::{tinfo, ds::{ChunkAnyVec, FlatIterMut}};
     ///
     /// // `ChunkAnyVec` implements `AsFlatRawIter`.
     /// let chunk_cap = 2;
@@ -1882,13 +1846,12 @@ impl<'cont, T> FlatIterMut<'cont, T> {
         self.inner.len()
     }
 
-    /// Returns true if the iterator has been consumed completely so that it
-    /// cannot yield anything.
+    /// Returns true if the iterator has been consumed completely so that it cannot yield anything.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::{ChunkAnyVec, FlatIterMut}};
+    /// use my_utils::{tinfo, ds::{ChunkAnyVec, FlatIterMut}};
     ///
     /// // `ChunkAnyVec` implements `AsFlatRawIter`.
     /// let chunk_cap = 2;
@@ -1938,18 +1901,15 @@ impl<T> DoubleEndedIterator for FlatIterMut<'_, T> {
 
 /// A parallel nested iterator.
 ///
-/// This is a new type of [`FlatIter`]. [`Iterator`] and
-/// [`rayon::iter::ParallelIterator`] have the same signature methods, So
-/// clients have to write fully-qualified syntax to specify a method. This new
-/// type helps clients avoid it. If you don't want parallelism, just use
-/// [`FlatIter`].
+/// This is a new type of [`FlatIter`]. [`Iterator`] and [`rayon::iter::ParallelIterator`] have the
+/// same signature methods, So clients have to write fully-qualified syntax to specify a method.
+/// This new type helps clients avoid it. If you don't want parallelism, just use [`FlatIter`].
 #[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct ParFlatIter<'cont, T: 'cont>(pub FlatIter<'cont, T>);
 
 impl<'cont, T> ParFlatIter<'cont, T> {
-    /// Converts the parallel iterator into sequential iterator by unwrapping
-    /// self.
+    /// Converts the parallel iterator into sequential iterator by unwrapping self.
     #[inline]
     pub const fn into_seq(self) -> FlatIter<'cont, T> {
         self.0
@@ -1961,8 +1921,7 @@ impl<'cont, T> ParFlatIter<'cont, T> {
         self.0.len()
     }
 
-    /// Returns true if the iterator has consumed completely so that it cannot
-    /// yield anything.
+    /// Returns true if the iterator has consumed completely so that it cannot yield anything.
     #[inline]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
@@ -2007,18 +1966,15 @@ crate::impl_unindexed_producer!(
 
 /// A parallel nested mutable iterator.
 ///
-/// This is a new type of [`FlatIterMut`]. [`Iterator`] and
-/// [`rayon::iter::ParallelIterator`] have the same signature methods, So
-/// clients have to write fully-qualified syntax to specify a method. This new
-/// type helps clients avoid it. If you don't want parallelism, just use
-/// [`FlatIterMut`].
+/// This is a new type of [`FlatIterMut`]. [`Iterator`] and [`rayon::iter::ParallelIterator`] have
+/// the same signature methods, So clients have to write fully-qualified syntax to specify a method.
+/// This new type helps clients avoid it. If you don't want parallelism, just use [`FlatIterMut`].
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct ParFlatIterMut<'cont, T: 'cont>(pub FlatIterMut<'cont, T>);
 
 impl<'cont, T> ParFlatIterMut<'cont, T> {
-    /// Converts the parallel iterator into sequential iterator by unwrapping
-    /// self.
+    /// Converts the parallel iterator into sequential iterator by unwrapping self.
     #[inline]
     pub fn into_seq(self) -> FlatIterMut<'cont, T> {
         self.0
@@ -2030,8 +1986,7 @@ impl<'cont, T> ParFlatIterMut<'cont, T> {
         self.0.len()
     }
 
-    /// Returns true if the iterator has consumed completely so that it cannot
-    /// yield anything.
+    /// Returns true if the iterator has consumed completely so that it cannot yield anything.
     #[inline]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
@@ -2077,14 +2032,12 @@ crate::impl_unindexed_producer!(
 
 /// A raw getter for a container of items.
 ///
-/// The getter basically provides [`RawGetter::get`] method for random access,
-/// but you can register sequential access function through
-/// [`RawGetter::with_iter`]. Then you can call [`RawGetter::iter`] for
-/// sequential access.
+/// The getter basically provides [`RawGetter::get`] method for random access, but you can register
+/// sequential access function through [`RawGetter::with_iter`]. Then you can call
+/// [`RawGetter::iter`] for sequential access.
 ///
-/// Sequential access would be way faster than random access due to its cache
-/// friendly access pattern, so it's recommended to perfer it over random access
-/// as much as possible.
+/// Sequential access would be way faster than random access due to its cache friendly access
+/// pattern, so it's recommended to perfer it over random access as much as possible.
 #[derive(Debug, Clone, Copy)]
 pub struct RawGetter {
     /// Pointer to the container.
@@ -2096,8 +2049,7 @@ pub struct RawGetter {
     /// A function pointer for random access from a pointer of container.
     fn_get: unsafe fn(this: NonNull<u8>, index: usize) -> NonNull<u8>,
 
-    /// A function pointer for generating sequential access iterator from a
-    /// pointer of container.
+    /// A function pointer for generating sequential access iterator from a pointer of container.
     fn_iter: unsafe fn(this: NonNull<u8>) -> FlatRawIter,
 }
 
@@ -2110,8 +2062,8 @@ impl RawGetter {
     ///
     /// # Safety
     ///
-    /// Caller must guarantee that the created getter must have valid access
-    /// to the given pointer while it is in use.
+    /// Caller must guarantee that the created getter must have valid access to the given pointer
+    /// while it is in use.
     pub const unsafe fn new(
         this: NonNull<u8>,
         len: usize,
@@ -2127,8 +2079,7 @@ impl RawGetter {
 
     /// Registers the given function to the raw getter.
     ///
-    /// * fn_iter - A function pointer for generating sequential access
-    ///   iterator.
+    /// * fn_iter - A function pointer for generating sequential access iterator.
     pub const fn with_iter(mut self, fn_iter: unsafe fn(this: NonNull<u8>) -> FlatRawIter) -> Self {
         self.fn_iter = fn_iter;
         self
@@ -2159,15 +2110,14 @@ impl RawGetter {
     ///
     /// Undefined behavior if the given index is out of bounds.
     pub unsafe fn get_unchecked(&self, index: usize) -> NonNull<u8> {
-        // Safety: In addition to index, `self.this` must be a valid pointer,
-        // which is guaranteed by owners.
+        // Safety: In addition to index, `self.this` must be a valid pointer, which is guaranteed by
+        // owners.
         unsafe { (self.fn_get)(self.this.as_nonnull(), index) }
     }
 
     /// Returns a sequential access iterator for the associated container.
     ///
-    /// Make sure that you have registered a function through
-    /// [`RawGetter::with_iter`].
+    /// Make sure that you have registered a function through [`RawGetter::with_iter`].
     ///
     /// # Panics
     ///
@@ -2183,12 +2133,11 @@ impl RawGetter {
     }
 }
 
-/// A getter that can be created from [`RawGetter`] with concrete type and
-/// lifetime.
+/// A getter that can be created from [`RawGetter`] with concrete type and lifetime.
 ///
-/// This getter is useful when you have `RawGetter` and know what type the
-/// getter will return. You can create this getter from the `RawGetter` then
-/// use it as a `get` function of an associated container.
+/// This getter is useful when you have `RawGetter` and know what type the getter will return. You
+/// can create this getter from the `RawGetter` then use it as a `get` function of an associated
+/// container.
 #[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct Getter<'cont, T: 'cont> {
@@ -2225,8 +2174,7 @@ impl<'cont, T> Getter<'cont, T> {
         self.raw.is_empty()
     }
 
-    /// Returns a shared reference to a value at the given index in the
-    /// associated container.
+    /// Returns a shared reference to a value at the given index in the associated container.
     pub fn get(&self, index: usize) -> Option<&T> {
         if index < self.len() {
             // Safety: We checked the length.
@@ -2236,8 +2184,7 @@ impl<'cont, T> Getter<'cont, T> {
         }
     }
 
-    /// Returns a shared reference to a value at the given index in the
-    /// associated container.
+    /// Returns a shared reference to a value at the given index in the associated container.
     ///
     /// # Safety
     ///
@@ -2308,12 +2255,11 @@ impl<'cont, T: Send + Sync> IntoParallelIterator for Getter<'cont, T> {
     }
 }
 
-/// A mutable getter that can be created from [`RawGetter`] with concrete type
-/// and lifetime.
+/// A mutable getter that can be created from [`RawGetter`] with concrete type and lifetime.
 ///
-/// This getter is useful when you have `RawGetter` and know what type the
-/// getter will return. You can create this getter from the `RawGetter` then
-/// use it as a `get_mut` function of an associated container.
+/// This getter is useful when you have `RawGetter` and know what type the getter will return. You
+/// can create this getter from the `RawGetter` then use it as a `get_mut` function of an associated
+/// container.
 #[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct GetterMut<'cont, T: 'cont> {
@@ -2327,8 +2273,8 @@ impl<'cont, T> GetterMut<'cont, T> {
     /// # Safety
     ///
     /// - The `RawGetter` must return pointers to type `T`.
-    /// - The `RawGetter` must not be used elsewhere at the same time because
-    ///   created getter must be exclusive.
+    /// - The `RawGetter` must not be used elsewhere at the same time because created getter must be
+    ///   exclusive.
     /// - Lifetime defined by caller must be sufficient to the `RawGetter`.
     pub unsafe fn from_raw(raw: RawGetter) -> Self {
         Self {
@@ -2352,8 +2298,7 @@ impl<'cont, T> GetterMut<'cont, T> {
         self.raw.is_empty()
     }
 
-    /// Returns a shared reference to a value at the given index in the
-    /// associated container.
+    /// Returns a shared reference to a value at the given index in the associated container.
     pub fn get(&self, index: usize) -> Option<&T> {
         if index < self.len() {
             // Safety: We checked the length.
@@ -2363,8 +2308,7 @@ impl<'cont, T> GetterMut<'cont, T> {
         }
     }
 
-    /// Returns a shared reference to a value at the given index in the
-    /// associated container.
+    /// Returns a shared reference to a value at the given index in the associated container.
     ///
     /// # Safety
     ///
@@ -2376,8 +2320,7 @@ impl<'cont, T> GetterMut<'cont, T> {
         }
     }
 
-    /// Returns a mutable reference to a value at the given index in the
-    /// associated container.
+    /// Returns a mutable reference to a value at the given index in the associated container.
     pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
         if index < self.len() {
             // Safety: `index` is in bounds.
@@ -2387,8 +2330,7 @@ impl<'cont, T> GetterMut<'cont, T> {
         }
     }
 
-    /// Returns a mutable reference to a value at the given index in the
-    /// associated container.
+    /// Returns a mutable reference to a value at the given index in the associated container.
     ///
     /// # Safety
     ///
@@ -2413,8 +2355,7 @@ impl<'cont, T> GetterMut<'cont, T> {
         unsafe { FlatIter::from_raw(self.raw.iter()) }
     }
 
-    /// Returns a mutable sequential access iterator of the associated
-    /// container.
+    /// Returns a mutable sequential access iterator of the associated container.
     ///
     /// But if you created the iterator from a [`RawGetter`] without calling
     /// [`RawGetter::with_iter`], this will panic.

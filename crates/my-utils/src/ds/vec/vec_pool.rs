@@ -1,7 +1,6 @@
 /// Simple vector pool.
 ///
-/// The pool holds used vectors while keeping their capacities to avoid frequent
-/// memory allocation.
+/// The pool holds used vectors while keeping their capacities to avoid frequent memory allocation.
 #[derive(Debug)]
 pub struct SimpleVecPool<T> {
     bufs: Vec<Vec<T>>,
@@ -14,7 +13,7 @@ impl<T> SimpleVecPool<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::SimpleVecPool;
+    /// use my_utils::ds::SimpleVecPool;
     ///
     /// let mut pool = SimpleVecPool::<i32>::new();
     /// ```
@@ -27,15 +26,14 @@ impl<T> SimpleVecPool<T> {
 
     /// Returns an index to a vector of the pool.
     ///
-    /// The pool prefers to reuse vector, therefore caller will receive an index
-    /// to a used vector if the pool contains used vectors. In that case, the
-    /// vector is completed cleared while keeping its capacity. If the pool
-    /// doesn't have any used vectors in it, a new vector is created.
+    /// The pool prefers to reuse vector, therefore caller will receive an index to a used vector if
+    /// the pool contains used vectors. In that case, the vector is completed cleared while keeping
+    /// its capacity. If the pool doesn't have any used vectors in it, a new vector is created.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::SimpleVecPool;
+    /// use my_utils::ds::SimpleVecPool;
     ///
     /// let mut pool = SimpleVecPool::<i32>::new();
     ///
@@ -65,7 +63,7 @@ impl<T> SimpleVecPool<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::SimpleVecPool;
+    /// use my_utils::ds::SimpleVecPool;
     ///
     /// let mut pool = SimpleVecPool::<i32>::new();
     /// let index0 = pool.request();
@@ -86,7 +84,7 @@ impl<T> SimpleVecPool<T> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::SimpleVecPool;
+    /// use my_utils::ds::SimpleVecPool;
     ///
     /// let mut pool = SimpleVecPool::new();
     /// let index = pool.request();

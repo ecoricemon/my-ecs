@@ -2,18 +2,19 @@
 //!
 //! Currently, there are two options.
 //!
-//! - [`SparseSet`] based on [`AnyVec`], which stores data serially. It's good
-//!   for traversing items, but requires copy when the vector needs to extend
-//!   its capacity.
+//! - [`SparseSet`] based on [`AnyVec`], which stores data serially. It's good for traversing items,
+//!   but requires copy when the vector needs to extend its capacity.
 //!
-//! - [`ChunkSparseSet`] based on [`ChunkAnyVec`], which stores data in chunks.
-//!   Chunk is a fixed sized memory, and the vector appends a chunk when it
-//!   needs more capacity. Therefore, `ChunkSparseSet` is good for frequent
-//!   insertion or removal, but not good as mush as `SparseSet` in terms of
-//!   traversing items.
+//! - [`ChunkSparseSet`] based on [`ChunkAnyVec`], which stores data in chunks. Chunk is a fixed
+//!   sized memory, and the vector appends a chunk when it needs more capacity. Therefore,
+//!   `ChunkSparseSet` is good for frequent insertion or removal, but not good as mush as
+//!   `SparseSet` in terms of traversing items.
 
-use crate::ecs::ent::entity::{AddEntity, BorrowComponent, ContainEntity, RegisterComponent};
-use my_ecs_util::ds::{
+use crate::{
+    ecs::ent::entity::{AddEntity, BorrowComponent, ContainEntity, RegisterComponent},
+    FxBuildHasher,
+};
+use my_utils::ds::{
     AnyVec, AsFlatRawIter, BorrowError, BorrowResult, ChunkAnyVec, FlatRawIter, Holder, OptVec,
     RawGetter, TypeInfo,
 };
@@ -21,45 +22,52 @@ use std::{
     any::TypeId, cmp, collections::HashMap, fmt::Debug, hash::BuildHasher, mem, ptr::NonNull,
 };
 
-/// Two-dimensional storage containing heterogeneous data types based on
-/// [`ChunkAnyVec`].
+/// Two-dimensional storage containing heterogeneous data types based on [`ChunkAnyVec`].
 ///
-/// Unlike `SparseSet`, this struct stores data in chunks. Chunk is a fixed
-/// sized memory, and it's appended when extra capacity is needed. This chunk
-/// based capacity control removes data copy that is seen from normal vector,
-/// but note that it brings inefficiency in terms of iteration.
+/// Unlike `SparseSet`, this struct stores data in chunks. Chunk is a fixed sized memory, and it's
+/// appended when extra capacity is needed. This chunk based capacity control removes data copy that
+/// is seen from normal vector, but note that it brings inefficiency in terms of iteration.
 ///
 /// See [`SparseSet`] for more details.
 #[derive(Debug)]
-pub struct ChunkSparseSet<S> {
+pub struct ChunkSparseSet<S = FxBuildHasher> {
     sparse: OptVec<usize, S>,
     deref: Vec<usize>,
     cols: Vec<Holder<ChunkAnyVec, RawGetter, RawGetter>>,
     map: HashMap<TypeId, usize, S>,
 }
 
-impl<S> ChunkSparseSet<S>
-where
-    S: Default,
-{
-    const CHUNK_SIZE: usize = 4 * 1024;
-    const MIN_CHUNK_LEN: usize = 8;
-
-    /// Creates a new empty [`ChunkSparseSet`].
+impl ChunkSparseSet {
+    /// Creates a new empty [`ChunkSparseSet`] with [`FxBuildHasher`].
     ///
     /// # Examples
     ///
     /// ```
     /// # use my_ecs::prelude::*;
     ///
-    /// let mut cont = ChunkSparseSet::<std::hash::RandomState>::new();
+    /// let mut cont = ChunkSparseSet::new();
     /// ```
     pub fn new() -> Self {
         Self {
             sparse: OptVec::new(),
             deref: Vec::new(),
             cols: Vec::new(),
-            map: HashMap::default(),
+            map: HashMap::with_hasher(FxBuildHasher::default()),
+        }
+    }
+}
+
+impl<S> ChunkSparseSet<S> {
+    const CHUNK_SIZE: usize = 4 * 1024;
+    const MIN_CHUNK_LEN: usize = 8;
+
+    /// Creates a new empty [`ChunkSparseSet`] with the given hasher.
+    pub fn with_hasher<F: FnMut() -> S>(mut hasher: F) -> Self {
+        Self {
+            sparse: OptVec::with_hasher(hasher()),
+            deref: Vec::new(),
+            cols: Vec::new(),
+            map: HashMap::with_hasher(hasher()),
         }
     }
 }
@@ -77,8 +85,8 @@ where
                 let (fn_imm, fn_mut) = (col.get_fn_imm(), col.get_fn_mut());
                 let col = col.get().unwrap();
                 let value = ChunkAnyVec::new(*col.type_info(), col.default_chunk_capacity());
-                // Safety: It's safe to create the same `Holder`. The safety
-                // must have been guaranteed by source `Holder`.
+                // Safety: It's safe to create the same `Holder`. The safety must have been
+                // guaranteed by source `Holder`.
                 unsafe { Holder::new(value, fn_imm, fn_mut) }
             })
             .collect::<Vec<_>>();
@@ -88,7 +96,7 @@ where
 
         // Makes empty instance.
         let this = Self {
-            sparse: OptVec::new(),
+            sparse: OptVec::default(),
             deref: Vec::new(),
             cols,
             map,
@@ -388,22 +396,25 @@ where
     S: Default,
 {
     fn default() -> Self {
-        Self::new()
+        Self {
+            sparse: OptVec::default(),
+            deref: Vec::new(),
+            cols: Vec::new(),
+            map: HashMap::default(),
+        }
     }
 }
 
-/// Two-dimensional storage containing heterogeneous data types based on
-/// [`AnyVec`].
+/// Two-dimensional storage containing heterogeneous data types based on [`AnyVec`].
 ///
-/// This struct is composed of "Sparse" and "Dense" layers. Sparse layer is
-/// literally sparse, so it can contain vacant slots in it, while dense layer
-/// doesn't. Dense layer contains real items and the items can be accessed
-/// through the sparse layer. Each dense is identified by its item's [`TypeId`].
-/// But you are encouraged to access each dense by its index, not `TypeId` for
-/// the performance.
+/// This struct is composed of "Sparse" and "Dense" layers. Sparse layer is literally sparse, so it
+/// can contain vacant slots in it, while dense layer doesn't. Dense layer contains real items and
+/// the items can be accessed through the sparse layer. Each dense is identified by its item's
+/// [`TypeId`]. But you are encouraged to access each dense by its index, not `TypeId` for the
+/// performance.
 ///
-/// We call each dense layer a column, and all columns have the same length.
-/// So it looks like a 2D matrix as shown below.
+/// We call each dense layer a column, and all columns have the same length. So it looks like a 2D
+/// matrix as shown below.
 ///
 /// ```text
 /// Index  Sparse  Dense  Dense
@@ -416,32 +427,41 @@ where
 /// , where '.' is item and 'x' is vacant slot.
 /// ```
 #[derive(Debug)]
-pub struct SparseSet<S> {
+pub struct SparseSet<S = FxBuildHasher> {
     sparse: OptVec<usize, S>,
     deref: Vec<usize>,
     cols: Vec<Holder<AnyVec, RawGetter, RawGetter>>,
     map: HashMap<TypeId, usize, S>,
 }
 
-impl<S> SparseSet<S>
-where
-    S: Default,
-{
-    /// Creates a new empty [`SparseSet`].
+impl SparseSet {
+    /// Creates a new empty [`SparseSet`] with [`FxBuildHasher`].
     ///
     /// # Examples
     ///
     /// ```
     /// # use my_ecs::prelude::*;
     ///
-    /// let mut cont = SparseSet::<std::hash::RandomState>::new();
+    /// let mut cont = SparseSet::new();
     /// ```
     pub fn new() -> Self {
         Self {
             sparse: OptVec::new(),
             deref: Vec::new(),
             cols: Vec::new(),
-            map: HashMap::default(),
+            map: HashMap::with_hasher(FxBuildHasher::default()),
+        }
+    }
+}
+
+impl<S> SparseSet<S> {
+    /// Creates a new empty [`SparseSet`] with the given hasher.
+    pub fn with_hasher<F: FnMut() -> S>(mut hasher: F) -> Self {
+        Self {
+            sparse: OptVec::with_hasher(hasher()),
+            deref: Vec::new(),
+            cols: Vec::new(),
+            map: HashMap::with_hasher(hasher()),
         }
     }
 }
@@ -459,8 +479,8 @@ where
                 let (fn_imm, fn_mut) = (col.get_fn_imm(), col.get_fn_mut());
                 let col = col.get().unwrap();
                 let value = AnyVec::new(*col.type_info());
-                // Safety: It's safe to create the same `Holder`. The safety
-                // must have been guaranteed by source `Holder`.
+                // Safety: It's safe to create the same `Holder`. The safety must have been
+                // guaranteed by source `Holder`.
                 unsafe { Holder::new(value, fn_imm, fn_mut) }
             })
             .collect::<Vec<_>>();
@@ -470,7 +490,7 @@ where
 
         // Makes empty instance.
         let this = Self {
-            sparse: OptVec::new(),
+            sparse: OptVec::default(),
             deref: Vec::new(),
             cols,
             map,
@@ -764,7 +784,12 @@ where
     S: Default,
 {
     fn default() -> Self {
-        Self::new()
+        Self {
+            sparse: OptVec::default(),
+            deref: Vec::new(),
+            cols: Vec::new(),
+            map: HashMap::default(),
+        }
     }
 }
 
@@ -772,12 +797,12 @@ where
 mod tests {
     use crate as my_ecs;
     use crate::prelude::*;
-    use std::{hash::RandomState, sync::Arc};
+    use std::sync::Arc;
 
     #[test]
     fn test_move_entity_to_entity_container() {
-        inner(SparseSet::<RandomState>::new());
-        inner(ChunkSparseSet::<RandomState>::new());
+        inner(SparseSet::new());
+        inner(ChunkSparseSet::new());
 
         fn inner<T: ContainEntity>(mut cont: T) {
             #![allow(unused)]
@@ -838,7 +863,7 @@ mod tests {
             assert_eq!(cont.capacity(), 0);
             assert_eq!(cont.len(), 0);
 
-            let reserve_size = ChunkSparseSet::<RandomState>::CHUNK_SIZE + 1;
+            let reserve_size = ChunkSparseSet::<()>::CHUNK_SIZE + 1;
             cont.reserve(reserve_size);
 
             assert!(cont.capacity() >= reserve_size);

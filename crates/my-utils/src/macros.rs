@@ -20,7 +20,7 @@ macro_rules! debug_format {
 /// # Examples
 ///
 /// ```
-/// use my_ecs_util::type_name;
+/// use my_utils::type_name;
 ///
 /// fn foo() {}
 /// struct Bar;
@@ -50,7 +50,7 @@ macro_rules! type_name {
 /// # Examples
 ///
 /// ```ignore
-/// # use my_ecs_util::impl_from_for_enum;
+/// # use my_utils::impl_from_for_enum;
 /// # use std::borrow::Cow;
 ///
 /// enum MyEnum<'a, 'b: 'a, X, Y: Send + Sync, const N: usize, const M: usize> {
@@ -65,7 +65,6 @@ macro_rules! type_name {
 ///     "consts" = N: usize, M: usize;
 ///     "outer" = MyEnum; "var" = A; "inner" = &'a Cow<'b, str>
 /// );
-///
 /// ```
 #[macro_export]
 macro_rules! impl_from_for_enum {

@@ -3,9 +3,9 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Sender},
+        Arc, Mutex,
     },
     task::{Context, Poll},
     thread::{self, JoinHandle},
@@ -21,8 +21,8 @@ fn call_with_name(f: fn()) {
     println!("finished");
 }
 
-/// Tests if polling to [`UnsafeFuture`] is safe over threads. Here's how the
-/// test scenario looks like.
+/// Tests if polling to [`UnsafeFuture`] is safe over threads. Here's how the test scenario looks
+/// like.
 ///
 /// ```text
 ///     Timeline of each thread   
@@ -33,8 +33,8 @@ fn call_with_name(f: fn()) {
 ///            |         | fut.poll()
 /// ```
 ///
-/// `beholder` must be able to see what `Main` have done to the `fut`. This
-/// test will fail if data race occurs.
+/// `beholder` must be able to see what `Main` have done to the `fut`. This test will fail if data
+/// race occurs.
 fn test_unsafe_future() {
     let state = Arc::new(Mutex::new(0));
 
@@ -65,9 +65,8 @@ fn test_unsafe_future() {
 
     let c_state = Arc::clone(&state);
     let future = async move {
-        // If `beholder` cannot see future's change `Main` made, it will see
-        // something that has not changed. Which means that it executes future
-        // from the beginning.
+        // If `beholder` cannot see future's change `Main` made, it will see something that has not
+        // changed. Which means that it executes future from the beginning.
         {
             // state: 0 -> 1
             let mut state = c_state.lock().unwrap();

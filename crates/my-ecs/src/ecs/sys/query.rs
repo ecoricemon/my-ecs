@@ -3,9 +3,9 @@ use super::select::{
 };
 use crate::ecs::resource::ResourceKey;
 use my_ecs_macros::repeat_macro;
-use my_ecs_util::{
-    TakeRecur,
+use my_utils::{
     ds::{ATypeId, Borrowed, ManagedConstPtr, ManagedMutPtr, NonNullExt},
+    TakeRecur,
 };
 use std::{
     fmt,
@@ -196,8 +196,8 @@ pub trait EntQueryMut: 'static {
 
 /// Read request for a set of components.
 ///
-/// This is a part of a system request, clients need to declare the whole system
-/// request. Take a look at [`request`](crate::prelude::request).
+/// This is a part of a system request, clients need to declare the whole system request. Take a
+/// look at [`request`](crate::prelude::request).
 #[repr(transparent)]
 pub struct Read<'buf, R: Query>(pub(crate) R::Output<'buf>);
 
@@ -228,8 +228,8 @@ where
 
 /// Write request for a set of components.
 ///
-/// This is a part of a system request, clients need to declare the whole system
-/// request. Take a look at [`request`](crate::prelude::request).
+/// This is a part of a system request, clients need to declare the whole system request. Take a
+/// look at [`request`](crate::prelude::request).
 #[repr(transparent)]
 pub struct Write<'buf, W: QueryMut>(pub(crate) W::Output<'buf>);
 
@@ -266,8 +266,8 @@ where
 
 /// Read request for a set of resources.
 ///
-/// This is a part of a system request, clients need to declare the whole system
-/// request. Take a look at [`request`](crate::prelude::request).
+/// This is a part of a system request, clients need to declare the whole system request. Take a
+/// look at [`request`](crate::prelude::request).
 #[repr(transparent)]
 pub struct ResRead<'buf, RR: ResQuery>(pub(crate) RR::Output<'buf>);
 
@@ -298,8 +298,8 @@ where
 
 /// Write request for a set of resources.
 ///
-/// This is a part of a system request, clients need to declare the whole system
-/// request. Take a look at [`request`](crate::prelude::request).
+/// This is a part of a system request, clients need to declare the whole system request. Take a
+/// look at [`request`](crate::prelude::request).
 #[repr(transparent)]
 pub struct ResWrite<'buf, RW: ResQueryMut>(pub(crate) RW::Output<'buf>);
 
@@ -336,8 +336,8 @@ where
 
 /// Write request for a set of entity container.
 ///
-/// This is a part of a system request, clients need to declare the whole system
-/// request. Take a look at [`request`](crate::prelude::request).
+/// This is a part of a system request, clients need to declare the whole system request. Take a
+/// look at [`request`](crate::prelude::request).
 #[repr(transparent)]
 pub struct EntWrite<'buf, EW: EntQueryMut>(pub(crate) EW::Output<'buf>);
 
@@ -516,9 +516,8 @@ macro_rules! impl_query {
 
                     #[allow(clippy::unused_unit)]
                     ( $(
-                        // Splitting slice via `split_first_mut` is quite tiresome task.
-                        // Anyway, we're connecting lifetime from each input to output,
-                        // so no problem.
+                        // Splitting slice via `split_first_mut` is quite tiresome task. Anyway,
+                        // we're connecting lifetime from each input to output, so no problem.
                         // Safety: Infallible.
                         {
                             let x: *mut SelectedRaw = &mut buf[$i] as *mut _;
@@ -557,9 +556,8 @@ macro_rules! impl_query {
 
                     #[allow(clippy::unused_unit)]
                     ( $(
-                        // Splitting slice via `split_first_mut` is quite tiresome task.
-                        // Anyway, we're connecting lifetime from each input to output,
-                        // so no problem.
+                        // Splitting slice via `split_first_mut` is quite tiresome task. Anyway,
+                        // we're connecting lifetime from each input to output, so no problem.
                         // Safety: Infallible.
                         {
                             let x: *mut SelectedRaw = &mut buf[$i] as *mut _;
@@ -574,7 +572,8 @@ macro_rules! impl_query {
 }
 repeat_macro!(impl_query, ..=8);
 
-/// Implements the trait [`ResQuery`] and [`ResQueryMut`] for an anonymous tuple of [`Resource`](super::resource::Resource)s.
+/// Implements the trait [`ResQuery`] and [`ResQueryMut`] for an anonymous tuple of
+/// [`Resource`](super::resource::Resource)s.
 macro_rules! impl_res_query {
     ($n:expr, $($i:expr),*) => {const _: () = {
         #[allow(unused_imports)]
@@ -604,9 +603,8 @@ macro_rules! impl_res_query {
                 fn convert(_buf: &mut Vec<Borrowed<ManagedConstPtr<u8>>>) -> Self::Output<'_> {
                     debug_assert_eq!($n, _buf.len());
 
-                    // Managed pointer may have type info in it.
-                    // But resource pointer must have the type info.
-                    // So we can check if the pointers are correctly given.
+                    // Managed pointer may have type info in it. But resource pointer must have the
+                    // type info. So we can check if the pointers are correctly given.
                     #[cfg(feature = "check")]
                     {
                         $(
@@ -623,8 +621,7 @@ macro_rules! impl_res_query {
                     #[allow(clippy::unused_unit)]
                     ( $( {
                         let ptr: NonNullExt<[<A $i>]> = _buf[$i].as_nonnullext().cast();
-                        // Safety: Infallible, Plus output is bounded by input's
-                        // 'buf lifetime
+                        // Safety: Infallible, Plus output is bounded by input's 'buf lifetime
                         unsafe { ptr.as_ref() } // &'buf mut A#
                     } ),* )
                 }
@@ -647,9 +644,8 @@ macro_rules! impl_res_query {
                 fn convert(_buf: &mut Vec<Borrowed<ManagedMutPtr<u8>>>) -> Self::Output<'_> {
                     debug_assert_eq!($n, _buf.len());
 
-                    // Managed pointer may have type info in it.
-                    // But resource pointer must have the type info.
-                    // So we can check if the pointers are correctly given.
+                    // Managed pointer may have type info in it. But resource pointer must have the
+                    // type info. So we can check if the pointers are correctly given.
                     #[cfg(feature = "check")]
                     { $(
                         let ptr: NonNullExt<_> = _buf[$i].as_nonnullext();
@@ -664,8 +660,7 @@ macro_rules! impl_res_query {
                     #[allow(clippy::unused_unit)]
                     ( $( {
                         let mut ptr: NonNullExt<[<A $i>]> = _buf[$i].as_nonnullext().cast();
-                        // Safety: Infallible, Plus output is bounded by input's
-                        // 'buf lifetime
+                        // Safety: Infallible, Plus output is bounded by input's 'buf lifetime
                         unsafe { ptr.as_mut() } // &'buf mut A#
                     } ),* )
                 }
@@ -675,7 +670,8 @@ macro_rules! impl_res_query {
 }
 repeat_macro!(impl_res_query, ..=8);
 
-/// Implements the trait [`EntQueryMut`] for an anonymous tuple of [`ContainEntity`](super::entity::ContainEntity)s.
+/// Implements the trait [`EntQueryMut`] for an anonymous tuple of
+/// [`ContainEntity`](super::entity::ContainEntity)s.
 macro_rules! impl_ent_query {
     ($n:expr, $($i:expr),*) => {const _: () = {
         #[allow(unused_imports)]
@@ -721,9 +717,8 @@ macro_rules! impl_ent_query {
 
                     #[allow(clippy::unused_unit)]
                     ( $(
-                        // Splitting slice via `split_first_mut` is quite tiresome task.
-                        // Anyway, we're connecting lifetime from each input to output,
-                        // so no problem.
+                        // Splitting slice via `split_first_mut` is quite tiresome task. Anyway,
+                        // we're connecting lifetime from each input to output, so no problem.
                         // Safety: Infallible.
                         {
                             let x: *mut FilteredRaw = &mut buf[$i] as *mut _;

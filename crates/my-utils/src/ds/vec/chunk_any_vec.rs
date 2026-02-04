@@ -7,7 +7,7 @@ use super::{
     },
     AnyVec,
 };
-use crate::{PowerOfTwo, ds::raw::AsFlatRawIter};
+use crate::{ds::raw::AsFlatRawIter, PowerOfTwo};
 use std::{
     any::{self, TypeId},
     cmp::{Ord, Ordering},
@@ -17,26 +17,22 @@ use std::{
 
 /// A type-erased vector containing values of the same type.
 ///
-/// This is very similar to [`AnyVec`] except memory management. As the name
-/// says, this vector is based on chunks. When you put values and the vector
-/// doesn't have sufficient capacity for them, the vector appends chunks and
-/// then put the values in the chunks. Therefore, the vector will be more
-/// efficient than `AnyVec` when frequent insertion/removal are expected.
-/// Note, however, that the iteration performance would be worse than `AnyVec`
-/// due to the split chunks in memory.
+/// This is very similar to [`AnyVec`] except memory management. As the name says, this vector is
+/// based on chunks. When you put values and the vector doesn't have sufficient capacity for them,
+/// the vector appends chunks and then put the values in the chunks. Therefore, the vector will be
+/// more efficient than `AnyVec` when frequent insertion/removal are expected. Note, however, that
+/// the iteration performance would be worse than `AnyVec` due to the split chunks in memory.
 #[derive(Debug, Clone)]
 pub struct ChunkAnyVec {
     /// Chunks.
     ///
-    /// The very first chunk plays a role of giving type information without
-    /// storing values. Use [`ChunkAnyVec::index_2d`] to convert an index into
-    /// chunk and item indices.
+    /// The very first chunk plays a role of giving type information without storing values. Use
+    /// [`ChunkAnyVec::index_2d`] to convert an index into chunk and item indices.
     chunks: Vec<AnyVec>,
 
     /// Maximum length and initial capacity of each chunk.
     ///
-    /// The length is limited to be a power of two.
-    /// Zero length is considered as `usize::MAX + 1`.
+    /// The length is limited to be a power of two. Zero length is considered as `usize::MAX + 1`.
     chunk_cap: PowerOfTwo,
 
     /// Number of items.
@@ -44,23 +40,22 @@ pub struct ChunkAnyVec {
 
     /// Offset to the first chunk that contains values.
     ///
-    /// If the type is not ZST, the offset is 1 due to the first special chunk.
-    /// Otherwise, the offset is 0.
+    /// If the type is not ZST, the offset is 1 due to the first special chunk. Otherwise, the
+    /// offset is 0.
     chunk_offset: usize,
 
     /// Maximum capacity the vector can grow.
     ///
-    /// If the type is not ZST, the maximum is `isize::MAX / self.item_size`.
-    /// Otherwise, the maximum is `usize::MAX`.
+    /// If the type is not ZST, the maximum is `isize::MAX / self.item_size`. Otherwise, the maximum
+    /// is `usize::MAX`.
     max_cap: usize,
 }
 
 impl ChunkAnyVec {
     /// Creates a new empty vector.
     ///
-    /// The vector will create and append chunks that can contain items as many
-    /// as the given chunk capacity. But the type is ZST, chunk capacity is
-    /// ignored.
+    /// The vector will create and append chunks that can contain items as many as the given chunk
+    /// capacity. But the type is ZST, chunk capacity is ignored.
     ///
     /// # Panics
     ///
@@ -69,7 +64,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let chunk_cap = 2;
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), chunk_cap);
@@ -93,8 +88,7 @@ impl ChunkAnyVec {
             chunk_offset: 1,
         };
 
-        // If ZST, we won't allocate any memory for the vector.
-        // But, adjust capacity like `Vec`.
+        // If ZST, we won't allocate any memory for the vector. But, adjust capacity like `Vec`.
         if v.is_zst() {
             v.chunk_cap = PowerOfTwo::new(0).unwrap();
             v.max_cap = usize::MAX;
@@ -115,7 +109,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// assert_eq!(v.type_info(), &tinfo!(i32));
@@ -129,7 +123,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// assert_eq!(v.type_id(), std::any::TypeId::of::<i32>());
@@ -143,7 +137,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// println!("{}", v.type_name());
@@ -157,7 +151,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// assert_eq!(v.item_size(), std::mem::size_of::<i32>());
@@ -171,7 +165,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// assert!(!v.is_zst());
@@ -187,7 +181,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// assert_eq!(v.align(), std::mem::align_of::<i32>());
@@ -211,7 +205,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// assert!(v.is_clone());
@@ -229,7 +223,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// assert!(v.is_send());
@@ -244,7 +238,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// assert!(v.is_sync());
@@ -259,7 +253,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// assert!(v.is_type_of::<i32>());
@@ -273,7 +267,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// unsafe { v.push(0_i32) };
@@ -288,7 +282,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// assert!(v.is_empty());
@@ -302,7 +296,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// v.reserve(10);
@@ -322,7 +316,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let chunk_cap = 2;
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), chunk_cap);
@@ -337,7 +331,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// assert_eq!(v.num_chunks(), 0);
@@ -359,7 +353,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let chunk_cap = 2;
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), chunk_cap);
@@ -387,7 +381,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// unsafe {
@@ -419,7 +413,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// unsafe {
@@ -444,9 +438,8 @@ impl ChunkAnyVec {
 
     /// Returns parallel iterator visiting all items.
     ///
-    /// Parallel iterator implements [`rayon`]'s parallel iterator traits, so
-    /// that it can be split into multiple CPU cores then consumed at the same
-    /// time.
+    /// Parallel iterator implements [`rayon`]'s parallel iterator traits, so that it can be split
+    /// into multiple CPU cores then consumed at the same time.
     ///
     /// # Panics
     ///
@@ -455,8 +448,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
-    /// use rayon::prelude::*;
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// unsafe {
@@ -464,8 +456,11 @@ impl ChunkAnyVec {
     ///     v.push(2_i32);
     ///     v.push(3_i32);
     /// }
-    /// let sum: i32 = v.par_iter_of::<i32>().sum();
-    /// assert_eq!(sum, 6);
+    /// let par_iter = v.par_iter_of::<i32>();
+    /// # if !cfg!(miri) {
+    /// #     use rayon::prelude::*;
+    /// #     assert_eq!(par_iter.sum::<i32>(), 6);
+    /// # }
     /// ```
     pub fn par_iter_of<T: 'static>(&self) -> ParFlatIter<'_, T> {
         assert!(
@@ -481,9 +476,8 @@ impl ChunkAnyVec {
 
     /// Returns mutable parallel iterator visiting all items.
     ///
-    /// Parallel iterator implements [`rayon`]'s parallel iterator traits, so
-    /// that it can be split into multiple CPU cores then consumed at the same
-    /// time.
+    /// Parallel iterator implements [`rayon`]'s parallel iterator traits, so that it can be split
+    /// into multiple CPU cores then consumed at the same time.
     ///
     /// # Panics
     ///
@@ -492,8 +486,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
-    /// use rayon::prelude::*;
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// unsafe {
@@ -501,8 +494,11 @@ impl ChunkAnyVec {
     ///     v.push(2_i32);
     ///     v.push(3_i32);
     /// }
-    /// let sum: i32 = v.par_iter_mut_of::<i32>().map(|x| *x + 1).sum();
-    /// assert_eq!(sum, 9);
+    /// let par_iter = v.par_iter_mut_of::<i32>();
+    /// # if !cfg!(miri) {
+    /// #     use rayon::prelude::*;
+    /// #     assert_eq!(par_iter.map(|x| *x).sum::<i32>(), 6);
+    /// # }
     /// ```
     pub fn par_iter_mut_of<T: 'static>(&mut self) -> ParFlatIterMut<'_, T> {
         assert!(
@@ -518,21 +514,19 @@ impl ChunkAnyVec {
 
     /// Reserves additional capacity more than or equal to the given value.
     ///
-    /// If capacity of the vector is already sufficient, nothing takes place.
-    /// Otherwise, allocates chunks and append them to the vector so that the
-    /// capacity will be greater than or equal to `self.len() + additional`.
-    /// Unlike [`AnyVec::reserve`], this method appends chunks as little as
-    /// possible.
+    /// If capacity of the vector is already sufficient, nothing takes place. Otherwise, allocates
+    /// chunks and append them to the vector so that the capacity will be greater than or equal to
+    /// `self.len() + additional`. Unlike [`AnyVec::reserve`], this method appends chunks as little
+    /// as possible.
     ///
     /// # Panics
     ///
-    /// Panics if total memory in bytes after calling this method will exceed
-    /// [`isize::MAX`].
+    /// Panics if total memory in bytes after calling this method will exceed [`isize::MAX`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// v.reserve(10);
@@ -543,7 +537,6 @@ impl ChunkAnyVec {
     }
 
     /// This method is the same as [`ChunkAnyVec::reserve`].
-    //
     // For consistency.
     pub fn reserve_exact(&mut self, additional: usize) {
         let new_cap = self.len.saturating_add(additional);
@@ -555,13 +548,13 @@ impl ChunkAnyVec {
             panic!("can't allocate {new_cap} x {} bytes", self.item_size());
         }
 
-        // Rounds up the target capacity to be a multiple of chunk length.
-        // This operation doesn't overflow because cap and len are restricted.
+        // Rounds up the target capacity to be a multiple of chunk length. This operation doesn't
+        // overflow because cap and len are restricted.
         let new_cap =
             (new_cap + self.default_chunk_capacity() - 1) & !(self.default_chunk_capacity() - 1);
 
-        // If the new_cap is clamped by this operation,
-        // the last chunk length will be the same as the others' - 1.
+        // If the new_cap is clamped by this operation, the last chunk length will be the same as
+        // the others' - 1.
         let new_cap = new_cap.min(self.max_capacity());
 
         let mut remain = (new_cap - self.capacity()) as isize;
@@ -576,7 +569,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let chunk_cap = 4;
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), chunk_cap);
@@ -605,40 +598,36 @@ impl ChunkAnyVec {
         self.chunks.truncate(self.chunks.len() - redundant_chunks);
     }
 
-    /// Sets length of the vector to the given value without any additional
-    /// operations.
+    /// Sets length of the vector to the given value without any additional operations.
     ///
     /// # Safety
     ///
     /// - `new_len` must be less than or equal to `self.capacity()`.
-    /// - If `new_len` is greater than the previous length, caller must
-    ///   initialize the extended range with proper values.
-    /// - If `new_len` is less than the previous length, caller must drop
-    ///   abandoned values from the vector properly.
+    /// - If `new_len` is greater than the previous length, caller must initialize the extended
+    ///   range with proper values.
+    /// - If `new_len` is less than the previous length, caller must drop abandoned values from the
+    ///   vector properly.
     pub unsafe fn set_len(&mut self, new_len: usize) {
         debug_assert!(new_len <= self.capacity());
 
         self.len = new_len;
     }
 
-    /// Copies data as much as `self.item_size()` from `src` address to the end
-    /// of the vector.
+    /// Copies data as much as `self.item_size()` from `src` address to the end of the vector.
     ///
-    /// If the vector doesn't have sufficient capacity for the appended value,
-    /// then the vector increases its capacity first by calling
-    /// [`ChunkAnyVec::reserve`] which allocates memory more than just one value,
-    /// then does the copy.
+    /// If the vector doesn't have sufficient capacity for the appended value, then the vector
+    /// increases its capacity first by calling [`ChunkAnyVec::reserve`] which allocates memory more
+    /// than just one value, then does the copy.
     ///
     /// # Safety
     ///
     /// - `src` must point to a valid type that the vector contains.
-    /// - `src` must not be dropped after calling this method because it is
-    ///   moved into the vector.
+    /// - `src` must not be dropped after calling this method because it is moved into the vector.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     /// use std::ptr::NonNull;
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
@@ -665,10 +654,9 @@ impl ChunkAnyVec {
 
     /// Writes a value to the end of the vector by calling the given function.
     ///
-    /// If the vector doesn't have sufficient capacity for the appended value,
-    /// then the vector increases its capacity first by calling
-    /// [`ChunkAnyVec::reserve`] which allocates a chunk, then does the write
-    /// operation.
+    /// If the vector doesn't have sufficient capacity for the appended value, then the vector
+    /// increases its capacity first by calling [`ChunkAnyVec::reserve`] which allocates a chunk,
+    /// then does the write operation.
     ///
     /// # Safety
     ///
@@ -677,7 +665,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     /// use std::ptr::{self, NonNull};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
@@ -715,7 +703,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// unsafe {
@@ -738,26 +726,24 @@ impl ChunkAnyVec {
         mem::forget(value);
     }
 
-    /// Removes the last item from the vector and writes it to the given
-    /// buffer, then returns `Some`.
+    /// Removes the last item from the vector and writes it to the given buffer, then returns
+    /// `Some`.
     ///
-    /// If removing is successful, caller becomes to own the item in the
-    /// buffer, so that caller must call `drop()` on it correctly.
-    /// Otherwise, returns `None` without change to the buffer.
+    /// If removing is successful, caller becomes to own the item in the buffer, so that caller must
+    /// call `drop()` on it correctly. Otherwise, returns `None` without change to the buffer.
     ///
     /// # Safety
     ///
     /// Undefined behavior if conditions below are not met.
     /// - `buf` must have enough size to be copied an item.
-    /// - When `Some` is returned, `buf` must be correctly handled as an item.
-    ///   For example, if an item should be dropped, caller must call drop() on
-    ///   it.
+    /// - When `Some` is returned, `buf` must be correctly handled as an item. For example, if an
+    ///   item should be dropped, caller must call drop() on it.
     /// - When `None` is returned, `buf` must be correctly handled as it was.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let chunk_cap = 4;
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), chunk_cap);
@@ -777,8 +763,8 @@ impl ChunkAnyVec {
 
         // Safety:
         // - The vector must not be empty: Ok.
-        // - After calling `reduce_len_then_get_last_chunk`, caller must remove
-        //   an item from the returned chunk: Ok.
+        // - After calling `reduce_len_then_get_last_chunk`, caller must remove an item from the
+        //   returned chunk: Ok.
         unsafe {
             let last_chunk = self.reduce_len_then_get_last_chunk();
             last_chunk.pop_raw(buf);
@@ -795,7 +781,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     ///
@@ -812,8 +798,8 @@ impl ChunkAnyVec {
 
         // Safety:
         // - The vector must not be empty: Ok.
-        // - After calling `reduce_len_then_get_last_chunk`, caller must remove
-        //   an item from the returned chunk: Ok.
+        // - After calling `reduce_len_then_get_last_chunk`, caller must remove an item from the
+        //   returned chunk: Ok.
         unsafe {
             let last_chunk = self.reduce_len_then_get_last_chunk();
             last_chunk.pop()
@@ -825,7 +811,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     ///
@@ -841,25 +827,24 @@ impl ChunkAnyVec {
 
         // Safety:
         // - The vector must not be empty: Ok.
-        // - After calling `reduce_len_then_get_last_chunk`, caller must remove
-        //   an item from the returned chunk: Ok.
+        // - After calling `reduce_len_then_get_last_chunk`, caller must remove an item from the
+        //   returned chunk: Ok.
         let last_chunk = unsafe { self.reduce_len_then_get_last_chunk() };
         last_chunk.pop_drop()
     }
 
-    /// Removes the last item from the vector without calling drop function on
-    /// it.
+    /// Removes the last item from the vector without calling drop function on it.
     ///
     /// # Safety
     ///
-    /// Rust safety doesn't include calling drop function. See
-    /// [`forget`](mem::forget) for more information. However, caller must
-    /// guarantee that not calling drop function is fine for the item.
+    /// Rust safety doesn't include calling drop function. See [`forget`](mem::forget) for more
+    /// information. However, caller must guarantee that not calling drop function is fine for the
+    /// item.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     ///
@@ -875,8 +860,8 @@ impl ChunkAnyVec {
 
         // Safety:
         // - The vector must not be empty: Ok.
-        // - After calling `reduce_len_then_get_last_chunk`, caller must remove
-        //   an item from the returned chunk: Ok.
+        // - After calling `reduce_len_then_get_last_chunk`, caller must remove an item from the
+        //   returned chunk: Ok.
         let last_chunk = unsafe { self.reduce_len_then_get_last_chunk() };
         last_chunk.pop_forget()
     }
@@ -897,11 +882,10 @@ impl ChunkAnyVec {
         unsafe { self.chunks.get_unchecked_mut(ci) }
     }
 
-    /// Removes an item at the given index from the vector and writes it to the
-    /// given buffer.
+    /// Removes an item at the given index from the vector and writes it to the given buffer.
     ///
-    /// Therefore, the item is actually moved from the vector to the given
-    /// buffer. So caller must take care of calling drop on it.
+    /// Therefore, the item is actually moved from the vector to the given buffer. So caller must
+    /// take care of calling drop on it.
     ///
     /// # Panics
     ///
@@ -911,15 +895,14 @@ impl ChunkAnyVec {
     ///
     /// Undefined behavior if conditions below are not met.
     /// - `buf` must have enough size to be copied an item.
-    /// - When `Some` is returned, `buf` must be correctly handled as an item.
-    ///   For example, if an item should be dropped, caller must call drop() on
-    ///   it.
+    /// - When `Some` is returned, `buf` must be correctly handled as an item. For example, if an
+    ///   item should be dropped, caller must call drop() on it.
     /// - When `None` is returned, `buf` must be correctly handled as it was.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     /// unsafe {
@@ -959,7 +942,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     ///
@@ -978,8 +961,7 @@ impl ChunkAnyVec {
         unsafe { self.pop().unwrap() }
     }
 
-    /// Removes an item at the given index from the vector and drops it
-    /// immediately.
+    /// Removes an item at the given index from the vector and drops it immediately.
     ///
     /// Then the last item of the vector is moved to the vacant slot.
     ///
@@ -990,7 +972,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     ///
@@ -1006,8 +988,7 @@ impl ChunkAnyVec {
         self.pop_drop();
     }
 
-    /// Removes an item at the given index from the vector without calling drop
-    /// function on it.
+    /// Removes an item at the given index from the vector without calling drop function on it.
     ///
     /// Then the last item of the vector is moved to the vacant slot.
     ///
@@ -1017,14 +998,14 @@ impl ChunkAnyVec {
     ///
     /// # Safety
     ///
-    /// Rust safety doesn't include calling drop function. See
-    /// [`forget`](mem::forget) for more information. However, caller must
-    /// guarantee that not calling drop function is fine for the item.
+    /// Rust safety doesn't include calling drop function. See [`forget`](mem::forget) for more
+    /// information. However, caller must guarantee that not calling drop function is fine for the
+    /// item.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     ///
@@ -1049,7 +1030,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     ///
@@ -1081,7 +1062,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     ///
@@ -1110,7 +1091,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     ///
@@ -1138,7 +1119,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     ///
@@ -1166,7 +1147,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     ///
@@ -1188,9 +1169,8 @@ impl ChunkAnyVec {
 
     /// Resizes the vector to the given length.
     ///
-    /// If the new length is greater than previous length of the vector, then
-    /// the vector is extended with the given value. Otherwise, the vector is
-    /// shrunk.
+    /// If the new length is greater than previous length of the vector, then the vector is extended
+    /// with the given value. Otherwise, the vector is shrunk.
     ///
     /// # Panics
     ///
@@ -1199,7 +1179,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     ///
@@ -1220,9 +1200,8 @@ impl ChunkAnyVec {
 
     /// Resizes the vector to the given length.
     ///
-    /// If the new length is greater than previous length of the vector, then
-    /// the vector is extended with clones of a value pointed by the given
-    /// pointer. Otherwise, the vector is shrunk.
+    /// If the new length is greater than previous length of the vector, then the vector is extended
+    /// with clones of a value pointed by the given pointer. Otherwise, the vector is shrunk.
     ///
     /// # Panics
     ///
@@ -1235,7 +1214,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     /// use std::ptr::NonNull;
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
@@ -1261,10 +1240,9 @@ impl ChunkAnyVec {
 
     /// Resizes the vector to the given length.
     ///
-    /// If the new length is greater than previous length of the vector, then
-    /// the vector is extended with values the given function generates. In this
-    /// case, generated values are appended in order. Otherwise, the vector is
-    /// shrunk.
+    /// If the new length is greater than previous length of the vector, then the vector is extended
+    /// with values the given function generates. In this case, generated values are appended in
+    /// order. Otherwise, the vector is shrunk.
     ///
     /// # Panics
     ///
@@ -1273,7 +1251,7 @@ impl ChunkAnyVec {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     ///
@@ -1342,13 +1320,13 @@ impl ChunkAnyVec {
 
     /// Shrinks the vector to the given length, and drops abandoned items.
     ///
-    /// If the given length is greater than or equal to the current length of
-    /// the vector, nothing takes place.
+    /// If the given length is greater than or equal to the current length of the vector, nothing
+    /// takes place.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::{tinfo, ds::ChunkAnyVec};
+    /// use my_utils::{tinfo, ds::ChunkAnyVec};
     ///
     /// let mut v = ChunkAnyVec::new(tinfo!(i32), 2);
     ///
@@ -1369,8 +1347,8 @@ impl ChunkAnyVec {
             let last_chunk_len = self.chunks[ci].len();
             let partial = last_chunk_len.min(cur_len - len);
 
-            // We do not drop chunk itself to avoid frequent allocations. Just
-            // eliminates items in the chunk only.
+            // We do not drop chunk itself to avoid frequent allocations. Just eliminates items in
+            // the chunk only.
             self.chunks[ci].truncate(last_chunk_len - partial);
 
             cur_len -= partial;
@@ -1426,9 +1404,8 @@ impl ChunkAnyVec {
 impl AsFlatRawIter for ChunkAnyVec {
     /// # Safety
     ///
-    /// Returned iterator is not bounded by lifetime.
-    /// But it actually relies on `&self`, so it must be used as if
-    /// it's borrowed.
+    /// Returned iterator is not bounded by lifetime. But it actually relies on `&self`, so it must
+    /// be used as if it's borrowed.
     unsafe fn iter(&self) -> FlatRawIter {
         // Safety: Infallible.
         let this = unsafe {

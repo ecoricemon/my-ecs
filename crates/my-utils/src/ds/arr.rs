@@ -22,13 +22,14 @@ impl<T, const N: usize> Array<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Array;
+    /// use my_utils::ds::Array;
     ///
     /// let arr = Array::<i32, 2>::new();
     /// ```
     pub const fn new() -> Self {
         Self {
-            data: [const { MaybeUninit::uninit() }; N],
+            // Safety: Elements are all `MaybeUninit` anyway.
+            data: unsafe { MaybeUninit::uninit().assume_init() },
             len: 0,
         }
     }
@@ -38,7 +39,7 @@ impl<T, const N: usize> Array<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Array;
+    /// use my_utils::ds::Array;
     ///
     /// let arr = Array::<i32, 2>::new();
     /// assert_eq!(arr.capacity(), 2);
@@ -52,7 +53,7 @@ impl<T, const N: usize> Array<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Array;
+    /// use my_utils::ds::Array;
     ///
     /// let mut arr = Array::<i32, 2>::new();
     /// arr.push(0);
@@ -67,7 +68,7 @@ impl<T, const N: usize> Array<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Array;
+    /// use my_utils::ds::Array;
     ///
     /// let arr = Array::<i32, 2>::new();
     /// assert!(arr.is_empty());
@@ -81,7 +82,7 @@ impl<T, const N: usize> Array<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Array;
+    /// use my_utils::ds::Array;
     ///
     /// let mut arr = Array::<i32, 2>::new();
     /// arr.push(0);
@@ -97,7 +98,7 @@ impl<T, const N: usize> Array<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Array;
+    /// use my_utils::ds::Array;
     ///
     /// let mut arr = Array::<i32, 2>::new();
     /// arr.push(0);
@@ -117,7 +118,7 @@ impl<T, const N: usize> Array<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Array;
+    /// use my_utils::ds::Array;
     ///
     /// let mut arr = Array::<i32, 2>::new();
     /// arr.push(0);
@@ -137,7 +138,7 @@ impl<T, const N: usize> Array<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Array;
+    /// use my_utils::ds::Array;
     ///
     /// let mut arr = Array::<i32, 2>::new();
     /// arr.push(0);
@@ -155,7 +156,7 @@ impl<T, const N: usize> Array<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Array;
+    /// use my_utils::ds::Array;
     ///
     /// let mut arr = Array::<i32, 2>::new();
     /// arr.push(0);
@@ -173,7 +174,7 @@ impl<T, const N: usize> Array<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Array;
+    /// use my_utils::ds::Array;
     ///
     /// let arr = Array::<i32, 2>::new();
     /// let slice: &[i32] = arr.as_slice();
@@ -196,7 +197,7 @@ impl<T, const N: usize> Array<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Array;
+    /// use my_utils::ds::Array;
     ///
     /// let mut arr = Array::<i32, 2>::new();
     /// let slice: &mut [i32] = arr.as_mut_slice();
@@ -208,7 +209,7 @@ impl<T, const N: usize> Array<T, N> {
         );
 
         unsafe {
-            let data = self.data.as_ptr() as *mut T;
+            let data = self.data.as_mut_ptr() as *mut T;
             let len = self.len();
             slice::from_raw_parts_mut(data, len)
         }
@@ -219,7 +220,7 @@ impl<T, const N: usize> Array<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Array;
+    /// use my_utils::ds::Array;
     ///
     /// let mut arr = Array::<i32, 2>::new();
     /// arr.push(0);
@@ -236,7 +237,7 @@ impl<T, const N: usize> Array<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Array;
+    /// use my_utils::ds::Array;
     ///
     /// let mut arr = Array::<i32, 2>::new();
     /// arr.push(0);
@@ -257,7 +258,7 @@ impl<T, const N: usize> Array<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Array;
+    /// use my_utils::ds::Array;
     ///
     /// let mut arr = Array::<i32, 2>::new();
     /// arr.push(0);
@@ -281,7 +282,7 @@ impl<T, const N: usize> Array<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Array;
+    /// use my_utils::ds::Array;
     ///
     /// let mut arr = Array::<i32, 2>::new();
     /// arr.push(0);
@@ -303,7 +304,7 @@ impl<T, const N: usize> Array<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Array;
+    /// use my_utils::ds::Array;
     ///
     /// let mut arr = Array::<i32, 2>::new();
     /// arr.push(0);
@@ -370,13 +371,14 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let arr = ArrayDeque::<i32, 2>::new();
     /// ```
     pub const fn new() -> Self {
         Self {
-            data: [const { MaybeUninit::uninit() }; N],
+            // Safety: Elements are all `MaybeUninit` anyway.
+            data: unsafe { MaybeUninit::uninit().assume_init() },
             head: 0,
             len: 0,
         }
@@ -387,7 +389,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let arr = ArrayDeque::<i32, 2>::new();
     /// assert_eq!(arr.capacity(), 2);
@@ -401,7 +403,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let mut arr = ArrayDeque::<i32, 2>::new();
     /// arr.push_back(0);
@@ -416,7 +418,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let arr = ArrayDeque::<i32, 2>::new();
     /// assert!(arr.is_empty());
@@ -430,7 +432,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let mut arr = ArrayDeque::<i32, 2>::new();
     /// arr.push_back(0);
@@ -446,7 +448,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let mut arr = ArrayDeque::<i32, 2>::new();
     /// arr.push_back(0);
@@ -468,7 +470,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let mut arr = ArrayDeque::<i32, 2>::new();
     /// arr.push_back(0);
@@ -490,7 +492,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let mut arr = ArrayDeque::<i32, 2>::new();
     /// arr.push_back(0);
@@ -509,7 +511,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let mut arr = ArrayDeque::<i32, 2>::new();
     /// arr.push_back(0);
@@ -528,7 +530,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let arr = ArrayDeque::<i32, 2>::new();
     /// let slices: (&[i32], &[i32]) = arr.as_slices();
@@ -561,7 +563,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let mut arr = ArrayDeque::<i32, 2>::new();
     /// let slices: (&mut [i32], &mut [i32]) = arr.as_mut_slices();
@@ -573,19 +575,25 @@ impl<T, const N: usize> ArrayDeque<T, N> {
         );
 
         unsafe {
-            let data_a = self.data.as_mut_ptr().add(self.head) as *mut T;
-            let len_a = self.len().min(N - self.head);
-            let a = slice::from_raw_parts_mut(data_a, len_a);
+            if self.head + self.len() > N {
+                let data_ptr = self.data.as_mut_ptr() as *mut T;
 
-            let b = if self.head + self.len() > N {
-                let data_b = self.data.as_mut_ptr() as *mut T;
+                let data_a = data_ptr.add(self.head);
+                let len_a = self.len().min(N - self.head);
+                let data_b = data_ptr;
                 let len_b = self.len() - len_a;
-                slice::from_raw_parts_mut(data_b, len_b)
-            } else {
-                &mut []
-            };
 
-            (a, b)
+                let a = slice::from_raw_parts_mut(data_a, len_a);
+                let b = slice::from_raw_parts_mut(data_b, len_b);
+
+                (a, b)
+            } else {
+                let data_a = self.data.as_mut_ptr().add(self.head) as *mut T;
+                let len_a = self.len().min(N - self.head);
+                let a = slice::from_raw_parts_mut(data_a, len_a);
+
+                (a, &mut [])
+            }
         }
     }
 
@@ -594,7 +602,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let mut arr = ArrayDeque::<i32, 2>::new();
     /// arr.push_back(0);
@@ -612,7 +620,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let mut arr = ArrayDeque::<i32, 2>::new();
     /// arr.push_back(0);
@@ -633,7 +641,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let mut arr = ArrayDeque::<i32, 2>::new();
     /// arr.push_front(0);
@@ -654,7 +662,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let mut arr = ArrayDeque::<i32, 2>::new();
     /// arr.push_back(0);
@@ -678,7 +686,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let mut arr = ArrayDeque::<i32, 2>::new();
     /// arr.push_back(0);
@@ -703,7 +711,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let mut arr = ArrayDeque::<i32, 2>::new();
     /// arr.push_back(0);
@@ -725,7 +733,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::ArrayDeque;
+    /// use my_utils::ds::ArrayDeque;
     ///
     /// let mut arr = ArrayDeque::<i32, 2>::new();
     /// arr.push_back(0);

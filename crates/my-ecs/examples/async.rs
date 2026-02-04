@@ -11,7 +11,7 @@ mod non_web {
 
     pub(super) fn run() {
         // Creates instance.
-        let mut ecs = Ecs::default(WorkerPool::with_len(3), [3]);
+        let mut ecs = Ecs::create(WorkerPool::with_len(3), [3]);
 
         // Schedules a future using once system.
         ecs.add_once_system(|rr: ResRead<Post>| rr.send_future(register_map()))

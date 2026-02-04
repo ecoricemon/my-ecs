@@ -7,7 +7,6 @@ use super::{
     task::{AsyncTask, ParTask, SysTask, Task},
 };
 use crate::{
-    MAX_GROUP,
     ds::{
         Array, ListPos, ManagedConstPtr, ManagedMutPtr, NonNullExt, SetValueList, UnsafeFuture,
         WakeSend,
@@ -19,9 +18,10 @@ use crate::{
         wait::WaitQueues,
         worker::{Message, PanicMessage, Work, WorkerId},
     },
+    FxBuildHasher, MAX_GROUP,
 };
 use crossbeam_deque as cb;
-use my_ecs_util::Or;
+use my_utils::Or;
 use std::{
     any::Any,
     cell::{Cell, UnsafeCell},
@@ -34,27 +34,27 @@ use std::{
     ptr::NonNull,
     rc::Rc,
     sync::{
-        Arc,
         atomic::{AtomicU32, Ordering},
+        Arc,
     },
     thread::{self, Thread, ThreadId},
     time::Duration,
 };
 
 #[derive(Debug)]
-pub(crate) struct Scheduler<W: Work + 'static, S> {
+pub(crate) struct Scheduler<W: Work + 'static> {
     wgroups: Array<WorkGroup<W>, MAX_GROUP>,
 
-    waits: WaitQueues<S>,
+    waits: WaitQueues,
 
     /// System run record.
-    record: ScheduleRecord<S>,
+    record: ScheduleRecord,
 
     /// A list holding pending tasks due to data dependency.
-    nor_pendings: Array<Pending<S>, MAX_GROUP>,
+    nor_pendings: Array<Pending, MAX_GROUP>,
 
     /// A list holding pending tasks due to data dependency.
-    dedi_pendings: Array<Pending<S>, MAX_GROUP>,
+    dedi_pendings: Array<Pending, MAX_GROUP>,
 
     /// Ready dedicated tasks.
     tx_dedi: ParkingSender<Task>,
@@ -81,128 +81,7 @@ pub(crate) struct Scheduler<W: Work + 'static, S> {
     fut_cnt: Arc<AtomicU32>,
 }
 
-impl<W, S> Scheduler<W, S>
-where
-    W: Work + 'static,
-{
-    pub(crate) fn num_groups(&self) -> usize {
-        self.wgroups.len()
-    }
-
-    pub(crate) fn num_workers(&self) -> usize {
-        self.wgroups.iter().map(WorkGroup::len).sum()
-    }
-
-    /// Returns number of open sub workers.
-    pub(crate) fn is_work_groups_exhausted(&self) -> bool {
-        self.wgroups.iter().all(|wg| wg.is_exhausted())
-    }
-
-    /// Determines whether scheduler doesn't have any uncompleted commands.
-    pub(crate) fn has_command(&self) -> bool {
-        !self.rx_cmd.is_empty()
-    }
-
-    pub(crate) fn has_dedicated_future(&self) -> bool {
-        self.fut_cnt.load(Ordering::Relaxed) > 0
-    }
-
-    pub(crate) fn wait_exhausted(&self) {
-        for wg in self.wgroups.iter() {
-            wg.wait_exhausted();
-        }
-    }
-
-    pub(crate) fn wait_receiving_dedicated_task(&self) {
-        self.rx_dedi.wait_timeout(Duration::MAX);
-    }
-
-    /// Destroys this scheduler and then returns internal worker array.
-    //
-    // Scheduler cannot exist without workers, so consumes it.
-    pub(crate) fn take_workers(mut self) -> Vec<W> {
-        self.wgroups.iter_mut().fold(Vec::new(), |mut acc, wgroup| {
-            acc.append(&mut wgroup.take_workers());
-            acc
-        })
-    }
-
-    pub(crate) fn get_wait_queues_mut(&mut self) -> &mut WaitQueues<S> {
-        &mut self.waits
-    }
-
-    pub(crate) fn get_tx_dedi_queue(&self) -> &ParkingSender<Task> {
-        &self.tx_dedi
-    }
-
-    pub(crate) fn get_send_message_queue(&self) -> &ParkingSender<Message> {
-        &self.tx_msg
-    }
-
-    pub(crate) fn get_future_count(&self) -> &Arc<AtomicU32> {
-        &self.fut_cnt
-    }
-
-    fn work_one(&mut self) {
-        if let Ok(task) = self.rx_dedi.try_recv() {
-            // NOTE: Panics can occur here.
-            // TODO: Handle panic?
-            match task {
-                Task::System(task) => self.work_for_system_task(task),
-                Task::Parallel(task) => self.work_for_parallel_task(task),
-                Task::Async(task) => self.work_for_async_task(task),
-            }
-        }
-    }
-
-    fn work_for_system_task(&self, task: SysTask) {
-        let sid = task.sid();
-
-        let resp = match task.execute(self.wid) {
-            Ok(_) => Message::Fin(self.wid, sid),
-            Err(payload) => Message::Panic(PanicMessage {
-                wid: self.wid,
-                sid,
-                payload,
-                unrecoverable: false,
-            }),
-        };
-
-        // Even if the main worker, it needs to send Fin message to
-        // release data dependency.
-        self.tx_msg.send(resp).unwrap();
-    }
-
-    fn work_for_parallel_task(&self, task: ParTask) {
-        task.execute(self.wid, FnContext::NOT_MIGRATED);
-    }
-
-    fn work_for_async_task(&self, task: AsyncTask) {
-        // Sets waker if needed.
-        unsafe {
-            if !task.will_wake(&self.waker) {
-                task.set_waker(self.waker.clone());
-            }
-        }
-
-        // Executes.
-        let on_ready = |ready| {
-            // Decreases future count.
-            self.fut_cnt.fetch_sub(1, Ordering::Relaxed);
-
-            // Sends the ready future as a command.
-            let cmd = CommandObject::Future(ready);
-            self.tx_cmd.send_or_cancel(cmd);
-        };
-        task.execute(self.wid, on_ready);
-    }
-}
-
-impl<W, S> Scheduler<W, S>
-where
-    W: Work + 'static,
-    S: BuildHasher + Default + 'static,
-{
+impl<W: Work + 'static> Scheduler<W> {
     pub(crate) fn new(
         mut workers: Vec<W>,
         groups: &[usize],
@@ -247,8 +126,8 @@ where
             WorkerId::dummy().worker_index(),
         );
 
-        // Main worker may have multiple ECS instances, so that setting thread
-        // local variable is not possible.
+        // Main worker may have multiple ECS instances, so that setting thread local variable is not
+        // possible.
         // WORKER_ID.set(wid);
 
         Self {
@@ -269,14 +148,128 @@ where
         }
     }
 
-    pub(crate) fn execute_all<T>(&mut self, sgroups: &mut T, cache: &mut RefreshCacheStorage<S>)
+    pub(crate) fn num_groups(&self) -> usize {
+        self.wgroups.len()
+    }
+
+    pub(crate) fn num_workers(&self) -> usize {
+        self.wgroups.iter().map(WorkGroup::len).sum()
+    }
+
+    /// Returns number of open sub workers.
+    pub(crate) fn is_work_groups_exhausted(&self) -> bool {
+        self.wgroups.iter().all(|wg| wg.is_exhausted())
+    }
+
+    /// Determines whether scheduler doesn't have any uncompleted commands.
+    pub(crate) fn has_command(&self) -> bool {
+        !self.rx_cmd.is_empty()
+    }
+
+    pub(crate) fn has_dedicated_future(&self) -> bool {
+        self.fut_cnt.load(Ordering::Relaxed) > 0
+    }
+
+    pub(crate) fn wait_exhausted(&self) {
+        for wg in self.wgroups.iter() {
+            wg.wait_exhausted();
+        }
+    }
+
+    pub(crate) fn wait_receiving_dedicated_task(&self) {
+        self.rx_dedi.wait_timeout(Duration::MAX);
+    }
+
+    /// Destroys this scheduler and then returns internal worker array.
+    //
+    // Scheduler cannot exist without workers, so consumes it.
+    pub(crate) fn take_workers(mut self) -> Vec<W> {
+        self.wgroups.iter_mut().fold(Vec::new(), |mut acc, wgroup| {
+            acc.append(&mut wgroup.take_workers());
+            acc
+        })
+    }
+
+    pub(crate) fn get_wait_queues_mut(&mut self) -> &mut WaitQueues {
+        &mut self.waits
+    }
+
+    pub(crate) fn get_tx_dedi_queue(&self) -> &ParkingSender<Task> {
+        &self.tx_dedi
+    }
+
+    pub(crate) fn get_send_message_queue(&self) -> &ParkingSender<Message> {
+        &self.tx_msg
+    }
+
+    pub(crate) fn get_future_count(&self) -> &Arc<AtomicU32> {
+        &self.fut_cnt
+    }
+
+    fn work_one(&mut self) {
+        if let Ok(task) = self.rx_dedi.try_recv() {
+            // NOTE: Panics can occur here.
+            // TODO: Handle panic?
+            match task {
+                Task::System(task) => self.work_for_system_task(task),
+                Task::Parallel(task) => self.work_for_parallel_task(task),
+                Task::Async(task) => self.work_for_async_task(task),
+            }
+        }
+    }
+
+    fn work_for_system_task(&self, task: SysTask) {
+        let sid = task.sid();
+
+        let resp = match task.execute(self.wid) {
+            Ok(_) => Message::Fin(self.wid, sid),
+            Err(payload) => Message::Panic(PanicMessage {
+                wid: self.wid,
+                sid,
+                payload,
+                unrecoverable: false,
+            }),
+        };
+
+        // Even if the main worker, it needs to send Fin message to release data dependency.
+        self.tx_msg.send(resp).unwrap();
+    }
+
+    fn work_for_parallel_task(&self, task: ParTask) {
+        task.execute(self.wid, FnContext::NOT_MIGRATED);
+    }
+
+    fn work_for_async_task(&self, task: AsyncTask) {
+        // Sets waker if needed.
+        unsafe {
+            if !task.will_wake(&self.waker) {
+                task.set_waker(self.waker.clone());
+            }
+        }
+
+        // Executes.
+        let on_ready = |ready| {
+            // Decreases future count.
+            self.fut_cnt.fetch_sub(1, Ordering::Relaxed);
+
+            // Sends the ready future as a command.
+            let cmd = CommandObject::Future(ready);
+            self.tx_cmd.send_or_cancel(cmd);
+        };
+        task.execute(self.wid, on_ready);
+    }
+}
+
+impl<W: Work + 'static> Scheduler<W> {
+    pub(crate) fn execute_all<T, S>(&mut self, sgroups: &mut T, cache: &mut RefreshCacheStorage<S>)
     where
-        T: IndexMut<usize, Output = SystemGroup<S>>,
+        T: IndexMut<usize, Output = SystemGroup>,
+        S: BuildHasher + Default,
     {
         // # Procedures
         // 1. Opens sub workers through `WorkGroup`s.
-        // 2. Creates `ScheduleUnit` for each `WorkGroup` and `SystemGroup`,
-        //    then runs every `ScheduleUnit`.
+        // 2. Creates `ScheduleUnit` for each `WorkGroup` and `SystemGroup`, then runs every
+        //    `ScheduleUnit`.
         // 3. Cleans up.
 
         // Preparation.
@@ -299,8 +292,8 @@ where
 
         // 2. Runs schedule units. This procedure follows the order below.
         // (1) Tries to pull system tasks as many as possible.
-        // (2) If there are dedicated tasks, performs just one task. Because we
-        //     want to make sub workers busy rather than doing something.
+        // (2) If there are dedicated tasks, performs just one task. Because we want to make sub
+        //     workers busy rather than doing something.
         // (3) Waits for messages from work groups.
         loop {
             // (1) Pulls system tasks from cycles and inject them into work
@@ -350,13 +343,14 @@ where
         self.validate_clean();
     }
 
-    fn wait<'s, T>(
+    fn wait<'s, T, S>(
         &mut self,
         units: &mut T,
         cache: &mut RefreshCacheStorage<'_, S>,
         panicked: &mut Vec<(SystemId, Box<dyn Any + Send>)>,
     ) where
         T: IndexMut<usize, Output = ScheduleUnit<'s, W, S>>,
+        S: BuildHasher + Default + 's,
     {
         // Consumes buffered messages as many as possible.
         if let Ok(msg) = self.rx_msg.recv_timeout(Duration::MAX) {
@@ -369,7 +363,7 @@ where
         self.pending_to_ready(units, cache);
     }
 
-    fn consume_messages(
+    fn consume_messages<S: BuildHasher>(
         &mut self,
         cache: &mut RefreshCacheStorage<'_, S>,
         panicked: &mut Vec<(SystemId, Box<dyn Any + Send>)>,
@@ -381,7 +375,7 @@ where
         }
     }
 
-    fn handle_message(
+    fn handle_message<S: BuildHasher>(
         &mut self,
         msg: Message,
         cache: &mut RefreshCacheStorage<'_, S>,
@@ -406,9 +400,10 @@ where
         };
     }
 
-    fn pending_to_ready<'s, T>(&mut self, units: &mut T, cache: &mut RefreshCacheStorage<'_, S>)
+    fn pending_to_ready<'s, T, S>(&mut self, units: &mut T, cache: &mut RefreshCacheStorage<'_, S>)
     where
         T: IndexMut<usize, Output = ScheduleUnit<'s, W, S>>,
+        S: BuildHasher + Default + 's,
     {
         #[allow(clippy::needless_range_loop)] // indexing more than one.
         let num_groups = self.wgroups.len();
@@ -439,7 +434,7 @@ where
         }
     }
 
-    fn panic_helper(
+    fn panic_helper<S: BuildHasher>(
         &mut self,
         cache: &mut RefreshCacheStorage<S>,
         panicked: &mut Vec<(SystemId, Box<dyn Any + Send>)>,
@@ -455,9 +450,8 @@ where
                 cache.get(&msg.sid).unwrap()
             }
 
-            // In web, buffer is not released by [`BufferCleaner`] because
-            // wasm-bindgen make it abort instead of unwinding stack.
-            // So, we need to release it manually.
+            // In web, buffer is not released by [`BufferCleaner`] because wasm-bindgen make it
+            // abort instead of unwinding stack. So, we need to release it manually.
             #[cfg(target_arch = "wasm32")]
             {
                 let mut cache = cache.get_mut(&msg.sid).unwrap();
@@ -472,9 +466,8 @@ where
 
         #[cfg(target_arch = "wasm32")]
         {
-            // The worker must be closed without notification.
-            // Re-open it with `Search` state so that it can
-            // empty its local queue.
+            // The worker must be closed without notification. Re-open it with `Search` state so
+            // that it can empty its local queue.
             debug_assert_eq!(msg.sid.group_index(), msg.wid.group_index());
             let gi = msg.wid.group_index() as usize;
             let wi = msg.wid.worker_index() as usize;
@@ -501,10 +494,9 @@ where
             assert!(!self.has_pending(i));
         }
 
-        // Validates if there's no uncompleted dedicated tasks. System tasks and
-        // parallel tasks on the main worker must have been completed, while
-        // async runners are free to send async tasks to the dedicated queue at
-        // any time even when the scheduler is not running.
+        // Validates if there's no uncompleted dedicated tasks. System tasks and parallel tasks on
+        // the main worker must have been completed, while async runners are free to send async
+        // tasks to the dedicated queue at any time even when the scheduler is not running.
         for task in self.rx_dedi.buffer().iter() {
             if matches!(task, Task::System(_) | Task::Parallel(_)) {
                 panic!("expected empty dedicated queue, but found: {task:?}");
@@ -523,14 +515,14 @@ where
 #[derive(Debug)]
 struct ScheduleUnit<'s, W: Work + 'static, S> {
     // Own data.
-    cycle: RawSystemCycleIter<S>,
+    cycle: RawSystemCycleIter,
 
     // From `Scheduler`.
     wgroup: NonNull<WorkGroup<W>>,
-    waits: NonNull<WaitQueues<S>>,
-    record: NonNull<ScheduleRecord<S>>,
-    nor_pendings: NonNull<[Pending<S>]>,
-    dedi_pendings: NonNull<[Pending<S>]>,
+    waits: NonNull<WaitQueues>,
+    record: NonNull<ScheduleRecord>,
+    nor_pendings: NonNull<[Pending]>,
+    dedi_pendings: NonNull<[Pending]>,
     tx_dedi: NonNull<ParkingSender<Task>>,
 
     // From others.
@@ -540,16 +532,15 @@ struct ScheduleUnit<'s, W: Work + 'static, S> {
 impl<'s, W, S> ScheduleUnit<'s, W, S>
 where
     W: Work + 'static,
-    S: BuildHasher + Default + 'static,
+    S: BuildHasher + Default,
 {
     fn new(
         index: usize,
-        sched: &mut Scheduler<W, S>,
-        cycle: RawSystemCycleIter<S>,
+        sched: &mut Scheduler<W>,
+        cycle: RawSystemCycleIter,
         cache: &mut RefreshCacheStorage<'s, S>,
     ) -> Self {
-        // Safety: Infallible. Also, these pointers will never be dereferenced
-        // in a violated way.
+        // Safety: Infallible. Also, these pointers will never be dereferenced in a violated way.
         unsafe {
             // From `Scheduler`.
             let ptr = sched.wgroups.get_mut(index).unwrap_unchecked() as *mut _;
@@ -635,39 +626,39 @@ where
 
     // === Pointer helper methods ===
 
-    fn cycle<'o>(&mut self) -> SystemCycleIter<'o, S> {
-        // Safety: While this reference exists, `Scheduler` prevents the memory
-        // won't be get accessed by other pointer or references.
+    fn cycle<'o>(&mut self) -> SystemCycleIter<'o> {
+        // Safety: While this reference exists, `Scheduler` prevents the memory won't be get
+        // accessed by other pointer or references.
         unsafe { SystemCycleIter::from_raw(self.cycle) }
     }
 
-    fn waits<'o>(&mut self) -> &'o mut WaitQueues<S> {
-        // Safety: While this reference exists, `Scheduler` prevents the memory
-        // won't be get accessed by other pointer or references.
+    fn waits<'o>(&mut self) -> &'o mut WaitQueues {
+        // Safety: While this reference exists, `Scheduler` prevents the memory won't be get
+        // accessed by other pointer or references.
         unsafe { self.waits.as_mut() }
     }
 
-    fn record<'o>(&mut self) -> &'o mut ScheduleRecord<S> {
-        // Safety: While this reference exists, `Scheduler` prevents the memory
-        // won't be get accessed by other pointer or references.
+    fn record<'o>(&mut self) -> &'o mut ScheduleRecord {
+        // Safety: While this reference exists, `Scheduler` prevents the memory won't be get
+        // accessed by other pointer or references.
         unsafe { self.record.as_mut() }
     }
 
-    fn nor_pendings<'o>(&mut self) -> &'o mut [Pending<S>] {
-        // Safety: While this reference exists, `Scheduler` prevents the memory
-        // won't be get accessed by other pointer or references.
+    fn nor_pendings<'o>(&mut self) -> &'o mut [Pending] {
+        // Safety: While this reference exists, `Scheduler` prevents the memory won't be get
+        // accessed by other pointer or references.
         unsafe { self.nor_pendings.as_mut() }
     }
 
-    fn dedi_pendings<'o>(&mut self) -> &'o mut [Pending<S>] {
-        // Safety: While this reference exists, `Scheduler` prevents the memory
-        // won't be get accessed by other pointer or references.
+    fn dedi_pendings<'o>(&mut self) -> &'o mut [Pending] {
+        // Safety: While this reference exists, `Scheduler` prevents the memory won't be get
+        // accessed by other pointer or references.
         unsafe { self.dedi_pendings.as_mut() }
     }
 
     fn cache<'o>(&mut self) -> &'o mut RefreshCacheStorage<'s, S> {
-        // Safety: While this reference exists, `Scheduler` prevents the memory
-        // won't be get accessed by other pointer or references.
+        // Safety: While this reference exists, `Scheduler` prevents the memory won't be get
+        // accessed by other pointer or references.
         unsafe { self.cache.as_mut() }
     }
 }
@@ -685,17 +676,13 @@ where
 struct Helper;
 
 impl Helper {
-    /// Determines if the system(task) is runnable which means there's no data
-    /// dependency at the moment. If it's runnable, the system's cached buffer
-    /// is updated and then returned.
-    fn update_task<'a, S>(
-        waits: &mut WaitQueues<S>,
+    /// Determines if the system(task) is runnable which means there's no data dependency at the
+    /// moment. If it's runnable, the system's cached buffer is updated and then returned.
+    fn update_task<'a, S: BuildHasher + Default>(
+        waits: &mut WaitQueues,
         sdata: &mut SystemData,
         cache: &'a mut RefreshCacheStorage<S>,
-    ) -> Option<&'a mut CacheItem>
-    where
-        S: BuildHasher + Default + 'static,
-    {
+    ) -> Option<&'a mut CacheItem> {
         let sid = sdata.id();
         let mut cache = cache.get_mut(&sid).unwrap();
         let (wait, retry) = cache.get_wait_retry_indices_mut();
@@ -710,13 +697,13 @@ impl Helper {
 
     fn pending_to_ready<W, S>(
         target: Or<NonNull<WorkGroup<W>>, NonNull<ParkingSender<Task>>>,
-        pending: &mut Pending<S>,
-        waits: &mut WaitQueues<S>,
-        cycle: &mut SystemCycleIter<'_, S>,
+        pending: &mut Pending,
+        waits: &mut WaitQueues,
+        cycle: &mut SystemCycleIter<'_>,
         cache: &mut RefreshCacheStorage<'_, S>,
     ) where
-        S: BuildHasher + Default + 'static,
         W: Work + 'static,
+        S: BuildHasher + Default,
     {
         let mut cur = pending.first_position();
 
@@ -730,20 +717,18 @@ impl Helper {
         }
     }
 
-    fn move_ready_system<W>(
+    fn move_ready_system<W: Work + 'static>(
         target: Or<NonNull<WorkGroup<W>>, NonNull<ParkingSender<Task>>>,
         sdata: &mut SystemData,
         cache: &mut CacheItem,
-    ) where
-        W: Work + 'static,
-    {
+    ) {
         let sid = sdata.id();
 
         // Safety:
-        // - `invoker` and `buf` is safe because `Scheduler` guarantees that
-        //   those pointers will be accessed in a sub worker only.
-        // - `target` is safe because `Scheduler` guarantees that its pointer
-        //   will be accessed in a single `ScheduleUnit` only at a time.
+        // - `invoker` and `buf` is safe because `Scheduler` guarantees that those pointers will be
+        //   accessed in a sub worker only.
+        // - `target` is safe because `Scheduler` guarantees that its pointer will be accessed in a
+        //   single `ScheduleUnit` only at a time.
         unsafe {
             let mut invoker = sdata.task_ptr();
             let buf = ManagedMutPtr::new(cache.request_buffer_ptr());
@@ -774,21 +759,18 @@ enum PullRes {
 }
 
 #[derive(Debug)]
-pub(crate) struct ScheduleRecord<S> {
-    record: HashMap<SystemId, RunResult, S>,
+pub(crate) struct ScheduleRecord {
+    record: HashMap<SystemId, RunResult, FxBuildHasher>,
     injected: usize,
     finished: usize,
     panicked: usize,
     aborted: usize,
 }
 
-impl<S> ScheduleRecord<S>
-where
-    S: BuildHasher + Default + 'static,
-{
+impl ScheduleRecord {
     fn new() -> Self {
         Self {
-            record: HashMap::default(),
+            record: HashMap::with_hasher(FxBuildHasher::default()),
             injected: 0,
             finished: 0,
             panicked: 0,
@@ -833,6 +815,12 @@ where
     }
 }
 
+impl Default for ScheduleRecord {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum RunResult {
     Injected,
@@ -842,21 +830,19 @@ pub(crate) enum RunResult {
 }
 
 #[derive(Debug)]
-struct Pending<S> {
+struct Pending {
     /// Pending system positions in a system cycle.
-    list: SetValueList<ListPos, S>,
+    list: SetValueList<ListPos, FxBuildHasher>,
 
     /// Maximum number of pending systems.
     limit: usize,
 }
 
-impl<S> Pending<S>
-where
-    S: BuildHasher + Default,
-{
+impl Pending {
     fn new(limit: usize) -> Self {
+        let dummy = ListPos::end();
         Self {
-            list: SetValueList::new(ListPos::end()),
+            list: SetValueList::with_hasher(dummy, || FxBuildHasher::default()),
             limit,
         }
     }
@@ -880,8 +866,8 @@ where
 }
 
 // Do not implement `DerefMut` to prevent pushing over the `limit`.
-impl<S> Deref for Pending<S> {
-    type Target = SetValueList<ListPos, S>;
+impl Deref for Pending {
+    type Target = SetValueList<ListPos, FxBuildHasher>;
 
     fn deref(&self) -> &Self::Target {
         &self.list
@@ -916,8 +902,7 @@ where
         // Creates global queue.
         let injector = Arc::new(cb::Injector::new());
 
-        // This signal will be replaced at `initialize` with sub worker's
-        // handles.
+        // This signal will be replaced at `initialize` with sub worker's handles.
         let dummy_signal = Arc::new(GlobalSignal::new(Vec::new()));
 
         let comms = SubComm::with_len(
@@ -935,8 +920,8 @@ where
             .map(|comm| {
                 Box::pin(SubContext {
                     guide: sub::SubStateGuide::new(),
-                    // Puts in dummy handle for now. Sub workers will overwrite
-                    // their handles at their first execution.
+                    // Puts in dummy handle for now. Sub workers will overwrite their handles at
+                    // their first execution.
                     handle: UnsafeCell::new(thread::current()),
                     comm,
                     need_close: Cell::new(false),
@@ -1019,15 +1004,13 @@ where
 
     /// Determines whether the work group is exhausted or not.
     ///
-    /// `exhausted` here means that the work group has closed and cannot be
-    /// woken up without intervention from outside.
+    /// `exhausted` here means that the work group has closed and cannot be woken up without
+    /// intervention from outside.
     fn is_exhausted(&self) -> bool {
-        // If guidance queue is empty, it means that sub workers cannot open
-        // themselves again.
+        // If guidance queue is empty, it means that sub workers cannot open themselves again.
         let is_guide_empty = self.sub_cxs.iter().all(|cx| cx.guide.is_empty());
 
-        // Queue is empty, Also there's no open sub workers, they are completely
-        // in closed states.
+        // Queue is empty, Also there's no open sub workers, they are completely in closed states.
         let is_all_closed = self.signal.open_count() == 0;
 
         is_guide_empty && is_all_closed
@@ -1071,9 +1054,9 @@ where
     // - For keeping consistency with other methods.
     #[allow(dead_code)]
     fn insert_search(&mut self, index: usize) {
-        // Search is only pushed when a sub worker has panicked.
-        // It means that the worker was open state, and in turn, the queue
-        // has one space at least because 'open' must be popped from it.
+        // Search is only pushed when a sub worker has panicked. It means that the worker was open
+        // state, and in turn, the queue has one space at least because 'open' must be popped from
+        // it.
         let must_true = self.sub_cxs[index].guide.push_search();
         debug_assert!(must_true);
         self.unpark_one(index);
@@ -1081,8 +1064,7 @@ where
 
     fn unpark_one(&mut self, index: usize) {
         let ptr = self.sub_cxs[index].as_ref().get_ref() as *const SubContext;
-        // Safety: The pointer won't be aliased and they will be valid
-        // during scheduling.
+        // Safety: The pointer won't be aliased and they will be valid during scheduling.
         let ptr = unsafe {
             let ptr = NonNullExt::new_unchecked(ptr.cast_mut());
             ManagedConstPtr::new(ptr)
@@ -1093,8 +1075,7 @@ where
     }
 
     fn destroy(&mut self) {
-        // Aborts remaining tasks and waits for sub workers to be completely
-        // closed.
+        // Aborts remaining tasks and waits for sub workers to be completely closed.
         self.signal.set_abort(true);
         while !self.is_exhausted() {
             self.signal.sub().notify_all();
@@ -1190,9 +1171,8 @@ impl SubContext {
         let this = ptr.into_ref();
 
         // ** Notifies end of accessing `SubContext`.
-        // Main worker is now free to release `SubContext`.
-        // In web, however, this procedure must occur in somewhere during panic.
-        // See `web_panic_hook` for more details.
+        // Main worker is now free to release `SubContext`. In web, however, this procedure must
+        // occur in somewhere during panic. See `web_panic_hook` for more details.
         this.comm.signal().sub_open_count(1);
     }
 
@@ -1226,8 +1206,8 @@ impl SubContext {
                 } else if self.need_close.take() {
                     Some(SubState::Close)
                 } else if self.can_close() {
-                    // Because search() and can_close() are not atomic, we have
-                    // to search once again.
+                    // Because search() and can_close() are not atomic, we have to search once
+                    // again.
                     self.need_close.set(true);
                     Some(SubState::Search)
                 } else {
@@ -1256,18 +1236,18 @@ impl SubContext {
 
     #[inline]
     fn can_close(&self) -> bool {
-        // Currently there is no any remaining task, but this sub worker must
-        // wait for other siblings for future task. Imagine that a sibling is
-        // working on a system task, which produces a future task. If the future
-        // task should be run in parallel, this sub worker must join it.
+        // Currently there is no any remaining task, but this sub worker must wait for other
+        // siblings for future task. Imagine that a sibling is working on a system task, which
+        // produces a future task. If the future task should be run in parallel, this sub worker
+        // must join it.
         let fut_cnt = self.comm.signal().future_count();
         let work_cnt = self.comm.signal().work_count();
         if fut_cnt > 0 || work_cnt > 0 {
             return false;
         }
 
-        // It seems likely that siblings and this sub worker are completely
-        // free to exit execution. If main worker sent exit signal, we can exit.
+        // It seems likely that siblings and this sub worker are completely free to exit execution.
+        // If main worker sent exit signal, we can exit.
         if self.guide.need_close() {
             return true;
         }
@@ -1296,8 +1276,8 @@ impl SubContext {
         }
 
         // * Notifies end of working state.
-        // In web, however, this procedure must occur in somewhere during panic.
-        // See `web_panic_hook` for more details.
+        // In web, however, this procedure must occur in somewhere during panic. See
+        // `web_panic_hook` for more details.
         self.comm.signal().sub_work_count(1);
     }
 
@@ -1348,17 +1328,17 @@ impl SubContext {
 
     /// Cancels out remaining tasks.
     //
-    // NOTE: Future tasks can be cancelled out at the next await points. So that
-    // if any future executor, or runtime, doesn't call poll() on future tasks
-    // again, this method will block infinitely.
+    // NOTE: Future tasks can be cancelled out at the next await points. So that if any future
+    // executor, or runtime, doesn't call poll() on future tasks again, this method will block
+    // infinitely.
     fn abort(&self) {
         loop {
             match self.comm.pop() {
                 cb::Steal::Success(task) => self.abort_task(task),
                 cb::Steal::Empty => {
                     if self.comm.signal().future_count() == 0 {
-                        // Before escaping the loop, notifies all other sub
-                        // workers, so that they can escape their loops as well.
+                        // Before escaping the loop, notifies all other sub workers, so that they
+                        // can escape their loops as well.
                         self.comm.signal().sub().notify_all();
                         break;
                     }
@@ -1379,16 +1359,13 @@ impl SubContext {
                 let sid = task.sid();
                 self.comm.send_message(Message::Aborted(wid, sid));
             }
-            // Parallel task cannot be aborted. It should be aborted at system
-            // task level.
+            // Parallel task cannot be aborted. It should be aborted at system task level.
             Task::Parallel(task) => {
                 self.work_for_parallel_task(task);
             }
-            // To abort async task, destroys it and reduces running future
-            // count.
+            // To abort async task, destroys it and reduces running future count.
             Task::Async(task) => {
-                // Safety: Uncompleted future task is aborted and deallocated
-                // in here only.
+                // Safety: Uncompleted future task is aborted and deallocated in here only.
                 unsafe { task.destroy() };
                 self.comm.signal().sub_future_count(1);
             }
@@ -1427,13 +1404,12 @@ mod sub {
     use super::SubState;
     use crate::ds::ArrayDeque;
     use std::sync::{
-        Mutex,
         atomic::{AtomicU32, Ordering},
+        Mutex,
     };
 
-    /// Guidance for [`SubContext`] on what state it should start with or need
-    /// for closing. You can push or pop some states onto this struct. Allowed
-    /// states are as follows.
+    /// Guidance for [`SubContext`] on what state it should start with or need for closing. You can
+    /// push or pop some states onto this struct. Allowed states are as follows.
     ///
     /// - [`SubState::Wait`]   : Normal open request.
     /// - [`SubState::Close`]  : Request for closing.
@@ -1447,12 +1423,12 @@ mod sub {
     // Why we need buffering?
     // - Main worker and sub workers are not tightly synchronized.
     //   * Main worker doesn't care of in which states sub workers are.
-    //   * Main worker just notifies that there will be no new system tasks to
-    //     sub workers by sending Close request to sub workers and waits for
-    //     completion of system tasks only, not for future tasks.
+    //   * Main worker just notifies that there will be no new system tasks to sub workers by
+    //     sending Close request to sub workers and waits for completion of system tasks only, not
+    //     for future tasks.
     // - We don't want that sub workers are in open states too long.
-    //   * Worker may have other roles, and we may need to hand over the control
-    //     for them. To do that, we need to reach close state from time to time.
+    //   * Worker may have other roles, and we may need to hand over the control for them. To do
+    //     that, we need to reach close state from time to time.
     #[derive(Debug)]
     pub(super) struct SubStateGuide {
         /// SPSC queue holding state requests for a [`SubContext`].
@@ -1489,12 +1465,12 @@ mod sub {
             queue.is_empty()
         }
 
-        /// If queue has enough room for open-close request pair, then pushes
-        /// an open request, [`SubState::Wait`], then returns true.
+        /// If queue has enough room for open-close request pair, then pushes an open request,
+        /// [`SubState::Wait`], then returns true.
         ///
-        /// However, queue was full and open request was not actually pushed,
-        /// then the last open-close pair in the queue turns into single open
-        /// request by popping close request, then returns false.
+        /// However, queue was full and open request was not actually pushed, then the last
+        /// open-close pair in the queue turns into single open request by popping close request,
+        /// then returns false.
         ///
         /// You have to unpark worker if and only if true is returned.
         ///
@@ -1507,8 +1483,8 @@ mod sub {
                 self.open.set(true);
             }
 
-            // If an open-close pair cannot be appended in a row, unchains the
-            // pair by popping close request.
+            // If an open-close pair cannot be appended in a row, unchains the pair by popping close
+            // request.
             let mut queue = self.queue.lock().unwrap();
             if queue.capacity() - queue.len() < 2 {
                 debug_assert_eq!(queue[queue.len() - 1], SubState::Close);
@@ -1523,8 +1499,7 @@ mod sub {
             true
         }
 
-        /// Pushes a close request onto queue. You must call this method after
-        /// [`Self::push_open`].
+        /// Pushes a close request onto queue. You must call this method after [`Self::push_open`].
         ///
         /// Push operation is allowed for main worker only.
         pub(super) fn push_close(&self) {
@@ -1618,13 +1593,12 @@ impl WakeSend for MainWaker {
     fn wake_send(&self, handle: UnsafeFuture) {
         let task = Task::Async(AsyncTask(handle));
 
-        // The scheduler, who is owner of the opposite reciver, may be destroyed
-        // without waiting for remaining futures. Ignores transmission failure
-        // in that case. Anyway, clients destroyed it for some reason, then we
-        // cannot make progress any longer.
+        // The scheduler, who is owner of the opposite reciver, may be destroyed without waiting for
+        // remaining futures. Ignores transmission failure in that case. Anyway, clients destroyed
+        // it for some reason, then we cannot make progress any longer.
         if self.tx_dedi.send(task).is_err() {
-            // Safety: We're not copying the handle somewhere else. Therefore,
-            // it's safe to destroy the handle.
+            // Safety: We're not copying the handle somewhere else. Therefore, it's safe to destroy
+            // the handle.
             unsafe { handle.destroy() };
         }
     }
@@ -1659,8 +1633,8 @@ impl WakeSend for UnsafeWaker {
         // Pushes the future handle onto local future queue.
         comm.push_future_task(handle);
 
-        // Tries to wake up the worker which called poll() on the future.
-        // If it is already awaken, wakes another worker.
+        // Tries to wake up the worker which called poll() on the future. If it is already awaken,
+        // wakes another worker.
         comm.wake_self();
     }
 }

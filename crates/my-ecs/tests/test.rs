@@ -7,9 +7,8 @@ use std::{
 #[test]
 #[rustfmt::skip]
 fn test_validate_request() {
-    // Selectors and filters must be disjoint to each other in a request.
-    // Such that invalid requests must be denied.
-    // Disjoint conditions are as follows.
+    // Selectors and filters must be disjoint to each other in a request. Such that invalid requests
+    // must be denied. Disjoint conditions are as follows.
     // 1. X's Target is different from Y's Target.
     // 2. X's All intersects Y's None or vice versa.
     // 3. X's Any is a subset of Y's None or vice versa.
@@ -23,7 +22,7 @@ fn test_validate_request() {
     #[derive(Component)] struct Cx;
     #[derive(Component)] struct Cy;
 
-    let mut ecs = Ecs::default(WorkerPool::with_len(1), [1]);
+    let mut ecs = Ecs::create(WorkerPool::with_len(1), [1]);
 
     // 1. X's Target is different from Y's Target.
     filter!(A0, Target = Cx, All = (Ca, Cb), None = (Cc, Cd), Any = (Ce, Cf));
@@ -191,7 +190,7 @@ fn test_mixed_reg_unreg_entity_resource() {
     // - r_sys(Sa), w_sys(Sb), ew_sys(Eac, Fbd): Success
     // - rr_sys(Ra), rw_sys(Rb): Fail because of not registered resources.
 
-    let mut ecs = Ecs::default(WorkerPool::with_len(1), [1]);
+    let mut ecs = Ecs::create(WorkerPool::with_len(1), [1]);
 
     ecs.add_system(SystemDesc::new().with_system(r_sys)).unwrap();
     ecs.add_system(SystemDesc::new().with_system(w_sys)).unwrap();
@@ -323,11 +322,11 @@ fn test_mixed_reg_unreg_entity_resource() {
 #[test]
 fn test_async_wait() {
     // Without sub workers.
-    let ecs = Ecs::default(WorkerPool::new(), []);
+    let ecs = Ecs::create(WorkerPool::new(), []);
     inner(ecs);
 
     // With sub workers.
-    let ecs = Ecs::default(WorkerPool::with_len(3), [3]);
+    let ecs = Ecs::create(WorkerPool::with_len(3), [3]);
     inner(ecs);
 
     // === Internal helper functions ===
@@ -386,11 +385,11 @@ fn repeat_test_async_wait() {
 #[test]
 fn test_async_abort() {
     // Without sub workers.
-    let ecs = Ecs::default(WorkerPool::new(), []);
+    let ecs = Ecs::create(WorkerPool::new(), []);
     inner(ecs);
 
     // With sub workers.
-    let ecs = Ecs::default(WorkerPool::with_len(3), [3]);
+    let ecs = Ecs::create(WorkerPool::with_len(3), [3]);
     inner(ecs);
 
     // === Internal helper functions ===

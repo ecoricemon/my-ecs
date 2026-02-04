@@ -5,7 +5,7 @@
 /// # Examples
 ///
 /// ```
-/// use my_ecs_util::str;
+/// use my_utils::str;
 ///
 /// assert_eq!(2, str::rdigit_num("hello42"));
 /// assert_eq!(0, str::rdigit_num("1a")); // Doesn't end with digits.
@@ -20,7 +20,7 @@ pub fn rdigit_num(s: &str) -> usize {
 /// # Examples
 ///
 /// ```
-/// use my_ecs_util::str;
+/// use my_utils::str;
 ///
 /// let mut s = "hello01".to_owned();
 /// str::increase_rnumber(&mut s);

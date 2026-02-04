@@ -1,11 +1,11 @@
+use crate::FxBuildHasher;
 use std::{cmp::Ordering, collections::HashSet, hash::BuildHasher, mem, ops::Index, slice};
 
 /// A vector containing optional values.
 ///
-/// The vector would be useful when you need invariant index regardless of
-/// insertion and removal. If you remove an item from the vector, the slot
-/// remains vacant rather than removing the space by moving right items. Then
-/// the vacant slot can be filled when you insert an item into the vector.
+/// The vector would be useful when you need invariant index regardless of insertion and removal. If
+/// you remove an item from the vector, the slot remains vacant rather than removing the space by
+/// moving right items. Then the vacant slot can be filled when you insert an item into the vector.
 ///
 /// For more understanding, see the diagram below.
 ///
@@ -18,8 +18,8 @@ use std::{cmp::Ordering, collections::HashSet, hash::BuildHasher, mem, ops::Inde
 /// * number of slots: 3
 /// * number of vacancies: 2
 /// ```
-#[derive(Debug, Clone, Default)]
-pub struct OptVec<T, S> {
+#[derive(Debug, Clone)]
+pub struct OptVec<T, S = FxBuildHasher> {
     /// Optional values.
     values: Vec<Option<T>>,
 
@@ -27,29 +27,30 @@ pub struct OptVec<T, S> {
     vacancies: HashSet<usize, S>,
 }
 
-impl<T, S> OptVec<T, S>
-where
-    S: Default,
-{
-    /// Creates a new empty vector.
+impl<T> OptVec<T> {
+    /// Creates a new empty vector with [`FxBuildHasher`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<i32, RandomState>::new();
+    /// let mut v = OptVec::<i32>::new();
     /// ```
     pub fn new() -> Self {
-        Self {
-            values: Vec::new(),
-            vacancies: HashSet::default(),
-        }
+        Self::with_hasher(FxBuildHasher::default())
     }
 }
 
 impl<T, S> OptVec<T, S> {
+    /// Creates a new empty vector with the given hasher.
+    pub const fn with_hasher(hasher: S) -> Self {
+        Self {
+            values: Vec::new(),
+            vacancies: HashSet::with_hasher(hasher),
+        }
+    }
+
     /// Returns number of items, which is occupied slots in other words.
     ///
     /// Returned value is equal to `self.num_slots() - self.num_vacancies()`.
@@ -57,10 +58,9 @@ impl<T, S> OptVec<T, S> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add(0);
     /// assert_eq!(v.len(), 1);
     /// ```
@@ -75,10 +75,9 @@ impl<T, S> OptVec<T, S> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<i32, RandomState>::new();
+    /// let mut v = OptVec::<i32>::new();
     /// assert!(v.is_empty());
     /// ```
     pub fn is_empty(&self) -> bool {
@@ -92,10 +91,9 @@ impl<T, S> OptVec<T, S> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add(0);
     /// assert_eq!(v.num_slots(), 1);
     /// ```
@@ -110,10 +108,9 @@ impl<T, S> OptVec<T, S> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add(0);
     /// v.take(0);
     /// assert_eq!(v.num_vacancies(), 1);
@@ -131,10 +128,9 @@ impl<T, S> OptVec<T, S> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add(0);
     /// v.take(0);
     /// assert!(v.is_vacant(0));
@@ -152,10 +148,9 @@ impl<T, S> OptVec<T, S> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add(0);
     /// assert!(v.is_occupied(0));
     /// ```
@@ -168,10 +163,9 @@ impl<T, S> OptVec<T, S> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add(0);
     /// v.add(1);
     /// assert_eq!(v.as_slice(), &[Some(0), Some(1)]);
@@ -182,21 +176,20 @@ impl<T, S> OptVec<T, S> {
 
     /// Creates a mutable slice from the vector.
     ///
-    /// Caller must not modify occupied/vacant status in the returned slice
-    /// because the vector is tracking the status.
+    /// Caller must not modify occupied/vacant status in the returned slice because the vector is
+    /// tracking the status.
     ///
     /// # Safety
     ///
-    /// Undefined behavior if caller take out a value from an occupied slot, or
-    /// insert a value into a vacant slot.
+    /// Undefined behavior if caller take out a value from an occupied slot, or insert a value into
+    /// a vacant slot.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add(0);
     /// v.add(1);
     /// assert_eq!(v.as_slice(), &[Some(0), Some(1)]);
@@ -205,16 +198,15 @@ impl<T, S> OptVec<T, S> {
         &mut self.values
     }
 
-    /// Returns shared reference to the value at the given index if the index is
-    /// in bounds and the slot is occupied.
+    /// Returns shared reference to the value at the given index if the index is in bounds and the
+    /// slot is occupied.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add(0);
     /// assert_eq!(v.get(0), Some(&0));
     /// ```
@@ -233,10 +225,9 @@ impl<T, S> OptVec<T, S> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add(0);
     /// assert_eq!(unsafe { v.get_unchecked(0) }, &0);
     /// ```
@@ -244,16 +235,15 @@ impl<T, S> OptVec<T, S> {
         unsafe { self.values.get_unchecked(index).as_ref().unwrap_unchecked() }
     }
 
-    /// Returns mutable reference to the value at the given index if the index
-    /// is in bounds and the slot is occupied.
+    /// Returns mutable reference to the value at the given index if the index is in bounds and the
+    /// slot is occupied.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add(0);
     /// assert_eq!(v.get_mut(0), Some(&mut 0));
     /// ```
@@ -272,10 +262,9 @@ impl<T, S> OptVec<T, S> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add(0);
     /// assert_eq!(unsafe { v.get_unchecked_mut(0) }, &mut 0);
     /// ```
@@ -295,10 +284,9 @@ impl<T, S> OptVec<T, S> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add('a');
     /// v.add('b');
     /// let pairs = v.pairs().collect::<Vec<_>>();
@@ -311,18 +299,16 @@ impl<T, S> OptVec<T, S> {
             .filter_map(|(i, v)| v.as_ref().map(|v| (i, v)))
     }
 
-    /// Returns a mutable iterator visiting all values with corresponding
-    /// indices.
+    /// Returns a mutable iterator visiting all values with corresponding indices.
     ///
     /// As return type says, vacant slots are filtered out from the iteration.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add('a');
     /// v.add('b');
     /// let pairs = v.pairs_mut().collect::<Vec<_>>();
@@ -335,16 +321,14 @@ impl<T, S> OptVec<T, S> {
             .filter_map(|(i, v)| v.as_mut().map(|v| (i, v)))
     }
 
-    /// Returns an iterator visiting all slots regardless of whether the slot
-    /// is occupied or not.
+    /// Returns an iterator visiting all slots regardless of whether the slot is occupied or not.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add('a');
     /// v.add('b');
     /// v.take(0);
@@ -362,10 +346,9 @@ impl<T, S> OptVec<T, S> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add('a');
     /// v.add('b');
     /// let values = v.iter().collect::<Vec<_>>();
@@ -382,10 +365,9 @@ impl<T, S> OptVec<T, S> {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add('a');
     /// v.add('b');
     /// let values = v.iter_mut().collect::<Vec<_>>();
@@ -409,10 +391,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add(0);
     /// assert_eq!(v.set(0, None), Some(0));
     /// ```
@@ -425,16 +406,14 @@ where
         mem::replace(&mut self.values[index], value)
     }
 
-    /// Returns the next index that will be returned on the next call to
-    /// [`OptVec::add`].
+    /// Returns the next index that will be returned on the next call to [`OptVec::add`].
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// assert_eq!(v.next_index(), 0);
     ///
     /// v.add(0);
@@ -452,17 +431,15 @@ where
 
     /// Inserts the given value into the vector.
     ///
-    /// The vector prefers to insert values into vacant slots if possible. But
-    /// if the vector doesn't have any vacant slots, then the value is appended
-    /// to the end of the vector.
+    /// The vector prefers to insert values into vacant slots if possible. But if the vector doesn't
+    /// have any vacant slots, then the value is appended to the end of the vector.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add(0);
     /// assert_eq!(v.len(), 1);
     /// ```
@@ -480,17 +457,15 @@ where
 
     /// Appends the given optional value to the end of the vector.
     ///
-    /// Note that this method won't insert the value into a vacant slot. It just
-    /// makes a new slot at the end of the vector then puts the value in the
-    /// slot.
+    /// Note that this method won't insert the value into a vacant slot. It just makes a new slot at
+    /// the end of the vector then puts the value in the slot.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add(0);
     /// v.take(0);
     /// v.push(Some(0));
@@ -514,10 +489,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.add(0);
     /// assert_eq!(v.take(0), Some(0));
     /// assert_eq!(v.take(0), None);
@@ -530,17 +504,15 @@ where
 
     /// Resizes the vector to the given length.
     ///
-    /// If the new length is greater than previous length of the vector, then
-    /// the vector is extended with the given optional value. Otherwise, the
-    /// vector is shrunk.
+    /// If the new length is greater than previous length of the vector, then the vector is extended
+    /// with the given optional value. Otherwise, the vector is shrunk.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.resize(2, Some(0));
     /// assert_eq!(v.as_slice(), &[Some(0), Some(0)]);
     /// ```
@@ -553,18 +525,16 @@ where
 
     /// Resizes the vector to the given length.
     ///
-    /// If the new length is greater than previous length of the vector, then
-    /// the vector is extended with optional values the given function
-    /// generates. In this case, generated values are appended in order.
-    /// Otherwise, the vector is shrunk.
+    /// If the new length is greater than previous length of the vector, then the vector is extended
+    /// with optional values the given function generates. In this case, generated values are
+    /// appended in order. Otherwise, the vector is shrunk.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.resize_with(2, || Some(0));
     /// assert_eq!(v.as_slice(), &[Some(0), Some(0)]);
     /// ```
@@ -586,16 +556,15 @@ where
 
     /// Shrinks the vector to the given length, and drops abandoned items.
     ///
-    /// If the given length is greater than or equal to the current length of
-    /// the vector, nothing takes place.
+    /// If the given length is greater than or equal to the current length of the vector, nothing
+    /// takes place.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.resize_with(4, || Some(0));
     /// v.truncate(2);
     /// assert_eq!(v.as_slice(), &[Some(0), Some(0)]);
@@ -609,16 +578,15 @@ where
         self.values.truncate(len);
     }
 
-    /// Removes vacant slots from the end of the vector, then shrinks capacity
-    /// of the vector as much as possible.
+    /// Removes vacant slots from the end of the vector, then shrinks capacity of the vector as much
+    /// as possible.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.resize(5, Some(0));
     /// v.resize(10, None);
     /// v.shrink_to_fit();
@@ -635,16 +603,15 @@ where
 
     /// Sets a slot with the given optional value and returns old value.
     ///
-    /// Unlike [`OptVec::set`], this method doesn't panic even if the index is
-    /// out of bounds, extending the vector with vacant slots instead.
+    /// Unlike [`OptVec::set`], this method doesn't panic even if the index is out of bounds,
+    /// extending the vector with vacant slots instead.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::OptVec;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::OptVec;
     ///
-    /// let mut v = OptVec::<_, RandomState>::new();
+    /// let mut v = OptVec::new();
     /// v.extend_set(2, 0);
     /// assert_eq!(v.as_slice(), &[None, None, Some(0)]);
     /// ```
@@ -656,8 +623,17 @@ where
     }
 }
 
-// Do not implement IndexMut because we need to modify vacancies if users take
-// the value out of the slot.
+impl<T, S: Default> Default for OptVec<T, S> {
+    fn default() -> Self {
+        Self {
+            values: Vec::new(),
+            vacancies: HashSet::default(),
+        }
+    }
+}
+
+// Do not implement IndexMut because we need to modify vacancies if users take the value out of the
+// slot.
 impl<T, S> Index<usize> for OptVec<T, S> {
     type Output = Option<T>;
 

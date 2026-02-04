@@ -11,9 +11,8 @@ const ALARM: u32 = 2;
 
 /// A data structure that can be used to wake other workers.
 ///
-/// To use this struct, you must register worker handles through
-/// [`Signal::set_handles`], then you can make use of sleep/wake methods like
-/// so,
+/// To use this struct, you must register worker handles through [`Signal::set_handles`], then you
+/// can make use of sleep/wake methods like so,
 /// - [`Signal::wait`] : Sleep indefinitely.
 /// - [`Signal::notify`] : Wake a specific worker.
 /// - [`Signal::notify_one`] : Wake a random worker.
@@ -28,13 +27,13 @@ pub struct Signal {
 impl Default for Signal {
     /// Creates a new empty [`Signal`] with default random seed number.
     ///
-    /// Note that you cannot do anything with empty `Signal` unless you call
-    /// [`Signal::set_handles`] on it.
+    /// Note that you cannot do anything with empty `Signal` unless you call [`Signal::set_handles`]
+    /// on it.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Signal;
+    /// use my_utils::ds::Signal;
     ///
     /// let signal = Signal::default();
     /// ```
@@ -53,7 +52,7 @@ impl Signal {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Signal;
+    /// use my_utils::ds::Signal;
     /// use std::num::NonZeroU32;
     ///
     /// let signal = Signal::new(NonZeroU32::MIN);
@@ -71,7 +70,7 @@ impl Signal {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Signal;
+    /// use my_utils::ds::Signal;
     /// use std::thread;
     ///
     /// let join = thread::spawn(|| { /* ... */ });
@@ -106,29 +105,28 @@ impl Signal {
 
     /// Blocks until another worker signals.
     ///
-    /// * this_index - Index to the handle of *this worker* in the vector that
-    ///   you inserted through [`Signal::set_handles`].
+    /// * this_index - Index to the handle of *this worker* in the vector that you inserted through
+    ///   [`Signal::set_handles`].
     ///
-    /// Current worker cannot be woken up unless another worker wakes the
-    /// current worker through [`Signal`] because this method blocks repeatedly
-    /// to ignore spurious wakeup. See [`park`](thread::park) for more details.
+    /// Current worker cannot be woken up unless another worker wakes the current worker through
+    /// [`Signal`] because this method blocks repeatedly to ignore spurious wakeup. See
+    /// [`park`](thread::park) for more details.
     ///
-    /// Also, note that signaling looks like being buffered in a single slot.
-    /// For example, if another worker woke current worker up and current worker
-    /// didn't sleep at that time, next call to [`Signal::wait`] will consume
-    /// the signal in the single slot buffer then be ignored.
+    /// Also, note that signaling looks like being buffered in a single slot. For example, if
+    /// another worker woke current worker up and current worker didn't sleep at that time, next
+    /// call to [`Signal::wait`] will consume the signal in the single slot buffer then be ignored.
     ///
     /// # Note
     ///
-    /// `index` is an index for the current worker handle in the vector you
-    /// inserted at [`Signal::set_handles`]. By receiving the index from
-    /// caller, this method can avoid unnecessary matching opeartion. But note
-    /// that incorrect index causes panic or undefinitely long sleep.
+    /// `index` is an index for the current worker handle in the vector you inserted at
+    /// [`Signal::set_handles`]. By receiving the index from caller, this method can avoid
+    /// unnecessary matching opeartion. But note that incorrect index causes panic or undefinitely
+    /// long sleep.
     ///
     /// # Examples
     ///
     /// ```ignore
-    /// use my_ecs_util::ds::Signal;
+    /// use my_utils::ds::Signal;
     ///
     /// let mut signal = Signal::default();
     /// let handle = std::thread::current();
@@ -170,18 +168,17 @@ impl Signal {
 
     /// Wakes up a worker for the given target index or another worker.
     ///
-    /// * target_index - Index to a handle of the vector that you inserted
-    ///   through [`Signal::set_handles`].
+    /// * target_index - Index to a handle of the vector that you inserted through
+    ///   [`Signal::set_handles`].
     ///
-    /// If the target worker is not blocked at the time, tries to wake another
-    /// worker instead. If failed to wake any worker, then mark *ALARM* on the
-    /// target worker, so that the worker will not be blocked by
-    /// [`Signal::wait`] next time.
+    /// If the target worker is not blocked at the time, tries to wake another worker instead. If
+    /// failed to wake any worker, then mark *ALARM* on the target worker, so that the worker will
+    /// not be blocked by [`Signal::wait`] next time.
     ///
     /// # Examples
     ///
     /// ```ignore
-    /// use my_ecs_util::ds::Signal;
+    /// use my_utils::ds::Signal;
     /// use std::thread;
     ///
     /// let mut signal = Signal::default();
@@ -219,21 +216,20 @@ impl Signal {
             }
         }
 
-        // We've failed to find ASLEEP worker.
-        // Then, make sure one worker to be AWAKE later.
+        // We've failed to find ASLEEP worker. Then, make sure one worker to be AWAKE later.
         self.states[target_index].store(ALARM, Ordering::Relaxed);
         self.handles[target_index].unpark(); // Release op in terms of ordering.
     }
 
     /// Wakes up a random worker.
     ///
-    /// If failed to wake any worker, then mark *ALARM* on one worker, so that
-    /// the worker will not be blocked by [`Signal::wait`] next time.
+    /// If failed to wake any worker, then mark *ALARM* on one worker, so that the worker will not
+    /// be blocked by [`Signal::wait`] next time.
     ///
     /// # Examples
     ///
     /// ```ignore
-    /// use my_ecs_util::ds::Signal;
+    /// use my_utils::ds::Signal;
     /// use std::thread;
     ///
     /// let mut signal = Signal::default();
@@ -261,13 +257,13 @@ impl Signal {
 
     /// Wakes up all workers.
     ///
-    /// Each worker is marked *ALARM* when it's not blocked at the time, so that
-    /// the worker will not be blocked by [`Signal::wait`] next time.
+    /// Each worker is marked *ALARM* when it's not blocked at the time, so that the worker will not
+    /// be blocked by [`Signal::wait`] next time.
     ///
     /// # Examples
     ///
     /// ```ignore
-    /// use my_ecs_util::ds::Signal;
+    /// use my_utils::ds::Signal;
     /// use std::thread;
     ///
     /// let mut signal = Signal::default();
@@ -298,12 +294,12 @@ impl Signal {
 
 /// A random number generator based on 32bits state.
 ///
-/// The genrator can be shared and generate random numbers across workers but it
-/// doesn't provide synchronization.
+/// The genrator can be shared and generate random numbers across workers but it doesn't provide
+/// synchronization.
 ///
 /// # Reference
-///  
-/// <https://en.wikipedia.org/wiki/Xorshift>
+///
+/// [Xorshift](https://en.wikipedia.org/wiki/Xorshift)
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct Xorshift {
@@ -316,7 +312,7 @@ impl Xorshift {
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Xorshift;
+    /// use my_utils::ds::Xorshift;
     /// use std::num::NonZeroU32;
     ///
     /// let generator = Xorshift::new(NonZeroU32::MIN);
@@ -329,14 +325,14 @@ impl Xorshift {
 
     /// Generates next random number from the current state.
     ///
-    /// You can call this method on multiple workers at the same time. The
-    /// generator is using atomic variable under the hood, so that it's
-    /// guaranteed to generate a random number from different states.
+    /// You can call this method on multiple workers at the same time. The generator is using atomic
+    /// variable under the hood, so that it's guaranteed to generate a random number from different
+    /// states.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::Xorshift;
+    /// use my_utils::ds::Xorshift;
     /// use std::{num::NonZeroU32, collections::HashSet};
     ///
     /// let generator = Xorshift::new(NonZeroU32::MIN);

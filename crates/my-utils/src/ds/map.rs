@@ -1,15 +1,15 @@
-use crate::ds::vec::OptVec;
+use crate::{ds::vec::OptVec, FxBuildHasher};
 use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
+    collections::{hash_map::Entry, HashMap, HashSet},
     hash::{BuildHasher, Hash},
 };
 
 /// A hash map containing *Group*s and *Item*s.
 ///
-/// Conceptually, group contains items in it, and item can belong to multiple
-/// groups. They cannot exist without relationship to each other. In other
-/// words, they must be linked. See a diagram below. In this map, group has an
-/// ordered links to items, while item has an unordered links to groups.
+/// Conceptually, group contains items in it, and item can belong to multiple groups. They cannot
+/// exist without relationship to each other. In other words, they must be linked. See a diagram
+/// below. In this map, group has an ordered links to items, while item has an unordered links to
+/// groups.
 ///
 /// ```text
 /// Groups    G0  G1
@@ -17,10 +17,10 @@ use std::{
 /// Items   I0  I1  I2
 /// ```
 ///
-/// The map provides you some ways to access groups and items by their keys and
-/// indices. If possible, prefer to use index to key because it can be faster.
+/// The map provides you some ways to access groups and items by their keys and indices. If
+/// possible, prefer to use index to key because it can be faster.
 #[derive(Debug, Clone)]
-pub struct GroupMap<GK, GV, IK, IV, S> {
+pub struct GroupMap<GK, GV, IK, IV, S = FxBuildHasher> {
     /// Groups that can be accessed by either key or index.
     ///
     /// Key: Group key `GK`.
@@ -34,15 +34,21 @@ pub struct GroupMap<GK, GV, IK, IV, S> {
     items: IndexedMap<IK, (IV, HashSet<usize, S>), S>,
 }
 
-impl<GK, GV, IK, IV, S> GroupMap<GK, GV, IK, IV, S>
-where
-    S: Default,
-{
-    /// Creates a new empty map.
+impl<GK, GV, IK, IV> GroupMap<GK, GV, IK, IV> {
     pub fn new() -> Self {
         Self {
             groups: IndexedMap::new(),
             items: IndexedMap::new(),
+        }
+    }
+}
+
+impl<GK, GV, IK, IV, S> GroupMap<GK, GV, IK, IV, S> {
+    /// Creates a new empty map.
+    pub fn with_hasher<F: FnMut() -> S>(mut hasher: F) -> Self {
+        Self {
+            groups: IndexedMap::with_hasher(&mut hasher),
+            items: IndexedMap::with_hasher(hasher),
         }
     }
 }
@@ -55,17 +61,16 @@ where
 {
     /// Returns true if the map contains a group at the given group index.
     ///
-    /// Consider using [`GroupMap::contains_group2`] if you need to know whether
-    /// the map contains it or not by a key.
+    /// Consider using [`GroupMap::contains_group2`] if you need to know whether the map contains it
+    /// or not by a key.
     pub fn contains_group(&self, index: usize) -> bool {
         self.groups.contains_index(index)
     }
 
-    /// Returns true if the map contains a group corresponding to the given
-    /// group key.
+    /// Returns true if the map contains a group corresponding to the given group key.
     ///
-    /// Consider using [`GroupMap::contains_group`] if you need to know whether
-    /// the map contains it or not by an index.
+    /// Consider using [`GroupMap::contains_group`] if you need to know whether the map contains it
+    /// or not by an index.
     pub fn contains_group2<Q>(&self, key: &Q) -> bool
     where
         GK: std::borrow::Borrow<Q>,
@@ -74,20 +79,16 @@ where
         self.groups.contains_key(key)
     }
 
-    /// Retrieves a shared reference to a group and related item indices by the
-    /// given group index.
+    /// Retrieves a shared reference to a group and related item indices by the given group index.
     ///
-    /// Consider using [`GroupMap::get_group2`] if you need to get a group by
-    /// a key.
+    /// Consider using [`GroupMap::get_group2`] if you need to get a group by a key.
     pub fn get_group(&self, index: usize) -> Option<(&GV, &Vec<usize>)> {
         self.groups.get(index).map(|(value, links)| (value, links))
     }
 
-    /// Retrieves a shared reference to a group and related item indices by the
-    /// given group key.
+    /// Retrieves a shared reference to a group and related item indices by the given group key.
     ///
-    /// Consider using [`GroupMap::get_group`] if you need to get a group by
-    /// an index.
+    /// Consider using [`GroupMap::get_group`] if you need to get a group by an index.
     pub fn get_group2<Q>(&self, key: &Q) -> Option<(&GV, &Vec<usize>)>
     where
         GK: std::borrow::Borrow<Q>,
@@ -96,22 +97,18 @@ where
         self.groups.get2(key).map(|(value, links)| (value, links))
     }
 
-    /// Retrieves a mutable reference to a group and related item indices by the
-    /// given group index.
+    /// Retrieves a mutable reference to a group and related item indices by the given group index.
     ///
-    /// Consider using [`GroupMap::get_group_mut2`] if you need to get a group
-    /// by a key.
+    /// Consider using [`GroupMap::get_group_mut2`] if you need to get a group by a key.
     pub fn get_group_mut(&mut self, index: usize) -> Option<(&mut GV, &Vec<usize>)> {
         self.groups
             .get_mut(index)
             .map(|(value, links)| (value, &*links))
     }
 
-    /// Retrieves a mutable reference to a group and related item indices by the
-    /// given group key.
+    /// Retrieves a mutable reference to a group and related item indices by the given group key.
     ///
-    /// Consider using [`GroupMap::get_group_mut`] if you need to get a group
-    /// by an index.
+    /// Consider using [`GroupMap::get_group_mut`] if you need to get a group by an index.
     pub fn get_group_mut2<Q>(&mut self, key: &Q) -> Option<(&mut GV, &Vec<usize>)>
     where
         GK: std::borrow::Borrow<Q>,
@@ -144,8 +141,7 @@ where
 
     /// Returns an iterator visiting all groups.
     ///
-    /// The iterator yields pairs of group key, group index, and shared
-    /// reference to group value.
+    /// The iterator yields pairs of group key, group index, and shared reference to group value.
     pub fn iter_group(&self) -> impl Iterator<Item = (&GK, usize, &GV)> {
         self.groups
             .iter()
@@ -154,17 +150,16 @@ where
 
     /// Returns true if the map contains an item at the given item index.
     ///
-    /// Consider using [`GroupMap::contains_item2`] if you need to know whether
-    /// the map contains it or not by a key.
+    /// Consider using [`GroupMap::contains_item2`] if you need to know whether the map contains it
+    /// or not by a key.
     pub fn contains_item(&self, index: usize) -> bool {
         self.items.contains_index(index)
     }
 
-    /// Returns true if the map contains an item corresponding to the given item
-    /// key.
+    /// Returns true if the map contains an item corresponding to the given item key.
     ///
-    /// Consider using [`GroupMap::contains_item`] if you need to know whether
-    /// the map contains it or not by an index.
+    /// Consider using [`GroupMap::contains_item`] if you need to know whether the map contains it
+    /// or not by an index.
     pub fn contains_item2<Q>(&self, key: &Q) -> bool
     where
         IK: std::borrow::Borrow<Q>,
@@ -173,20 +168,16 @@ where
         self.items.contains_key(key)
     }
 
-    /// Retrieves a shared reference to an item and related group indices by the
-    /// given item index.
+    /// Retrieves a shared reference to an item and related group indices by the given item index.
     ///
-    /// Consider using [`GroupMap::get_item2`] if you need to get an item by a
-    /// key.
+    /// Consider using [`GroupMap::get_item2`] if you need to get an item by a key.
     pub fn get_item(&self, index: usize) -> Option<&(IV, HashSet<usize, S>)> {
         self.items.get(index)
     }
 
-    /// Retrieves a shared reference to an item and related group indices by the
-    /// given item key.
+    /// Retrieves a shared reference to an item and related group indices by the given item key.
     ///
-    /// Consider using [`GroupMap::get_item`] if you need to get an item by an
-    /// index.
+    /// Consider using [`GroupMap::get_item`] if you need to get an item by an index.
     pub fn get_item2<Q>(&self, key: &Q) -> Option<&(IV, HashSet<usize, S>)>
     where
         IK: std::borrow::Borrow<Q>,
@@ -195,22 +186,18 @@ where
         self.items.get2(key)
     }
 
-    /// Retrieves a mutable reference to an item and related group indices by
-    /// the given item index.
+    /// Retrieves a mutable reference to an item and related group indices by the given item index.
     ///
-    /// Consider using [`GroupMap::get_item_mut2`] if you need to get an item by
-    /// a key.
+    /// Consider using [`GroupMap::get_item_mut2`] if you need to get an item by a key.
     pub fn get_item_mut(&mut self, index: usize) -> Option<(&mut IV, &HashSet<usize, S>)> {
         self.items
             .get_mut(index)
             .map(|(value, links)| (value, &*links))
     }
 
-    /// Retrieves a mutable reference to an item and related group indices by
-    /// the given item key.
+    /// Retrieves a mutable reference to an item and related group indices by the given item key.
     ///
-    /// Consider using [`GroupMap::get_item_mut`] if you need to get an item by
-    /// an index.
+    /// Consider using [`GroupMap::get_item_mut`] if you need to get an item by an index.
     pub fn get_item_mut2<Q>(&mut self, key: &Q) -> Option<(&mut IV, &HashSet<usize, S>)>
     where
         IK: std::borrow::Borrow<Q>,
@@ -223,16 +210,14 @@ where
 
     /// Retrieves an item key corresponding to the given item index.
     ///
-    /// You can also get an item index from a key using
-    /// [`GroupMap::get_item_index`].
+    /// You can also get an item index from a key using [`GroupMap::get_item_index`].
     pub fn get_item_key(&self, index: usize) -> Option<&IK> {
         self.items.get_key(index)
     }
 
     /// Retrieves an item index corresponding to the given item key.
     ///
-    /// You can also get an item key from an index using
-    /// [`GroupMap::get_item_key`].
+    /// You can also get an item key from an index using [`GroupMap::get_item_key`].
     pub fn get_item_index<Q>(&self, key: &Q) -> Option<usize>
     where
         IK: std::borrow::Borrow<Q>,
@@ -243,8 +228,7 @@ where
 
     /// Returns an iterator visiting all items.
     ///
-    /// The iterator yields pairs of item key, item index, and shared
-    /// reference to item value.
+    /// The iterator yields pairs of item key, item index, and shared reference to item value.
     pub fn iter_item(&self) -> impl Iterator<Item = (&IK, usize, &IV)> {
         self.items
             .iter()
@@ -258,8 +242,8 @@ where
     IK: Hash + Eq + Clone,
     S: BuildHasher + Default,
 {
-    /// Returns the next index that will be returned on the next call to
-    /// either [`GroupMap::add_group`] or [`GroupMap::add_group_from_desc`].
+    /// Returns the next index that will be returned on the next call to either
+    /// [`GroupMap::add_group`] or [`GroupMap::add_group_from_desc`].
     pub fn next_index<Q>(&self, key: &Q) -> usize
     where
         GK: std::borrow::Borrow<Q>,
@@ -268,11 +252,9 @@ where
         self.groups.next_index(key)
     }
 
-    /// Inserts a group and related items into the map from the given group
-    /// descriptor.
+    /// Inserts a group and related items into the map from the given group descriptor.
     ///
-    /// This method is a simple wrapper of [`GroupMap::add_group_from_desc`] for
-    /// easy use.
+    /// This method is a simple wrapper of [`GroupMap::add_group_from_desc`] for easy use.
     pub fn add_group(
         &mut self,
         desc: impl DescribeGroup<GK, GV, IK, IV>,
@@ -280,20 +262,17 @@ where
         self.add_group_from_desc(desc.into_group_and_items())
     }
 
-    /// Inserts a group and related items into the map from the given group
-    /// descriptor.
+    /// Inserts a group and related items into the map from the given group descriptor.
     ///
-    /// Note that this method doesn't overwrite anything. Therefore, if the map
-    /// already contains the same group key, returns error. With respect to
-    /// item, only relation to the group is adapted and item value is dropped
-    /// if the map already contains the item. If you want replace, remove old
-    /// one first.
+    /// Note that this method doesn't overwrite anything. Therefore, if the map already contains the
+    /// same group key, returns error. With respect to item, only relation to the group is adapted
+    /// and item value is dropped if the map already contains the item. If you want replace, remove
+    /// old one first.
     ///
     /// # Panics
     ///
-    /// Panics if the descriptor doesn't contain any items in it. Group cannot
-    /// exist without relationship with items. See [`GroupMap`] documentation
-    /// for more details.
+    /// Panics if the descriptor doesn't contain any items in it. Group cannot exist without
+    /// relationship with items. See [`GroupMap`] documentation for more details.
     pub fn add_group_from_desc(
         &mut self,
         desc: GroupDesc<GK, GV, IK, IV>,
@@ -341,11 +320,10 @@ where
 
     /// Removes a group at the given group index from the map.
     ///
-    /// Related items are automatically removed as well if they don't have
-    /// relationships anymore by the removal of the group.
+    /// Related items are automatically removed as well if they don't have relationships anymore by
+    /// the removal of the group.
     ///
-    /// Consider using [`GroupMap::remove_group2`] if you need to remove a group
-    /// by a key.
+    /// Consider using [`GroupMap::remove_group2`] if you need to remove a group by a key.
     pub fn remove_group(&mut self, index: usize) -> Option<(GK, GV)> {
         // Removes group.
         let group_index = index;
@@ -365,11 +343,10 @@ where
 
     /// Removes a group corresponding to the given group key from the map.
     ///
-    /// Related items are automatically removed as well if they don't have
-    /// relationships anymore by the removal of the group.
+    /// Related items are automatically removed as well if they don't have relationships anymore by
+    /// the removal of the group.
     ///
-    /// Consider using [`GroupMap::remove_group`] if you need to remove a group
-    /// by an index.
+    /// Consider using [`GroupMap::remove_group`] if you need to remove a group by an index.
     pub fn remove_group2<Q>(&mut self, key: &Q) -> Option<(GK, GV)>
     where
         GK: std::borrow::Borrow<Q>,
@@ -385,7 +362,7 @@ where
     S: Default,
 {
     fn default() -> Self {
-        Self::new()
+        Self::with_hasher(|| S::default())
     }
 }
 
@@ -396,8 +373,8 @@ pub trait DescribeGroup<GK, GV, IK, IV> {
 
 /// A descriptor for [`GroupMap`].
 ///
-/// `GroupMap` is a map containing groups and items. This descriptor describes
-/// a group with its key, value, and associated items.
+/// `GroupMap` is a map containing groups and items. This descriptor describes a group with its key,
+/// value, and associated items.
 #[derive(Debug)]
 pub struct GroupDesc<GK, GV, IK, IV> {
     pub group_key: GK,
@@ -407,16 +384,14 @@ pub struct GroupDesc<GK, GV, IK, IV> {
 
 /// A hash map that you can find a value by an index as well.
 ///
-/// It's encouraged to prefer accessing item by an index over using a key
-/// because it is simpler in terms of required operations. Plus, values are laid
-/// on sequential memory block, so that we can expect faster iteration as well.
-/// However, the map allocates more memory than usual hash map.
+/// It's encouraged to prefer accessing item by an index over using a key because it is simpler in
+/// terms of required operations. Plus, values are laid on sequential memory block, so that we can
+/// expect faster iteration as well. However, the map allocates more memory than usual hash map.
 ///
-/// If you want to use an index as key interchangeably, then set `IMAP` to true.
-/// Then, the map keeps `index->key` relation as well so that the map can find
-/// a corresponding key from an index.
+/// If you want to use an index as key interchangeably, then set `IMAP` to true. Then, the map keeps
+/// `index->key` relation as well so that the map can find a corresponding key from an index.
 #[derive(Debug, Clone)]
-pub struct IndexedMap<K, V, S, const IMAP: bool = true> {
+pub struct IndexedMap<K, V, S = FxBuildHasher, const IMAP: bool = true> {
     /// Key -> An index to an item of [`Self::values`].
     map: HashMap<K, usize, S>,
 
@@ -429,6 +404,36 @@ pub struct IndexedMap<K, V, S, const IMAP: bool = true> {
     values: OptVec<V, S>,
 }
 
+impl<K, V> IndexedMap<K, V> {
+    /// Creates a new empty map with [`FxBuildHasher`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use my_utils::ds::IndexedMap;
+    ///
+    /// let map = IndexedMap::<char, &'static str>::new();
+    /// ```
+    pub fn new() -> Self {
+        Self {
+            map: HashMap::with_hasher(FxBuildHasher::default()),
+            imap: OptVec::new(),
+            values: OptVec::new(),
+        }
+    }
+}
+
+impl<K, V, S, const IMAP: bool> IndexedMap<K, V, S, IMAP> {
+    /// Creates a new empty map with the given hasher.
+    pub fn with_hasher<F: FnMut() -> S>(mut hasher: F) -> Self {
+        Self {
+            map: HashMap::with_hasher(hasher()),
+            imap: OptVec::with_hasher(hasher()),
+            values: OptVec::with_hasher(hasher()),
+        }
+    }
+}
+
 impl<K, V, S> IndexedMap<K, V, S, true>
 where
     S: BuildHasher,
@@ -438,10 +443,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// let (index, _) = map.insert('a', "alpha");
     /// assert_eq!(map.get_key(index), Some(&'a'));
     /// ```
@@ -457,16 +461,14 @@ where
 {
     /// Removes a value at the given index then returns it.
     ///
-    /// Consider using [`IndexedMap::remove2`] if you need to remove a value
-    /// by a key.
+    /// Consider using [`IndexedMap::remove2`] if you need to remove a value by a key.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// let (index, _) = map.insert('a', "alpha");
     /// assert_eq!(map.remove(index), Some("alpha"));
     /// ```
@@ -474,19 +476,16 @@ where
         self.remove_entry(index).map(|(_key, value)| value)
     }
 
-    /// Removes a value at the given index then returns it with the
-    /// corresponding key.
+    /// Removes a value at the given index then returns it with the corresponding key.
     ///
-    /// Consider using [`IndexedMap::remove_entry2`] if you need to remove a
-    /// value by a key.
+    /// Consider using [`IndexedMap::remove_entry2`] if you need to remove a value by a key.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// let (index, _) = map.insert('a', "alpha");
     /// assert_eq!(map.remove_entry(index), Some(('a', "alpha")));
     /// ```
@@ -505,29 +504,6 @@ where
 
 impl<K, V, S, const IMAP: bool> IndexedMap<K, V, S, IMAP>
 where
-    S: Default,
-{
-    /// Creates a new empty map.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
-    ///
-    /// let map = IndexedMap::<char, &'static str, RandomState>::new();
-    /// ```
-    pub fn new() -> Self {
-        Self {
-            map: HashMap::default(),
-            imap: OptVec::new(),
-            values: OptVec::new(),
-        }
-    }
-}
-
-impl<K, V, S, const IMAP: bool> IndexedMap<K, V, S, IMAP>
-where
     K: Hash + Eq + Clone,
     S: BuildHasher,
 {
@@ -536,10 +512,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// map.insert('a', "alpha");
     /// assert_eq!(map.len(), 1);
     /// ```
@@ -552,10 +527,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let map = IndexedMap::<char, &'static str, RandomState>::new();
+    /// let map = IndexedMap::<char, &'static str>::new();
     /// assert!(map.is_empty());
     /// ```
     pub fn is_empty(&self) -> bool {
@@ -567,10 +541,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// map.insert('a', "alpha");
     /// assert!(map.contains_key(&'a'));
     /// ```
@@ -587,10 +560,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// let (index, _) = map.insert('a', "alpha");
     /// assert!(map.contains_index(index));
     /// ```
@@ -598,16 +570,15 @@ where
         self.values.get(index).is_some()
     }
 
-    /// Returns the next index that will be returned on the next call to
-    /// [`IndexedMap::insert`] with the given key.
+    /// Returns the next index that will be returned on the next call to [`IndexedMap::insert`] with
+    /// the given key.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// let next_index = map.next_index(&'a');
     /// let (index, _) = map.insert('a', "alpha");
     /// assert_eq!(next_index, index);
@@ -624,18 +595,16 @@ where
         }
     }
 
-    /// Inserts the given key-value pair into the map and returns corresponding
-    /// index.
+    /// Inserts the given key-value pair into the map and returns corresponding index.
     ///
     /// If the map contains the key, then replaces values and returns old value.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// map.insert('a', "alpha");
     /// let (_, old) = map.insert('a', "ah");
     /// assert_eq!(old, Some("alpha"));
@@ -660,16 +629,14 @@ where
 
     /// Removes a value corresponding to the given key then returns it.
     ///
-    /// Consider using [`IndexedMap::remove`] if you need to remove a value by
-    /// an index.
+    /// Consider using [`IndexedMap::remove`] if you need to remove a value by an index.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// map.insert('a', "alpha");
     /// assert_eq!(map.remove2(&'a'), Some("alpha"));
     /// ```
@@ -681,19 +648,16 @@ where
         self.remove_entry2(key).map(|(_key, value)| value)
     }
 
-    /// Removes a value corresponding to the given key then returns it with the
-    /// key.
+    /// Removes a value corresponding to the given key then returns it with the key.
     ///
-    /// Consider using [`IndexedMap::remove_entry`] if you need to remove a
-    /// value by an index.
+    /// Consider using [`IndexedMap::remove_entry`] if you need to remove a value by an index.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// map.insert('a', "alpha");
     /// assert_eq!(map.remove_entry2(&'a'), Some(('a', "alpha")));
     /// ```
@@ -707,8 +671,7 @@ where
             let must_some = self.imap.take(index);
             debug_assert!(must_some.is_some());
         }
-        // Safety: We got `index` from `self.map`, which guarantees that the
-        // slot must be occupied.
+        // Safety: We got `index` from `self.map`, which guarantees that the slot must be occupied.
         let value = unsafe { self.values.take(index).unwrap_unchecked() };
         Some((key, value))
     }
@@ -718,10 +681,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// let (index, _) = map.insert('a', "alpha");
     /// assert_eq!(map.get_index(&'a'), Some(index));
     /// ```
@@ -740,10 +702,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// let (index, _) = map.insert('a', "alpha");
     /// assert_eq!(map.get(index), Some(&"alpha"));
     /// ```
@@ -753,16 +714,14 @@ where
 
     /// Retrieves a shared reference to a value corresponding to the given key.
     ///
-    /// Consider using [`IndexedMap::get`] if you need to get a value by an
-    /// index.
+    /// Consider using [`IndexedMap::get`] if you need to get a value by an index.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// let (index, _) = map.insert('a', "alpha");
     /// assert_eq!(map.get2(&'a'), Some(&"alpha"));
     /// ```
@@ -777,16 +736,14 @@ where
 
     /// Retrieves a mutable reference to a value at the given index.
     ///
-    /// Consider using [`IndexedMap::get_mut2`] if you need to get a value by a
-    /// key.
+    /// Consider using [`IndexedMap::get_mut2`] if you need to get a value by a key.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// let (index, _) = map.insert('a', "alpha");
     /// assert_eq!(map.get_mut(index), Some(&mut "alpha"));
     /// ```
@@ -796,16 +753,14 @@ where
 
     /// Retrieves a mutable reference to a value corresponding to the given key.
     ///
-    /// Consider using [`IndexedMap::get_mut`] if you need to get a value by an
-    /// index.
+    /// Consider using [`IndexedMap::get_mut`] if you need to get a value by an index.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// let (index, _) = map.insert('a', "alpha");
     /// assert_eq!(map.get_mut2(&'a'), Some(&mut "alpha"));
     /// ```
@@ -818,16 +773,14 @@ where
         self.get_mut(index)
     }
 
-    /// Returns an iterator visiting key-index-value pairs in the map in
-    /// arbitrary order.
+    /// Returns an iterator visiting key-index-value pairs in the map in arbitrary order.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// map.insert('a', "alpha");
     /// map.insert('b', "beta");
     /// for (key, index, value) in map.iter() {
@@ -841,18 +794,16 @@ where
         })
     }
 
-    /// Returns a mutable iterator visiting key-index-value pairs in the map in
-    /// arbitrary order.
+    /// Returns a mutable iterator visiting key-index-value pairs in the map in arbitrary order.
     ///
     /// You can modify values only through the iterator.
     ///
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// map.insert('a', "alpha".to_owned());
     /// map.insert('b', "beta".to_owned());
     /// for (key, index, value) in map.iter_mut() {
@@ -860,7 +811,6 @@ where
     ///     println!("{key}, {index}, {value}");
     /// }
     /// ```
-    // pub fn iter_mut(&mut self) -> IndexMapIterMut<K, V, S> {
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (&K, usize, &mut V)> {
         self.map.iter().map(|(key, &index)| {
             // Safety: We're braking borrow rules about `&mut V` by converting
@@ -878,10 +828,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// map.insert('a', "alpha");
     /// map.insert('b', "beta");
     /// for v in map.values() {
@@ -897,10 +846,9 @@ where
     /// # Examples
     ///
     /// ```
-    /// use my_ecs_util::ds::IndexedMap;
-    /// use std::hash::RandomState;
+    /// use my_utils::ds::IndexedMap;
     ///
-    /// let mut map = IndexedMap::<_, _, RandomState>::new();
+    /// let mut map = IndexedMap::new();
     /// map.insert('a', "alpha".to_owned());
     /// map.insert('b', "beta".to_owned());
     /// for v in map.values_mut() {
@@ -918,7 +866,11 @@ where
     S: Default,
 {
     fn default() -> Self {
-        Self::new()
+        Self {
+            map: HashMap::default(),
+            imap: OptVec::default(),
+            values: OptVec::default(),
+        }
     }
 }
 

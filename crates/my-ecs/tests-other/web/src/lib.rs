@@ -5,8 +5,8 @@ use std::{
     hash::BuildHasher,
     hint,
     sync::{
-        Arc,
         atomic::{AtomicBool, Ordering},
+        Arc,
     },
     thread,
     time::Duration,
@@ -62,7 +62,7 @@ fn try_register_system(pool: WorkerPool) -> WorkerPool {
 
 fn try_register_struct_system(pool: WorkerPool) -> WorkerPool {
     let num_workers = pool.len();
-    let mut ecs = Ecs::default(pool, [num_workers]);
+    let mut ecs = Ecs::create(pool, [num_workers]);
 
     // Adds resources and entities.
     ecs.add_resource(Ra("A".to_owned())).unwrap();
@@ -100,7 +100,7 @@ fn try_register_struct_system(pool: WorkerPool) -> WorkerPool {
 #[rustfmt::skip]
 fn try_register_fn_system(pool: WorkerPool) -> WorkerPool {
     let num_workers = pool.len();
-    let mut ecs = Ecs::default(pool, [num_workers]);
+    let mut ecs = Ecs::create(pool, [num_workers]);
 
     // Adds resources and entities.
     ecs.add_resource(Ra("A".to_owned())).unwrap();
@@ -221,7 +221,7 @@ fn try_register_fn_system(pool: WorkerPool) -> WorkerPool {
 fn try_open_close(pool: WorkerPool) -> WorkerPool {
     // Creates instance.
     let num_workers = pool.len();
-    let mut ecs = Ecs::default(pool, [num_workers]);
+    let mut ecs = Ecs::create(pool, [num_workers]);
 
     const REPEAT: usize = 10;
 
@@ -235,7 +235,7 @@ fn try_open_close(pool: WorkerPool) -> WorkerPool {
 
 fn try_schedule(pool: WorkerPool) -> WorkerPool {
     let num_workers = pool.len();
-    let mut ecs = Ecs::default(pool, [num_workers]);
+    let mut ecs = Ecs::create(pool, [num_workers]);
     // Registers and inserts entities.
     ecs.register_entity_of::<Ea>()
         .register_entity_of::<Eb>()
@@ -355,7 +355,7 @@ fn try_command(pool: WorkerPool) -> WorkerPool {
 
         // Creates instance.
         let num_workers = pool.len();
-        let mut ecs = Ecs::default(pool, [num_workers]);
+        let mut ecs = Ecs::create(pool, [num_workers]);
 
         // Counts number of system execution.
         let count = Arc::new(Mutex::new(0));
@@ -408,7 +408,7 @@ fn try_parallel_task(pool: WorkerPool) -> WorkerPool {
 
         // Creates instance.
         let num_workers = pool.len();
-        let mut ecs = Ecs::default(pool, [num_workers]);
+        let mut ecs = Ecs::create(pool, [num_workers]);
 
         // Registers and inserts entities.
         ecs.register_entity_of::<Ea>().unwrap();
@@ -509,7 +509,7 @@ fn try_request_lock_ok(workers: Vec<Worker>) -> Vec<Worker> {
 
     // Creates instance.
     let num_workers = workers.len();
-    let mut ecs = Ecs::default(workers, [num_workers]);
+    let mut ecs = Ecs::create(workers, [num_workers]);
 
     // Adds a shared resource.
     #[derive(Resource)]
@@ -527,8 +527,7 @@ fn try_request_lock_ok(workers: Vec<Worker>) -> Vec<Worker> {
         SystemDesc::new()
             .with_activation(COUNT, InsertPos::Back)
             .with_system(move |mut rw: ResWrite<Counter>| {
-                // Because of locking, even sync tasks cannot get executed while
-                // the lock is alive.
+                // Because of locking, even sync tasks cannot get executed while the lock is alive.
                 assert!(!is_async.load(Ordering::Relaxed));
                 rw.0 += 2;
             }),
@@ -543,8 +542,8 @@ fn try_request_lock_ok(workers: Vec<Worker>) -> Vec<Worker> {
         rr.send_future(async move {
             let mut guard = future.await?;
 
-            // We lock the resource for a little long. During the locking, the
-            // sync task cannot get access to the resource.
+            // We lock the resource for a little long. During the locking, the sync task cannot get
+            // access to the resource.
             c_is_async.store(true, Ordering::Relaxed);
             thread::park_timeout(Duration::from_millis(100));
             let mut dec = || {
@@ -575,7 +574,7 @@ fn try_request_lock_ok(workers: Vec<Worker>) -> Vec<Worker> {
 fn try_request_lock_cancelled(workers: Vec<Worker>) -> Vec<Worker> {
     // Creates instance.
     let num_workers = workers.len();
-    let mut ecs = Ecs::default(workers, [num_workers]);
+    let mut ecs = Ecs::create(workers, [num_workers]);
 
     // Adds a shared resource.
     #[derive(Resource)]
@@ -610,8 +609,7 @@ fn try_request_lock_cancelled(workers: Vec<Worker>) -> Vec<Worker> {
     // `request_lock` command or system will be cancelled by destruction of ecs.
     let workers = ecs.destroy();
 
-    // Sync system increased it by 1, while future couldn't have a chance to
-    // modify the counter.
+    // Sync system increased it by 1, while future couldn't have a chance to modify the counter.
     assert_eq!(cnt.0, 1);
 
     workers
@@ -625,7 +623,7 @@ fn try_recover_from_panic(pool: WorkerPool) -> (WorkerPool, i32) {
 
     // Creates instance.
     let num_workers = pool.len();
-    let mut ecs = Ecs::default(pool, [num_workers]);
+    let mut ecs = Ecs::create(pool, [num_workers]);
 
     // Registers and inserts entities.
     ecs.register_entity_of::<Ea>().unwrap();
@@ -688,7 +686,7 @@ fn try_recover_from_panic_in_parallel_task(pool: WorkerPool) -> (WorkerPool, i32
 
     // Creates instance.
     let num_workers = pool.len();
-    let mut ecs = Ecs::default(pool, [num_workers]);
+    let mut ecs = Ecs::create(pool, [num_workers]);
 
     // Registers and inserts entities.
     ecs.register_entity_of::<Ea>().unwrap();
@@ -903,9 +901,8 @@ mod web_test {
             // Spawns main worker and its children.
             let main = MainWorkerBuilder::new().spawn().unwrap();
 
-            // Sends "complete" event once it received response from main worker.
-            // Then JS module will destroy this struct and notify end of test
-            // to playwright.
+            // Sends "complete" event once it received response from main worker. Then JS module
+            // will destroy this struct and notify end of test to playwright.
             const COMPLETE: &str = "complete";
             main.set_on_message(|data: JsValue| {
                 if let Some(s) = data.dyn_ref::<JsString>() {
@@ -949,12 +946,12 @@ mod web_test {
                 // TODO: Test 'should panic' in web environment.
                 // try_recover_from_panic_in_parallel_task();
 
-                // Printing out a message that starts with "playwright"
-                // is something like command to playwright.
+                // Printing out a message that starts with "playwright" is something like command to
+                // playwright.
                 my_ecs::prelude::log!("playwright:expectedPanics:{total_panics}");
                 my_ecs::util::web::worker_post_message(&COMPLETE.into()).unwrap();
 
-                Ecs::default(pool, [NUM_WORKERS])
+                Ecs::create(pool, [NUM_WORKERS])
             });
 
             Self { main: Some(main) }

@@ -4,10 +4,10 @@ use super::{
 };
 use crate::global;
 use rayon::iter::{
-    IndexedParallelIterator, ParallelIterator,
     plumbing::{
         Consumer, Folder, Producer, ProducerCallback, Reducer, UnindexedConsumer, UnindexedProducer,
     },
+    IndexedParallelIterator, ParallelIterator,
 };
 
 // ref: https://github.com/rayon-rs/rayon/blob/7543ed40c9a017dee32b3dc72b3ae819820e8366/rayon-core/src/lib.rs#L851
@@ -43,10 +43,10 @@ impl Splitter {
     fn try_split(&mut self, migrated: bool) -> bool {
         // rayon implementation.
         //
-        // If a task is migrated, i.e. took it from another worker's local queue,
-        // that could mean that some workers are hungry for tasks.
-        // Therefore, it would be good for keeping processors busy
-        // to split this task into enough small pieces.
+        // If a task is migrated, i.e. took it from another worker's local queue, that could mean
+        // that some workers are hungry for tasks. Therefore, it would be good for keeping
+        // processors busy to split this task into enough small pieces.
+        //
         // if migrated {
         //     let num_workers = unsafe { SUB_CONTEXT.get().as_ref().siblings.len() };
         //     self.splits = num_workers.max(self.splits / 2);
@@ -242,11 +242,9 @@ where
     // Puts 'Right task' into local queue then notifies it to another worker.
     //
     // TODO: Optimize.
-    // compare to rayon, too many steal operations take place.
-    // The more unnecessary steal operations, the poorer performance.
-    // I guess this frequent notification is one of the reasons.
-    // Anyway, I mitigated it by reducing split count.
-    // See `Splitter::try_split`.
+    // compare to rayon, too many steal operations take place. The more unnecessary steal
+    // operations, the poorer performance. I guess this frequent notification is one of the reasons.
+    // Anyway, I mitigated it by reducing split count. See `Splitter::try_split`.
     cx.get_comm().push_parallel_task(r_task);
     cx.get_comm().signal().sub().notify_one();
 
@@ -257,9 +255,8 @@ where
         match std::panic::catch_unwind(executor) {
             Ok(l_res) => l_res,
             Err(payload) => {
-                // Panicked in `Left task`.
-                // But we need to hold `Right task` until it's finished
-                // if it was stolen by another worker.
+                // Panicked in `Left task`. But we need to hold `Right task` until it's finished if
+                // it was stolen by another worker.
                 if let Some(task) = cx.get_comm().pop_local() {
                     debug_assert_eq!(task.id(), r_task_id);
                 } else {
@@ -276,17 +273,16 @@ where
     #[cfg(target_arch = "wasm32")]
     let l_res = l_f(FnContext::NOT_MIGRATED);
 
-    // If we could find a task from the local queue, it must be 'Right task',
-    // because the queue is LIFO fashion.
+    // If we could find a task from the local queue, it must be 'Right task', because the queue is
+    // LIFO fashion.
     if let Some(task) = cx.get_comm().pop_local() {
         debug_assert_eq!(task.id(), r_task_id);
         let wid = cx.get_comm().worker_id();
         r_task.execute(wid, FnContext::NOT_MIGRATED);
     } else {
-        // We couldn't find a task from local queue.
-        // That means that another worker has stolen 'Right task'.
-        // While we wait for 'Right task' to be finished by the another worker,
-        // steals some tasks and executes them.
+        // We couldn't find a task from local queue. That means that another worker has stolen
+        // 'Right task'. While we wait for 'Right task' to be finished by the another worker, steals
+        // some tasks and executes them.
         while !r_holder.is_executed() {
             let mut steal = cx.get_comm().search();
             cx.work(&mut steal);
@@ -300,22 +296,19 @@ where
     }
 }
 
-/// A trait for wrapping Rayon's parallel iterators in [`EcsPar`] in order to
-/// intercept function call to a Rayon API then to execute them in the ECS
-/// context.
+/// A trait for wrapping Rayon's parallel iterators in [`EcsPar`] in order to intercept function
+/// call to a Rayon API then to execute them in the ECS context.
 pub trait IntoEcsPar: ParallelIterator {
     /// Wraps Rayon's parallel iterator in [`EcsPar`].
     ///
-    /// `EcsPar` calls an ECS function to make use of ECS workers instead of
-    /// Rayon's workers.
+    /// `EcsPar` calls an ECS function to make use of ECS workers instead of Rayon's workers.
     #[inline]
     fn into_ecs_par(self) -> EcsPar<Self> {
         EcsPar(self)
     }
 
     /// Implementations must call [`bridge`] or [`bridge_unindexed`] instead of
-    /// [`rayon::iter::plumbing::bridge`] or
-    /// [`rayon::iter::plumbing::bridge_unindexed`].
+    /// [`rayon::iter::plumbing::bridge`] or [`rayon::iter::plumbing::bridge_unindexed`].
     #[doc(hidden)]
     fn drive_unindexed<C>(self, consumer: C) -> C::Result
     where
@@ -335,10 +328,9 @@ impl<I: IndexedParallelIterator> IntoEcsPar for I {
 
 /// A wrapper type of Rayon's parallel iterator.
 ///
-/// Rayon's parallel iterator basically uses its own worker registry. It means
-/// that Rayon will spawn new workers regardless of living workers in ECS
-/// instance, which is a behavior you may not want. To use workers of ECS
-/// instance instead, just wrap the Rayon's parallel iterator in this wrapper.
+/// Rayon's parallel iterator basically uses its own worker registry. It means that Rayon will spawn
+/// new workers regardless of living workers in ECS instance, which is a behavior you may not want.
+/// To use workers of ECS instance instead, just wrap the Rayon's parallel iterator in this wrapper.
 /// Then, this wrapper will intercept calls to Rayon's functions.
 ///
 /// # Limitation
