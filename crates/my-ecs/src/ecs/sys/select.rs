@@ -3,14 +3,14 @@ use crate::ecs::ent::{
     entity::{ContainEntity, Entity, EntityIndex, EntityName, EntityTag},
     storage::EntityContainerRef,
 };
-use my_ecs_util::{
-    TakeRecur,
+use my_utils::{
     ds::{
         ATypeId, Borrowed, FlatIter, FlatIterMut, Getter, GetterMut, ManagedConstPtr, NonNullExt,
         ParFlatIter, ParFlatIterMut, RawGetter, SendSyncPtr,
     },
+    TakeRecur,
 };
-use rayon::iter::{IntoParallelIterator, plumbing::Producer};
+use rayon::iter::{plumbing::Producer, IntoParallelIterator};
 use std::{
     any, fmt, iter,
     marker::PhantomData,
@@ -19,21 +19,20 @@ use std::{
     sync::Arc,
 };
 
-pub(crate) trait StoreSelectInfo: StoreFilterInfo {
+pub trait StoreSelectInfo: StoreFilterInfo {
     fn contains(&self, key: &SelectKey) -> bool;
     fn get(&self, key: &SelectKey) -> Option<&Arc<SelectInfo>>;
     fn insert(&mut self, key: SelectKey, info: Arc<SelectInfo>);
 }
 
-pub(crate) trait StoreFilterInfo {
+pub trait StoreFilterInfo {
     fn contains(&self, key: &FilterKey) -> bool;
     fn get(&self, key: &FilterKey) -> Option<&Arc<FilterInfo>>;
     fn insert(&mut self, key: FilterKey, info: Arc<FilterInfo>);
 }
 
-/// A trait for selecting a certain [`Target`](Select::Target) from entities
-/// that meet [`All`](Filter::All), [`Any`](Filter::Any), and
-/// [`None`](Filter::None) conditions.
+/// A trait for selecting a certain [`Target`](Select::Target) from entities that meet
+/// [`All`](Filter::All), [`Any`](Filter::Any), and [`None`](Filter::None) conditions.
 ///
 /// # Example
 ///
@@ -60,7 +59,6 @@ pub(crate) trait StoreFilterInfo {
 /// // Or simply
 /// filter!(Sb, Target = Ca, All = Cb, Any = (Cc, Cd));
 /// ```
-#[allow(private_interfaces, private_bounds)]
 pub trait Select: 'static {
     type Target: Component;
     type Filter: Filter;
@@ -98,8 +96,8 @@ pub trait Select: 'static {
     }
 }
 
-/// A trait for selecting certain entities that meet [`All`](Filter::All),
-/// [`Any`](Filter::Any), and [`None`](Filter::None) conditions.
+/// A trait for selecting certain entities that meet [`All`](Filter::All), [`Any`](Filter::Any), and
+/// [`None`](Filter::None) conditions.
 ///
 /// # Example
 ///
@@ -135,25 +133,22 @@ pub trait Select: 'static {
 /// // Or simply
 /// filter!(Fd, Exact = (Ca, Cb));
 /// ```
-#[allow(private_interfaces, private_bounds)]
 pub trait Filter: 'static {
-    /// A [`Component`] group to select entities that contains all components in
-    /// this group. It's something like *AND* condition. But if `All` is empty,
-    /// then any entities won't be rejected.
+    /// A [`Component`] group to select entities that contains all components in this group. It's
+    /// something like *AND* condition. But if `All` is empty, then any entities won't be rejected.
     type All: Components;
 
-    /// A [`Component`] group to select entities that contains any components in
-    /// this group. It's something like *OR* condition. But if `Any` is empty,
-    /// then any entities won't be rejected.
+    /// A [`Component`] group to select entities that contains any components in this group. It's
+    /// something like *OR* condition. But if `Any` is empty, then any entities won't be rejected.
     type Any: Components;
 
-    /// A [`Component`] group to select entities that don't contain any
-    /// components in this group. It's something like *NOR* condition. Buf if
-    /// `None` is empty, then any entities won't be rejected.
+    /// A [`Component`] group to select entities that don't contain any components in this group.
+    /// It's something like *NOR* condition. Buf if `None` is empty, then any entities won't be
+    /// rejected.
     type None: Components;
 
-    /// A [`Component`] group to select a specific entity that consists of
-    /// components in this group exactly.
+    /// A [`Component`] group to select a specific entity that consists of components in this group
+    /// exactly.
     type Exact: Components;
 
     #[doc(hidden)]
@@ -203,15 +198,15 @@ impl<T: Entity> Filter for T {
 }
 
 /// Unique identifier for a type implementing [`Select`].
-pub(crate) type SelectKey = ATypeId<SelectKey_>;
-pub(crate) struct SelectKey_;
+pub type SelectKey = ATypeId<SelectKey_>;
+pub struct SelectKey_;
 
 /// Unique identifier for a type implementing [`Filter`].
-pub(crate) type FilterKey = ATypeId<FilterKey_>;
-pub(crate) struct FilterKey_;
+pub type FilterKey = ATypeId<FilterKey_>;
+pub struct FilterKey_;
 
 #[derive(Clone)]
-pub(crate) struct SelectInfo {
+pub struct SelectInfo {
     target: ComponentKey,
     finfo: Arc<FilterInfo>,
     name: &'static str,
@@ -257,8 +252,8 @@ impl SelectInfo {
 
     /// Determines that the given selector is disjoint with this selector.
     ///
-    /// Disjoint filters mean that two filters don't overlap at all.
-    /// Table below shows the disjoint conditions.
+    /// Disjoint filters mean that two filters don't overlap at all. Table below shows the disjoint
+    /// conditions.
     /// - Two have different targets.
     /// - Two are disjoint filters.
     pub(crate) fn is_disjoint(&self, rhs: &Self) -> bool {
@@ -271,7 +266,7 @@ impl SelectInfo {
 }
 
 #[derive(Clone)]
-pub(crate) struct FilterInfo {
+pub struct FilterInfo {
     all: Box<[ComponentKey]>,
     any: Box<[ComponentKey]>,
     none: Box<[ComponentKey]>,
@@ -350,8 +345,8 @@ impl FilterInfo {
 
     /// Determines that the given filter is disjoint with this filter.
     ///
-    /// Disjoint filters mean that two filters don't overlap at all.
-    /// Disjoint conditions are as follows.
+    /// Disjoint filters mean that two filters don't overlap at all. Disjoint conditions are as
+    /// follows.
     pub(crate) fn is_disjoint(&self, rhs: &Self) -> bool {
         let is_self_general = self.exact.is_empty();
         let is_rhs_general = rhs.exact.is_empty();
@@ -453,9 +448,9 @@ impl FilterInfo {
     }
 }
 
-/// Shared references to [`Select::Target`] component arrays from multiple
-/// entities. You can get an iterator traversing over each component array via
-/// [`iter`](Self::iter). A component array belongs to a specific entity.
+/// Shared references to [`Select::Target`] component arrays from multiple entities. You can get an
+/// iterator traversing over each component array via [`iter`](Self::iter). A component array
+/// belongs to a specific entity.
 #[derive(Debug)]
 pub struct Selected<'cont, Comp: 'cont> {
     /// A struct holding borrowed component arrays and their entity tags.
@@ -466,10 +461,9 @@ pub struct Selected<'cont, Comp: 'cont> {
 }
 
 impl<'cont, Comp: 'cont> Selected<'cont, Comp> {
-    /// Creates [`Selected`] from a mutable reference to a [`SelectedRaw`].
-    /// [`SelectedRaw`] is not a container, but it's borrowing container's data,
-    /// and holding them inside [`Borrowed`]s. So we can think lifetime to the
-    /// '&mut [`SelectedRaw`]' is as if container's.
+    /// Creates [`Selected`] from a mutable reference to a [`SelectedRaw`]. [`SelectedRaw`] is not a
+    /// container, but it's borrowing container's data, and holding them inside [`Borrowed`]s. So we
+    /// can think lifetime to the '&mut [`SelectedRaw`]' is as if container's.
     pub(crate) fn new(raw: &'cont mut SelectedRaw) -> Self {
         Self {
             raw,
@@ -490,13 +484,12 @@ impl<'cont, Comp: 'cont> Selected<'cont, Comp> {
     }
 }
 
-/// Mutable references to [`Select::Target`] component arrays from multiple
-/// entities.  You can get an iterator traversing over each component array via
-/// [`iter`](Self::iter) or [`iter_mut`](Self::iter_mut). A component array
-/// belongs to a specific entity.
+/// Mutable references to [`Select::Target`] component arrays from multiple entities. You can get an
+/// iterator traversing over each component array via [`iter`](Self::iter) or
+/// [`iter_mut`](Self::iter_mut). A component array belongs to a specific entity.
 //
-// `Selected` has mutable reference to a `SelectedRaw` in it.
-// So we can make use of it and expose mutable methods to clients here.
+// `Selected` has mutable reference to a `SelectedRaw` in it. So we can make use of it and expose
+// mutable methods to clients here.
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct SelectedMut<'cont, Comp>(Selected<'cont, Comp>);
@@ -541,7 +534,7 @@ impl<'stor, T: 'stor> FilteredMut<'stor, T> {
         FilteredIterMut::new(self)
     }
 
-    pub(crate) fn as_raw(&self) -> &FilteredRaw {
+    pub(crate) fn as_mut_raw(&mut self) -> &mut FilteredRaw {
         self.raw
     }
 }
@@ -559,35 +552,32 @@ impl<'stor, T: Entity + 'stor> TakeRecur for FilteredMut<'stor, T> {
 }
 
 /// Selected component arrays by a [`Select`].
-///
-// This struct contains borrowed `Select::Target` arrays. But, this struct
-// doesn't bring lifetime constraint into inside the struct, although it
-// borrows component arrays. Instead, borrowed data are encapsulated by
-// `Borrowed`, which is a run-time borrow checker. In other words, component
+//
+// This struct contains borrowed `Select::Target` arrays. But, this struct doesn't bring lifetime
+// constraint into inside the struct, although it borrows component arrays. Instead, borrowed data
+// are encapsulated by `Borrowed`, which is a run-time borrow checker. In other words, component
 // arrays must be borrowed and released everytime.
 //
-// This struct is intended to be used as a cache without lifetime.
-// Cache is a data storage which lives as long as system data.
-// But system data will live indefinitely,
-// so removing lifetime helps to keep things simple.
+// This struct is intended to be used as a cache without lifetime. Cache is a data storage which
+// lives as long as system data. But system data will live indefinitely, so removing lifetime helps
+// to keep things simple.
 #[derive(Debug)]
-pub(crate) struct SelectedRaw {
+pub struct SelectedRaw {
     /// [EntityTag] searched by the filter.
     //
-    // Each system owns `SelectedRaw`, so `etags` and `col_idxs` will be
-    // duplicated between systems.
+    // Each system owns `SelectedRaw`, so `etags` and `col_idxs` will be duplicated between systems.
     etags: Vec<Arc<EntityTag>>,
 
     /// Column(Component) index searched by the filter.
     //
-    // Each system owns `SelectedRaw`, so `etags` and `col_idxs` will be
-    // duplicated between systems.
+    // Each system owns `SelectedRaw`, so `etags` and `col_idxs` will be duplicated between systems.
     col_idxs: Vec<usize>,
 
     /// Temporary buffer for the query result.
-    /// Content will be replaced for every query, but we can reuse the capacity.
-    /// Notice that this doesn't actually own [Borrowed] because this is just a temporary buffer.
-    /// Real user, system, owns it and will drop it after using it.
+    ///
+    /// Content will be replaced for every query, but we can reuse the capacity. Notice that this
+    /// doesn't actually own [Borrowed] because this is just a temporary buffer. Real user, system,
+    /// owns it and will drop it after using it.
     //
     // See `request::BufferCleaner` for more details.
     query_res: Vec<Borrowed<RawGetter>>,
@@ -661,9 +651,9 @@ impl SelectedRaw {
 }
 
 #[derive(Debug)]
-pub(crate) struct FilteredRaw {
-    etags: Vec<Arc<EntityTag>>,
-    query_res: Vec<Borrowed<NonNull<dyn ContainEntity>>>,
+pub struct FilteredRaw {
+    pub(crate) etags: Vec<Arc<EntityTag>>,
+    pub(crate) query_res: Vec<Borrowed<NonNull<dyn ContainEntity>>>,
 }
 
 impl FilteredRaw {
@@ -705,25 +695,17 @@ impl FilteredRaw {
     pub(crate) fn clear(&mut self) {
         self.query_res.clear();
     }
-
-    pub(crate) const fn query_res(&self) -> &Vec<Borrowed<NonNull<dyn ContainEntity>>> {
-        &self.query_res
-    }
-
-    const fn entity_tags(&self) -> &Vec<Arc<EntityTag>> {
-        &self.etags
-    }
 }
 
 #[derive(Debug, Clone)]
 pub struct SelectedIter<'cont, Comp: 'cont> {
-    getter_cur: SendSyncPtr<Borrowed<RawGetter>>,
+    getter_left: SendSyncPtr<Borrowed<RawGetter>>,
 
-    getter_end: SendSyncPtr<Borrowed<RawGetter>>,
+    getter_right: SendSyncPtr<Borrowed<RawGetter>>,
 
-    etag_cur: SendSyncPtr<Arc<EntityTag>>,
+    etag_left: SendSyncPtr<Arc<EntityTag>>,
 
-    etag_end: SendSyncPtr<Arc<EntityTag>>,
+    etag_right: SendSyncPtr<Arc<EntityTag>>,
 
     _marker: PhantomData<&'cont Comp>,
 }
@@ -734,18 +716,18 @@ impl<'cont, Comp: 'cont> SelectedIter<'cont, Comp> {
         // Safety: `Selected` guarantees we're good to access those vecs.
         unsafe {
             let getter_range = raw.as_raw().query_res().as_ptr_range();
-            let getter_cur = NonNull::new_unchecked(getter_range.start.cast_mut());
-            let getter_end = NonNull::new_unchecked(getter_range.end.cast_mut());
+            let getter_left = NonNull::new_unchecked(getter_range.start.cast_mut());
+            let getter_right = NonNull::new_unchecked(getter_range.end.cast_mut());
 
             let etag_range = raw.as_raw().entity_tags().as_ptr_range();
-            let etag_cur = NonNull::new_unchecked(etag_range.start.cast_mut());
-            let etag_end = NonNull::new_unchecked(etag_range.end.cast_mut());
+            let etag_left = NonNull::new_unchecked(etag_range.start.cast_mut());
+            let etag_right = NonNull::new_unchecked(etag_range.end.cast_mut());
 
             Self {
-                getter_cur: SendSyncPtr::new(getter_cur),
-                getter_end: SendSyncPtr::new(getter_end),
-                etag_cur: SendSyncPtr::new(etag_cur),
-                etag_end: SendSyncPtr::new(etag_end),
+                getter_left: SendSyncPtr::new(getter_left),
+                getter_right: SendSyncPtr::new(getter_right),
+                etag_left: SendSyncPtr::new(etag_left),
+                etag_right: SendSyncPtr::new(etag_right),
                 _marker: PhantomData,
             }
         }
@@ -753,9 +735,9 @@ impl<'cont, Comp: 'cont> SelectedIter<'cont, Comp> {
 
     #[inline]
     pub const fn len(&self) -> usize {
-        let cur = self.getter_cur.as_ptr();
-        let end = self.getter_end.as_ptr();
-        unsafe { end.offset_from(cur) as usize }
+        let left = self.getter_left.as_ptr();
+        let right = self.getter_right.as_ptr();
+        unsafe { right.offset_from(left) as usize }
     }
 
     #[inline]
@@ -765,28 +747,28 @@ impl<'cont, Comp: 'cont> SelectedIter<'cont, Comp> {
 
     #[inline]
     fn split_at(self, index: usize) -> (Self, Self) {
-        let l_getter_cur = self.getter_cur;
-        let l_getter_end = unsafe { self.getter_cur.add(index) };
-        let r_getter_cur = l_getter_end;
-        let r_getter_end = self.getter_end;
+        let l_getter_left = self.getter_left;
+        let l_getter_right = unsafe { self.getter_left.add(index) };
+        let r_getter_left = l_getter_right;
+        let r_getter_right = self.getter_right;
 
-        let l_etag_cur = self.etag_cur;
-        let l_etag_end = unsafe { self.etag_cur.add(index) };
-        let r_etag_cur = l_etag_end;
-        let r_etag_end = self.etag_end;
+        let l_etag_left = self.etag_left;
+        let l_etag_right = unsafe { self.etag_left.add(index) };
+        let r_etag_left = l_etag_right;
+        let r_etag_right = self.etag_right;
 
         let l = SelectedIter {
-            getter_cur: l_getter_cur,
-            getter_end: l_getter_end,
-            etag_cur: l_etag_cur,
-            etag_end: l_etag_end,
+            getter_left: l_getter_left,
+            getter_right: l_getter_right,
+            etag_left: l_etag_left,
+            etag_right: l_etag_right,
             _marker: PhantomData,
         };
         let r = SelectedIter {
-            getter_cur: r_getter_cur,
-            getter_end: r_getter_end,
-            etag_cur: r_etag_cur,
-            etag_end: r_etag_end,
+            getter_left: r_getter_left,
+            getter_right: r_getter_right,
+            etag_left: r_etag_left,
+            etag_right: r_etag_right,
             _marker: PhantomData,
         };
         (l, r)
@@ -815,12 +797,12 @@ impl<'cont, Comp: 'cont> Iterator for SelectedIter<'cont, Comp> {
     type Item = TaggedGetter<'cont, Comp>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.getter_cur < self.getter_end {
-            let getter = self.getter_cur;
-            let etag = self.etag_cur;
+        if self.getter_left < self.getter_right {
+            let getter = self.getter_left;
+            let etag = self.etag_left;
             unsafe {
-                self.getter_cur = self.getter_cur.add(1);
-                self.etag_cur = self.etag_cur.add(1);
+                self.getter_left = self.getter_left.add(1);
+                self.etag_left = self.etag_left.add(1);
                 Some(Self::create_item(getter, etag))
             }
         } else {
@@ -844,11 +826,11 @@ impl<'cont, Comp: 'cont> ExactSizeIterator for SelectedIter<'cont, Comp> {
 
 impl<'cont, Comp: 'cont> DoubleEndedIterator for SelectedIter<'cont, Comp> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        if self.getter_cur < self.getter_end {
+        if self.getter_left < self.getter_right {
             unsafe {
-                self.getter_end = self.getter_cur.sub(1);
-                self.etag_end = self.etag_cur.sub(1);
-                Some(Self::create_item(self.getter_end, self.etag_end))
+                self.getter_right = self.getter_right.sub(1);
+                self.etag_right = self.etag_right.sub(1);
+                Some(Self::create_item(self.getter_right, self.etag_right))
             }
         } else {
             None
@@ -858,9 +840,8 @@ impl<'cont, Comp: 'cont> DoubleEndedIterator for SelectedIter<'cont, Comp> {
 
 /// Parallel [`SelectedIter`].
 //
-// `Iterator` and `ParallelIterator` have the same signature methods,
-// So clients have to write fully-qualified syntax to specify methods.
-// This new type helps clients avoid it.
+// `Iterator` and `ParallelIterator` have the same signature methods, So clients have to write
+// fully-qualified syntax to specify methods. This new type helps clients avoid it.
 #[derive(Debug, Clone)]
 #[repr(transparent)]
 pub struct ParSelectedIter<'cont, Comp>(pub SelectedIter<'cont, Comp>);
@@ -898,16 +879,16 @@ impl<'cont, Comp: Send + Sync + 'cont> Producer for ParSelectedIter<'cont, Comp>
     }
 }
 
-my_ecs_util::impl_into_iterator_for_parallel!(
+my_utils::impl_into_iterator_for_parallel!(
     "lifetimes" = 'cont; "bounds" = Comp: {'cont};
     "for" = ParSelectedIter; "to" = SelectedIter<'cont, Comp>;
     "item" = TaggedGetter<'cont, Comp>;
 );
-my_ecs_util::impl_parallel_iterator!(
+my_utils::impl_parallel_iterator!(
     "lifetimes" = 'cont; "bounds" = Comp: {Send + Sync + 'cont};
     "for" = ParSelectedIter; "item" = TaggedGetter<'cont, Comp>;
 );
-my_ecs_util::impl_unindexed_producer!(
+my_utils::impl_unindexed_producer!(
     "lifetimes" = 'cont; "bounds" = Comp: {Send + Sync + 'cont};
     "for" = ParSelectedIter; "item" = TaggedGetter<'cont, Comp>;
 );
@@ -947,8 +928,8 @@ impl<'cont, Comp> Iterator for SelectedIterMut<'cont, Comp> {
     fn next(&mut self) -> Option<Self::Item> {
         self.0.next().map(|TaggedGetter { getter, etag }| {
             TaggedGetterMut {
-                // Safety: `GetterMut` is made from `Getter`,
-                // which proves it's `RawGetter` and type are valid.
+                // Safety: `GetterMut` is made from `Getter`, which proves it's `RawGetter` and type
+                // are valid.
                 getter: unsafe { GetterMut::from_raw(getter.into_raw()) },
                 etag,
             }
@@ -973,8 +954,8 @@ impl<'cont, Comp: 'cont> DoubleEndedIterator for SelectedIterMut<'cont, Comp> {
     fn next_back(&mut self) -> Option<Self::Item> {
         self.0.next_back().map(|TaggedGetter { getter, etag }| {
             TaggedGetterMut {
-                // Safety: `GetterMut` is made from `Getter`,
-                // which proves it's `RawGetter` and type are valid.
+                // Safety: `GetterMut` is made from `Getter`, which proves it's `RawGetter` and type
+                // are valid.
                 getter: unsafe { GetterMut::from_raw(getter.into_raw()) },
                 etag,
             }
@@ -984,9 +965,8 @@ impl<'cont, Comp: 'cont> DoubleEndedIterator for SelectedIterMut<'cont, Comp> {
 
 /// Parallel [`SelectedIterMut`].
 //
-// `Iterator` and `ParallelIterator` have the same signature methods,
-// So clients have to write fully-qualified syntax to specify methods.
-// This new type helps clients avoid it.
+// `Iterator` and `ParallelIterator` have the same signature methods, So clients have to write
+// fully-qualified syntax to specify methods. This new type helps clients avoid it.
 #[derive(Debug)]
 #[repr(transparent)]
 pub struct ParSelectedIterMut<'cont, Comp>(pub SelectedIterMut<'cont, Comp>);
@@ -1024,26 +1004,30 @@ impl<'cont, Comp: Send + Sync> Producer for ParSelectedIterMut<'cont, Comp> {
     }
 }
 
-my_ecs_util::impl_into_iterator_for_parallel!(
+my_utils::impl_into_iterator_for_parallel!(
     "lifetimes" = 'cont; "bounds" = Comp: {'cont};
     "for" = ParSelectedIterMut; "to" = SelectedIterMut<'cont, Comp>;
     "item" = TaggedGetterMut<'cont, Comp>;
 );
-my_ecs_util::impl_parallel_iterator!(
+my_utils::impl_parallel_iterator!(
     "lifetimes" = 'cont; "bounds" = Comp: {Send + Sync + 'cont};
     "for" = ParSelectedIterMut; "item" = TaggedGetterMut<'cont, Comp>;
 );
-my_ecs_util::impl_unindexed_producer!(
+my_utils::impl_unindexed_producer!(
     "lifetimes" = 'cont; "bounds" = Comp: {Send + Sync + 'cont};
     "for" = ParSelectedIterMut; "item" = TaggedGetterMut<'cont, Comp>;
 );
 
 #[derive(Debug)]
 pub struct FilteredIterMut<'stor, T: 'stor> {
-    cont_cur: NonNull<Borrowed<NonNull<dyn ContainEntity>>>,
-    cont_end: NonNull<Borrowed<NonNull<dyn ContainEntity>>>,
-    etag_cur: NonNull<Arc<EntityTag>>,
-    etag_end: NonNull<Arc<EntityTag>>,
+    /// Inclusive
+    cont_left: NonNull<Borrowed<NonNull<dyn ContainEntity>>>,
+    /// Exclusive
+    cont_right: NonNull<Borrowed<NonNull<dyn ContainEntity>>>,
+    /// Inclusive
+    etag_left: NonNull<Arc<EntityTag>>,
+    /// Exclusive
+    etag_right: NonNull<Arc<EntityTag>>,
     _marker: PhantomData<&'stor mut T>,
 }
 
@@ -1051,19 +1035,19 @@ impl<'stor, T: 'stor> FilteredIterMut<'stor, T> {
     fn new(raw: &mut FilteredMut<'stor, T>) -> Self {
         // Safety: `FilteredMut` guarantees we're good to access those vecs.
         unsafe {
-            let cont_range = raw.as_raw().query_res().as_ptr_range();
-            let cont_cur = NonNull::new_unchecked(cont_range.start.cast_mut());
-            let cont_end = NonNull::new_unchecked(cont_range.end.cast_mut());
+            let cont_range = raw.as_mut_raw().query_res.as_mut_ptr_range();
+            let cont_left = NonNull::new_unchecked(cont_range.start);
+            let cont_right = NonNull::new_unchecked(cont_range.end);
 
-            let etag_range = raw.as_raw().entity_tags().as_ptr_range();
-            let etag_cur = NonNull::new_unchecked(etag_range.start.cast_mut());
-            let etag_end = NonNull::new_unchecked(etag_range.end.cast_mut());
+            let etag_range = raw.as_mut_raw().etags.as_mut_ptr_range();
+            let etag_left = NonNull::new_unchecked(etag_range.start);
+            let etag_right = NonNull::new_unchecked(etag_range.end);
 
             Self {
-                cont_cur,
-                cont_end,
-                etag_cur,
-                etag_end,
+                cont_left,
+                cont_right,
+                etag_left,
+                etag_right,
                 _marker: PhantomData,
             }
         }
@@ -1071,9 +1055,9 @@ impl<'stor, T: 'stor> FilteredIterMut<'stor, T> {
 
     #[inline]
     pub const fn len(&self) -> usize {
-        let cur = self.cont_cur.as_ptr();
-        let end = self.cont_end.as_ptr();
-        unsafe { end.offset_from(cur) as usize }
+        let left = self.cont_left.as_ptr();
+        let right = self.cont_right.as_ptr();
+        unsafe { right.offset_from(left) as usize }
     }
 
     #[inline]
@@ -1096,12 +1080,16 @@ impl<'stor, T: 'stor> Iterator for FilteredIterMut<'stor, T> {
     type Item = EntityContainerRef<'stor, T>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.cont_cur < self.cont_end {
-            let getter = self.cont_cur;
-            let etag = self.etag_cur;
+        if self.cont_left < self.cont_right {
+            let getter = self.cont_left;
+            let etag = self.etag_left;
             unsafe {
-                self.cont_cur = self.cont_cur.add(1);
-                self.etag_cur = self.etag_cur.add(1);
+                let ptr = self.cont_left.as_ptr().add(1);
+                self.cont_left = NonNull::new_unchecked(ptr);
+
+                let ptr = self.etag_left.as_ptr().add(1);
+                self.etag_left = NonNull::new_unchecked(ptr);
+
                 Some(Self::create_item(getter, etag))
             }
         } else {
@@ -1120,11 +1108,15 @@ impl<'stor, T: 'stor> ExactSizeIterator for FilteredIterMut<'stor, T> {
 
 impl<'stor, T: 'stor> DoubleEndedIterator for FilteredIterMut<'stor, T> {
     fn next_back(&mut self) -> Option<Self::Item> {
-        if self.cont_cur < self.cont_end {
+        if self.cont_left < self.cont_right {
             unsafe {
-                self.cont_end = self.cont_cur.sub(1);
-                self.etag_end = self.etag_cur.sub(1);
-                Some(Self::create_item(self.cont_end, self.etag_end))
+                let ptr = self.cont_right.as_ptr().sub(1);
+                self.cont_right = NonNull::new_unchecked(ptr);
+
+                let ptr = self.etag_right.as_ptr().sub(1);
+                self.etag_right = NonNull::new_unchecked(ptr);
+
+                Some(Self::create_item(self.cont_right, self.etag_right))
             }
         } else {
             None
@@ -1134,16 +1126,14 @@ impl<'stor, T: 'stor> DoubleEndedIterator for FilteredIterMut<'stor, T> {
 
 /// Component getter with entity tag.
 ///
-/// * Component getter  
-///   A component getter corresponds to a component array.
-///   You can get each component inside component array via getter.
-///   See [`Getter`] for more details.
+/// * Component getter
+///   A component getter corresponds to a component array. You can get each component inside
+///   component array via getter. See [`Getter`] for more details.
 ///
-/// * Entity tag  
-///   Many entities may contain the same component type.
-///   So, it's needed to know what entity this component belongs to.
-///   Entity tag has entity identification such as entity name.
-#[derive(Debug, Clone)]
+/// * Entity tag
+///   Many entities may contain the same component type. So, it's needed to know what entity this
+///   component belongs to. Entity tag has entity identification such as entity name.
+#[derive(Debug)]
 pub struct TaggedGetter<'cont, Comp: 'cont> {
     getter: Getter<'cont, Comp>,
     etag: ManagedConstPtr<EntityTag>,
@@ -1191,15 +1181,13 @@ impl<'cont, Comp: Send + Sync> IntoParallelIterator for TaggedGetter<'cont, Comp
 
 /// Component getter with entity tag.
 ///
-/// * Component getter  
-///   A component getter corresponds to a component array.
-///   You can get each component inside component array via getter.
-///   See [`GetterMut`] for more details.
+/// * Component getter
+///   A component getter corresponds to a component array. You can get each component inside
+///   component array via getter. See [`GetterMut`] for more details.
 ///
-/// * Entity tag  
-///   Many entities may contain the same component type.
-///   So, it's needed to know what entity this component belongs to.
-///   Entity tag has entity identification such as entity name.
+/// * Entity tag
+///   Many entities may contain the same component type. So, it's needed to know what entity this
+///   component belongs to. Entity tag has entity identification such as entity name.
 #[derive(Debug)]
 pub struct TaggedGetterMut<'cont, Comp: 'cont> {
     getter: GetterMut<'cont, Comp>,

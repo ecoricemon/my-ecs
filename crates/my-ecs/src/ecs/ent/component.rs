@@ -1,5 +1,5 @@
 use my_ecs_macros::repeat_macro;
-use my_ecs_util::ds::{ATypeId, FnCloneRaw, FnDefaultRaw, TypeInfo, unimpl_clone, unimpl_default};
+use my_utils::ds::{unimpl_clone, unimpl_default, ATypeId, FnCloneRaw, FnDefaultRaw, TypeInfo};
 
 /// Ordinary rust types.
 pub trait Component: Send + Sync + Sized + 'static {
@@ -47,7 +47,7 @@ macro_rules! impl_components {
     ($n:expr, $($i:expr),*) => {const _: () = {
         #[allow(unused_imports)]
         use $crate::{
-            ds::TypeInfo,
+            utils::ds::TypeInfo,
             ecs::ent::component::{Component, Components, ComponentKey},
         };
         use paste::paste;
@@ -88,7 +88,7 @@ mod tests {
     use super::*;
     use crate as my_ecs;
     use my_ecs_macros::Component;
-    use my_ecs_util::ds::{NotClone, NotDefault};
+    use my_utils::ds::{NotClone, NotDefault};
 
     #[test]
     fn test_component_detect_impls() {
@@ -104,12 +104,10 @@ mod tests {
         #[derive(Component)]
         struct NonCloneB([u8; 2]);
 
-        // Non-cloneable components have the same clone function which causes
-        // panic.
+        // Non-cloneable components have the same clone function which causes panic.
         assert!(is_clone_fn_eq::<NonCloneA, NonCloneB>());
 
-        // But cloneable components have different clone functions to each
-        // other.
+        // But cloneable components have different clone functions to each other.
         assert!(is_clone_fn_ne::<CloneA, CloneB>());
         assert!(is_clone_fn_ne::<CloneA, NonCloneA>());
         assert!(is_clone_fn_ne::<CloneB, NonCloneA>());

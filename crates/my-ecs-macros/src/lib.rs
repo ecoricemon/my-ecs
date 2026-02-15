@@ -1,17 +1,17 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use proc_macro2::TokenTree as TokenTree2;
-use quote::{ToTokens, TokenStreamExt, quote};
+use quote::{quote, ToTokens, TokenStreamExt};
 use std::iter;
 use syn::token::Comma;
 use syn::{
-    Data, DeriveInput, Error, Expr, ExprRange, Ident, Index, Lit, LitInt, Path, RangeLimits,
-    Result, Token, Type, TypePath, Visibility, parenthesized,
+    parenthesized,
     parse::{Parse, ParseStream},
     parse_macro_input,
     punctuated::Punctuated,
     spanned::Spanned,
-    token,
+    token, Data, DeriveInput, Error, Expr, ExprRange, Ident, Index, Lit, LitInt, Path, RangeLimits,
+    Result, Token, Type, TypePath, Visibility,
 };
 
 /// Implements [`Component`] for the type.
@@ -47,13 +47,13 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
         // Implements `Component` trait.
         impl my_ecs::prelude::Component for #ident {
             const IS_DEFAULT: bool
-                = my_ecs::ds::TypeHelper::<#ident>::IS_DEFAULT;
-            const FN_DEFAULT: my_ecs::ds::FnDefaultRaw
-                = my_ecs::ds::TypeHelper::<#ident>::FN_DEFAULT;
+                = my_ecs::utils::ds::TypeHelper::<#ident>::IS_DEFAULT;
+            const FN_DEFAULT: my_ecs::utils::ds::FnDefaultRaw
+                = my_ecs::utils::ds::TypeHelper::<#ident>::FN_DEFAULT;
             const IS_CLONE: bool
-                = my_ecs::ds::TypeHelper::<#ident>::IS_CLONE;
-            const FN_CLONE: my_ecs::ds::FnCloneRaw
-                = my_ecs::ds::TypeHelper::<#ident>::FN_CLONE;
+                = my_ecs::utils::ds::TypeHelper::<#ident>::IS_CLONE;
+            const FN_CLONE: my_ecs::utils::ds::FnCloneRaw
+                = my_ecs::utils::ds::TypeHelper::<#ident>::FN_CLONE;
         }
     }
     .into()
@@ -61,18 +61,18 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
 
 /// Impelments [`Entity`] for the type.
 ///
-/// Actually, you don't have to define entity type explicitly, but by doing so,
-/// the crate becomes to be able to provide easy-to-use functions for you.
+/// Actually, you don't have to define entity type explicitly, but by doing so, the crate becomes to
+/// be able to provide easy-to-use functions for you.
 ///
-/// You can designate which container type you use as well by attributes
-/// `container` and `random_state`.
+/// You can designate which container type you use as well by attributes `container` and
+/// `build_hasher`.
 ///
-/// `container` means which container type you use for the entity. You can use
-/// your own types or choose one of built-in types shown below.
+/// `container` means which container type you use for the entity. You can use your own type or
+/// choose one of built-in types shown below.
 /// * [`SparseSet`] - Default
 /// * [`ChunkSparseSet`]
 ///
-/// `random_state` means a state to make a hasher. [`std::hash::RandomState`] is
+/// `build_hasher` is a type implementing `BuildHasher`. `my_ecs::FxBuildHasher` is
 /// default.
 ///
 /// # Examples
@@ -91,7 +91,7 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
 /// // Or, you can customize entity container.
 /// #[derive(Entity)]
 /// #[container(ChunkSparseSet)]
-/// #[random_state(std::hash::RandomState)]
+/// #[build_hasher(std::collections::hash_map::RandomState)]
 /// struct Eb {
 ///     a: Ca,
 /// }
@@ -102,7 +102,7 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
 /// [`ChunkSparseSet`]: ./struct.ChunkSparseSet.html
 //
 // TEST: my-ecs/src/lib.rs: tests::test_my_ecs_macros_doc_derive_entity
-#[proc_macro_derive(Entity, attributes(container, random_state))]
+#[proc_macro_derive(Entity, attributes(container, default_hasher))]
 pub fn derive_entity(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let vis = input.vis.clone();
@@ -146,11 +146,11 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         })
         .next()
         .unwrap_or(quote! { SparseSet });
-    let random_state = input
+    let build_hasher = input
         .attrs
         .iter()
         .filter_map(|attr| {
-            if attr.path().is_ident("random_state") {
+            if attr.path().is_ident("build_hasher") {
                 let ty: Path = attr.parse_args().unwrap();
                 Some(quote! { #ty })
             } else {
@@ -158,7 +158,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
             }
         })
         .next()
-        .unwrap_or(quote! { std::hash::RandomState });
+        .unwrap_or(quote! { my_ecs::FxBuildHasher });
 
     // Implements `AsEntityReg` trait.
     let impl_as_entity_ref = quote! {
@@ -168,7 +168,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
                     #ident_str.into()
                 );
                 let cont = Box::new(
-                    my_ecs::prelude::#container::<#random_state>::new()
+                    my_ecs::prelude::#container::<#build_hasher>::new()
                 );
                 let mut desc = my_ecs::prelude::EntityReg::new(
                     Some(name), cont
@@ -186,7 +186,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
     let impl_components = quote! {
         impl my_ecs::prelude::Components for #ident {
             type Keys = [my_ecs::prelude::ComponentKey; #num_fields];
-            type Infos = [my_ecs::ds::TypeInfo; #num_fields];
+            type Infos = [my_ecs::utils::ds::TypeInfo; #num_fields];
 
             const LEN: usize = #num_fields;
 
@@ -249,9 +249,9 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
                     let mut is_full = true;
 
                     #(
-                        if my_ecs::ds::TypeHelper::<#field_types>::IS_DEBUG {
-                            let helper = my_ecs::ds::DebugHelper {
-                                f: my_ecs::ds::TypeHelper::<#field_types>::FN_FMT,
+                        if my_ecs::utils::ds::TypeHelper::<#field_types>::IS_DEBUG {
+                            let helper = my_ecs::utils::ds::DebugHelper {
+                                f: my_ecs::utils::ds::TypeHelper::<#field_types>::FN_FMT,
                                 ptr: self.#field_idents as *const #field_types as *const u8,
                             };
                             s.field(#field_ident_strs, &helper);
@@ -293,14 +293,15 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
 
             const OFFSETS_BY_FIELD_INDEX: &'static [usize] = &[
                 #(
-                    std::mem::offset_of!(#ident, #field_idents)
+                    my_ecs::memoffset::offset_of!(#ident, #field_idents)
                 ),*
             ];
 
             fn field_to_column_index(fi: usize) -> usize {
-                use std::{sync::OnceLock, any::TypeId};
+                use std::any::TypeId;
+                use my_ecs::once_cell::sync::OnceCell;
 
-                static MAP: OnceLock<[usize; #num_fields]> = OnceLock::new();
+                static MAP: OnceCell<[usize; #num_fields]> = OnceCell::new();
 
                 let map = MAP.get_or_init(|| {
                     let mut map = [0; #num_fields];
@@ -402,13 +403,12 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
     })
 }
 
-/// Implements [`Filter`] for the type, and implements [`Select`] optionally
-/// if `Target` is defined.
+/// Implements [`Filter`] for the type, and implements [`Select`] optionally if `Target` is defined.
 ///
-/// Types implementing `Filter` only can be used in [`EntWrite`] only. Types
-/// implementing both `Filter` and `Select`, on the other hand, also can be used
-/// in [`Read`] and [`Write`] as well. Because `Read` and `Write` mean
-/// requesting read or write access to a specific *target* component.
+/// Types implementing `Filter` only can be used in [`EntWrite`] only. Types implementing both
+/// `Filter` and `Select`, on the other hand, also can be used in [`Read`] and [`Write`] as well.
+/// Because `Read` and `Write` mean requesting read or write access to a specific *target*
+/// component.
 ///
 /// See [`Filter`] and [`Select`] for more details.
 ///
@@ -470,8 +470,7 @@ pub fn filter(input: TokenStream) -> TokenStream {
         validate_non_overlap_tokens(pos, none.clone())
     };
 
-    // The same purpose of code above.
-    // This gives more specific position where the error occurs.
+    // The same purpose of code above. This gives more specific position where the error occurs.
     // However, this cannot detect something like as follows
     // Target = Ca, None = crate::Ca
     if let Some(target) = &sel.target {
@@ -518,7 +517,7 @@ pub fn filter(input: TokenStream) -> TokenStream {
         quote! {
             const _: () = {#(
                 assert!(
-                    !my_ecs::ds::TypeHelper::<(#pair_as, #pair_bs)>::IS_EQUAL_TYPE,
+                    !my_ecs::utils::ds::TypeHelper::<(#pair_as, #pair_bs)>::IS_EQUAL_TYPE,
                     "Types in `Target`, `All`, and `Any` must not be included in `None`",
                 );
             )*};
@@ -528,10 +527,9 @@ pub fn filter(input: TokenStream) -> TokenStream {
 
 /// Implements [`Request`] for the type.
 ///
-/// Functions implement the `Request` by the crate internally, but others such
-/// as struct or enum don't. You must implement the `Request` yourself if you
-/// want it to act as a system. This macro helps you write just a little bit of
-/// code for that.
+/// Functions implement the `Request` by the crate internally, but others such as struct or enum
+/// don't. You must implement the `Request` yourself if you want it to act as a system. This macro
+/// helps you write just a little bit of code for that.
 ///
 /// # Examples
 ///

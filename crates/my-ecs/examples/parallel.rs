@@ -20,7 +20,7 @@ fn main() {
 
     let pool = WorkerPool::with_all_cpus();
     let num_workers = pool.len();
-    let mut ecs = Ecs::default(pool, [num_workers]);
+    let mut ecs = Ecs::create(pool, [num_workers]);
 
     ecs.register_entity_of::<Ea>()
         // Puts in some numbers.
@@ -36,8 +36,8 @@ fn main() {
         .add_once_system(move |r: Read<Fa>| {
             let start = Instant::now();
 
-            // Computes sum using rayon's parallel iterator. Visit this link to see
-            // what rayon is. https://github.com/rayon-rs/rayon
+            // Computes sum using rayon's parallel iterator. Visit this link to see what rayon is.
+            // https://github.com/rayon-rs/rayon
             let mut sum = 0_i64;
             for getter in r.iter() {
                 sum += getter.par_iter().into_ecs_par().map(|ca| ca.0).sum::<i64>();

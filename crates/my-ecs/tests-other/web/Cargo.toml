@@ -1,11 +1,14 @@
 [package]
-name = "tester"
+name = "test"
 version = "0.0.0"
-edition = "2024"
-rust-version = "1.85"
+edition = "2021"
 
 [lib]
 crate-type = ["cdylib"]
+
+[features]
+check = ["my-ecs/check"]
+stat = ["my-ecs/stat"]
 
 [dependencies]
 my-ecs = { workspace = true, features = ["stat"] }
@@ -18,4 +21,4 @@ web-sys = { workspace = true, features = [
     "CustomEvent",
     "Window",
 ] }
-console_error_panic_hook = { workspace = true }
+console_error_panic_hook = "0.1.7"

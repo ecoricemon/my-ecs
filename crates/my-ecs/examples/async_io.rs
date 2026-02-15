@@ -9,7 +9,7 @@ fn main() {}
 
 #[cfg(not(target_arch = "wasm32"))]
 mod non_web {
-    use futures::{FutureExt, channel::oneshot, select};
+    use futures::{channel::oneshot, select, FutureExt};
     use my_ecs::prelude::*;
     use std::{
         thread,
@@ -18,7 +18,7 @@ mod non_web {
 
     pub(super) fn good_example() {
         // Creates instance with two groups.
-        let mut ecs = Ecs::default(WorkerPool::with_len(2), [1, 1]);
+        let mut ecs = Ecs::create(WorkerPool::with_len(2), [1, 1]);
 
         let (exit_tx, exit_rx) = oneshot::channel();
 
@@ -46,7 +46,7 @@ mod non_web {
 
     pub(super) fn bad_example() {
         // Creates instance.
-        let mut ecs = Ecs::default(WorkerPool::with_len(2), [2]);
+        let mut ecs = Ecs::create(WorkerPool::with_len(2), [2]);
 
         let (exit_tx, exit_rx) = oneshot::channel();
 
