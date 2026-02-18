@@ -1,5 +1,16 @@
 # my-ecs
 
+[![Crates.io][crates-badge]][crates-url]
+[![CI Status][ci-badge]][ci-url]
+[![Codecov][codecov-badge]][codecov-url]
+
+[crates-badge]: https://img.shields.io/crates/v/my-ecs.svg
+[crates-url]: https://crates.io/crates/my-ecs
+[ci-badge]: https://github.com/ecoricemon/my-ecs/actions/workflows/test.yml/badge.svg
+[ci-url]: https://github.com/ecoricemon/my-ecs/actions/workflows/test.yml
+[codecov-badge]: https://codecov.io/gh/ecoricemon/my-ecs/graph/badge.svg?flag=my-ecs
+[codecov-url]: https://app.codecov.io/gh/ecoricemon/my-ecs?flags%5B0%5D=my-ecs
+
 my-ecs is a library that implements ECS pattern.
 
 ## ECS
