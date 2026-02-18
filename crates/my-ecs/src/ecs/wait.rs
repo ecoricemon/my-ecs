@@ -1,35 +1,31 @@
 use super::{ent::entity::EntityIndex, resource::ResourceIndex};
-use my_ecs_util::ds::{AsDedupVec, DedupVec, GenQueue, OptVec};
+use crate::FxBuildHasher;
+use my_utils::ds::{AsDedupVec, DedupVec, GenQueue, OptVec};
 use std::{fmt::Debug, hash::BuildHasher, ops::Deref};
 
 /// A struct containing [`WaitQueue`]s for each component, resource, and entity.
+///
 /// Their indices are the same with the ones from the data containers.
 #[derive(Debug)]
-pub(crate) struct WaitQueues<S> {
-    ent_queues: OptVec<OptVec<WaitQueue, S>, S>,
-    res_queues: OptVec<WaitQueue, S>,
+pub(crate) struct WaitQueues {
+    ent_queues: OptVec<OptVec<WaitQueue, FxBuildHasher>, FxBuildHasher>,
+    res_queues: OptVec<WaitQueue, FxBuildHasher>,
     generation: u64,
 }
 
-impl<S> WaitQueues<S>
-where
-    S: Default,
-{
+impl WaitQueues {
+    const INIT_GEN: u64 = 0;
+
     pub(super) fn new() -> Self {
         Self {
             ent_queues: OptVec::new(),
             res_queues: OptVec::new(),
-            generation: 0,
+            generation: Self::INIT_GEN,
         }
     }
-}
 
-impl<S> WaitQueues<S>
-where
-    S: BuildHasher,
-{
     /// Takes O(n) time.
-    #[cfg(debug_assertions)]
+    #[allow(unused)]
     pub(super) fn is_all_queue_empty(&self) -> bool {
         self.ent_queues
             .pairs()
@@ -79,8 +75,8 @@ where
 
         // === Internal helper functions ===
 
-        /// Dequeues an item from component wait queues.
-        /// The component queues are picked up by `wait` indices.
+        /// Dequeues an item from component wait queues. The component queues are picked up by
+        /// `wait` indices.
         fn dequeue_comp<S, I>(ent_queues: &mut OptVec<OptVec<WaitQueue, S>, S>, wait_iter: I)
         where
             S: BuildHasher,
@@ -93,8 +89,8 @@ where
             }
         }
 
-        /// Dequeues an item from resource wait queues.
-        /// The component queues are picked up by `wait` indices.
+        /// Dequeues an item from resource wait queues. The component queues are picked up by `wait`
+        /// indices.
         fn dequeue_res<S, I>(res_queues: &mut OptVec<WaitQueue, S>, wait_iter: I)
         where
             S: BuildHasher,
@@ -106,8 +102,8 @@ where
             }
         }
 
-        /// Dequeues an item from component wait queues.
-        /// The component queues are picked up by `wait` indices.
+        /// Dequeues an item from component wait queues. The component queues are picked up by
+        /// `wait` indices.
         fn dequeue_ent<S, I>(ent_queues: &mut OptVec<OptVec<WaitQueue, S>, S>, wait_iter: I)
         where
             S: BuildHasher,
@@ -122,10 +118,11 @@ where
         }
     }
 
-    /// Enqueues requests for access authority of components or resources
-    /// according to `wait` indices.
-    /// If they're good to be accessed now, returns true.
-    /// Otherwise, returns false, and then failed indices will be inserted into `retry`.
+    /// Enqueues requests for access authority of components or resources according to `wait`
+    /// indices.
+    ///
+    /// If they're good to be accessed now, returns true. Otherwise, returns false, and then failed
+    /// indices will be inserted into `retry`.
     fn _enqueue(&mut self, wait: &WaitIndices, retry: &mut WaitRetryIndices) -> bool {
         let mut res = true;
 
@@ -173,10 +170,10 @@ where
         // === Internal helper functions ===
 
         /// Enqueues waiting signal into component wait queues according to `wait` indices.
-        /// If all of them are positioned to the front of corresponding queues,
-        /// returns true, which means they're allowed to access corresponding components.
-        /// Otherwise, returns false and then indices needed to retry later
-        /// are pushed `retry`.
+        ///
+        /// If all of them are positioned to the front of corresponding queues, returns true, which
+        /// means they're allowed to access corresponding components. Otherwise, returns false and
+        /// then indices needed to retry later are pushed `retry`.
         ///
         /// # Panics
         ///
@@ -207,10 +204,10 @@ where
         }
 
         /// Enqueues waiting signal into resource wait queues according to `wait` indices.
-        /// If all of them are positioned to the front of corresponding queues,
-        /// returns true, which means they're allowed to access corresponding resources.
-        /// Otherwise, returns false and then indices needed to retry later
-        /// are pushed `retry`.
+        ///
+        /// If all of them are positioned to the front of corresponding queues, returns true, which
+        /// means they're allowed to access corresponding resources. Otherwise, returns false and
+        /// then indices needed to retry later are pushed `retry`.
         ///
         /// # Panics
         ///
@@ -240,10 +237,10 @@ where
         }
 
         /// Enqueues waiting signal into component wait queues according to `wait` indices.
-        /// If all of them are positioned to the front of corresponding queues,
-        /// returns true, which means they're allowed to access corresponding components.
-        /// Otherwise, returns false and then indices needed to retry later
-        /// are pushed `retry`.
+        ///
+        /// If all of them are positioned to the front of corresponding queues, returns true, which
+        /// means they're allowed to access corresponding components. Otherwise, returns false and
+        /// then indices needed to retry later are pushed `retry`.
         ///
         /// # Panics
         ///
@@ -285,9 +282,9 @@ where
         // === Internal helper functions ===
 
         /// Checks component availability according to `retry` indices.
-        /// Passed items in `retry` will be removed, but the failed items
-        /// will be left, so they'll be checked again later.
-        /// If all items are ejected, returns true.
+        ///
+        /// Passed items in `retry` will be removed, but the failed items will be left, so they'll
+        /// be checked again later. If all items are ejected, returns true.
         fn check_comp<S>(
             ent_queues: &OptVec<OptVec<WaitQueue, S>, S>,
             retry: &mut Vec<(u64, usize, usize)>,
@@ -307,9 +304,9 @@ where
         }
 
         /// Checks resource availability according to `retry` indices.
-        /// Passed items in `retry` will be removed, but the failed items
-        /// will be left, so they'll be checked again later.
-        /// If all items are ejected, returns true.
+        ///
+        /// Passed items in `retry` will be removed, but the failed items will be left, so they'll
+        /// be checked again later. If all items are ejected, returns true.
         fn check_res<S>(res_queues: &OptVec<WaitQueue, S>, retry: &mut Vec<(u64, usize)>) -> bool
         where
             S: BuildHasher,
@@ -324,19 +321,14 @@ where
             true
         }
     }
-}
 
-impl<S> WaitQueues<S>
-where
-    S: BuildHasher + Default,
-{
     /// Makes wait queues for an entity.
-    /// This makes a queue at the position `ei`.
-    /// Also, it makes inner queues for components of the entity as much as `ncol`.
-    /// If there was a queue at the position, it will be dropped first.
+    ///
+    /// This makes a queue at the position `ei`. Also, it makes inner queues for components of the
+    /// entity as much as `ncol`. If there was a queue at the position, it will be dropped first.
     pub(super) fn initialize_entity_queue(&mut self, ei: usize, ncol: usize) {
         // Prepares wait queues for columns.
-        let mut cols = OptVec::new();
+        let mut cols = OptVec::default();
         for _ in 0..ncol {
             cols.push(Some(WaitQueue::new()));
         }
@@ -344,10 +336,7 @@ where
     }
 }
 
-impl<S> Default for WaitQueues<S>
-where
-    S: Default,
-{
+impl Default for WaitQueues {
     fn default() -> Self {
         Self::new()
     }
@@ -358,7 +347,7 @@ where
 struct WaitQueue(GenQueue<(RW, u32)>);
 
 impl WaitQueue {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self(GenQueue::new())
     }
 
@@ -403,10 +392,12 @@ pub(super) enum RW {
 #[derive(Debug)]
 pub(super) struct WaitIndices {
     /// Wait queue index pairs to read-only components.
+    ///
     /// Each pair is the same as entity container index and a specific column index.
     pub(super) read: DedupVec<(EntityIndex, usize), false>,
 
     /// Wait queue index pairs to writable components.
+    ///
     /// Each pair is the same as entity container index and a specific column index.
     pub(super) write: DedupVec<(EntityIndex, usize), false>,
 
@@ -417,6 +408,7 @@ pub(super) struct WaitIndices {
     pub(super) res_write: DedupVec<ResourceIndex, false>,
 
     /// Wait queue indices to writable entity container.
+    ///
     /// Each index is the same as entity container index.
     pub(super) ent_write: DedupVec<EntityIndex, false>,
 }
@@ -438,8 +430,8 @@ pub(super) struct WaitRetryIndices {
     /// Not ready [`WaitIndices::ent_write`] and their target generations.
     pub(super) ent_write: Vec<(u64, usize, usize)>,
 
-    /// If it's not clean, that means it's in the middle of availability check.
-    /// So we can continue the check rather than doing it from the beginning.
+    /// If it's not clean, that means it's in the middle of availability check. So we can continue
+    /// the check rather than doing it from the beginning.
     pub(super) clean: bool,
 }
 

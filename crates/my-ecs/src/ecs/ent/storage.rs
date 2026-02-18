@@ -5,13 +5,14 @@ use super::{
         EntityName, EntityTag,
     },
 };
-use crate::ecs::EcsError;
-use my_ecs_util::{
-    With, debug_format,
+use crate::{ecs::EcsError, util, FxBuildHasher};
+use my_utils::{
+    debug_format,
     ds::{
         BorrowResult, Borrowed, DescribeGroup, Getter, GetterMut, GroupDesc, GroupMap,
         SimpleHolder, TypeInfo,
     },
+    With,
 };
 use std::{
     any::TypeId,
@@ -29,30 +30,27 @@ pub trait AsEntityReg {
     fn entity_descriptor() -> EntityReg;
 }
 
-/// A storage where you can find both entity and component data and static
-/// information about them such as names, types, and their relationships.
+/// A storage where you can find both entity and component data and static information about them
+/// such as names, types, and their relationships.
 ///
-/// Each container is basically identified by its component keys. In other
-/// words, unique combination of components is the key of an entity container.
-/// So you cannot register two entities that has the same components. Entity
-/// containers are also identified by their indices they get when they are
-/// registered to this storage. It's recommended accessing using entity index
-/// instead of component keys if possible because it would be faster.
+/// Each container is basically identified by its component keys. In other words, unique combination
+/// of components is the key of an entity container. So you cannot register two entities that has
+/// the same components. Entity containers are also identified by their indices they get when they
+/// are registered to this storage. It's recommended accessing using entity index instead of
+/// component keys if possible because it would be faster.
 ///
-/// Optionally, entity name or type may be able to be used as an identification,
-/// but it's not guaranteed because it must be provided by clients. If not so,
-/// searching an entity container via entity name or type fails. See
-/// [`EntityKeyRef`].
+/// Optionally, entity name or type may be able to be used as an identification, but it's not
+/// guaranteed because it must be provided by clients. If not so, searching an entity container via
+/// entity name or type fails. See [`EntityKeyRef`].
 //
 // TODO: Write this on ent module doc as well.
 // Why entities of the same component combination are not allowed?
-// - If it's allowed, something like below is possible.
-//   EntA: (CompA, CompB), EntB: (CompA), EntC: (CompA)
-// - Imagine clients are removing `CompB` from some items in EntA's container.
-//   In that case, they must be moved into `EntB` or `EntC`, but we cannot
-//   specify which container they should go.
+// - If it's allowed, something like below is possible. EntA: (CompA, CompB), EntB: (CompA), EntC:
+//   (CompA)
+// - Imagine clients are removing `CompB` from some items in EntA's container. In that case, they
+//   must be moved into `EntB` or `EntC`, but we cannot specify which container they should go.
 #[derive(Debug)]
-pub(crate) struct EntityStorage<S> {
+pub(crate) struct EntityStorage<S = FxBuildHasher> {
     /// A map holding entity containers and relationships to components.
     ///
     /// Key: Index or slice of [`ComponentKey`]s
@@ -61,23 +59,31 @@ pub(crate) struct EntityStorage<S> {
     /// Optional mapping from [`EntityName`] to [`EntityIndex`].
     name_to_index: HashMap<EntityName, EntityIndex, S>,
 
-    /// Generation of each entity container. The generation is when the
-    /// container is registered to this storage.
+    /// Generation of each entity container. The generation is when the container is registered to
+    /// this storage.
     ent_gens: Vec<u64>,
 
-    /// Generation that will be assigned to the next registered entity
-    /// container.
+    /// Generation that will be assigned to the next registered entity container.
     generation: u64,
 }
 
-impl<S> EntityStorage<S>
-where
-    S: Default,
-{
+impl EntityStorage {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self {
             map: GroupMap::new(),
-            name_to_index: HashMap::default(),
+            name_to_index: HashMap::with_hasher(FxBuildHasher::default()),
+            ent_gens: Vec::new(),
+            generation: 1,
+        }
+    }
+}
+
+impl<S> EntityStorage<S> {
+    pub(crate) fn with_hasher<F: FnMut() -> S>(mut hasher: F) -> Self {
+        Self {
+            map: GroupMap::with_hasher(&mut hasher),
+            name_to_index: HashMap::with_hasher(hasher()),
             ent_gens: Vec::new(),
             generation: 1,
         }
@@ -89,14 +95,11 @@ where
     S: BuildHasher + Default,
 {
     /// Turns `ekey` into another type of it according to `to`.
+    #[inline]
     pub(crate) fn convert_entity_key<'r, K>(&self, key: K, to: EntityKeyKind) -> Option<EntityKey>
     where
         K: Into<EntityKeyRef<'r>>,
     {
-        return inner(self, key.into(), to);
-
-        // === Internal helper functions ===
-
         fn inner<S>(
             this: &EntityStorage<S>,
             key: EntityKeyRef<'_>,
@@ -109,7 +112,7 @@ where
             let res = match to {
                 EntityKeyKind::Name => {
                     // Safety: Infallible.
-                    let (cont, _) = unsafe { this.map.get_group(ei).unwrap_unchecked() };
+                    let cont = unsafe { this.map.get_group(ei).unwrap_unchecked() };
                     let name = cont.get_tag().get_name()?.clone();
                     EntityKey::Name(name)
                 }
@@ -129,72 +132,79 @@ where
             };
             Some(res)
         }
+        inner(self, key.into(), to)
     }
 
     pub(crate) fn get_component_keys<'r, K>(&self, key: K) -> Option<&Arc<[ComponentKey]>>
     where
         K: Into<EntityKeyRef<'r>>,
     {
-        return inner(self, key.into());
-
-        // === Internal helper functions ===
-
-        fn inner<'this, S>(
-            this: &'this EntityStorage<S>,
-            key: EntityKeyRef<'_>,
-        ) -> Option<&'this Arc<[ComponentKey]>>
-        where
-            S: BuildHasher + Default,
-        {
-            let ei = this.entity_index(key)?;
-            // Safety: Infallible.
-            let ckeys = unsafe { this.map.get_group_key(ei).unwrap_unchecked() };
-            Some(ckeys)
-        }
+        let ei = self.entity_index(key)?;
+        // Safety: Infallible.
+        let ckeys = unsafe { self.map.get_group_key(ei).unwrap_unchecked() };
+        Some(ckeys)
     }
 
     pub(crate) fn get_entity_container<'r, K>(&self, key: K) -> Option<&EntityContainer>
     where
         K: Into<EntityKeyRef<'r>>,
     {
-        return inner(self, key.into());
-
-        // === Internal helper functions ===
-
-        fn inner<'this, S>(
-            this: &'this EntityStorage<S>,
-            key: EntityKeyRef<'_>,
-        ) -> Option<&'this EntityContainer>
-        where
-            S: BuildHasher + Default,
-        {
-            let ei = this.entity_index(key)?;
-            // Safety: Infallible.
-            let cont = unsafe { this.map.get_group(ei).unwrap_unchecked().0 };
-            Some(cont)
-        }
+        let ei = self.entity_index(key)?;
+        // Safety: Infallible.
+        let cont = unsafe { self.map.get_group(ei).unwrap_unchecked() };
+        Some(cont)
     }
 
     pub(crate) fn get_entity_container_mut<'r, K>(&mut self, key: K) -> Option<&mut EntityContainer>
     where
         K: Into<EntityKeyRef<'r>>,
     {
-        return inner(self, key.into());
+        let ei = self.entity_index(key)?;
+        // Safety: Infallible.
+        let cont = unsafe { self.map.get_group_mut(ei).unwrap_unchecked() };
+        Some(cont)
+    }
 
-        // === Internal helper functions ===
+    pub(crate) fn get_two_entity_container_mut<'r, K1, K2>(
+        &mut self,
+        key1: K1,
+        key2: K2,
+    ) -> Option<(&mut EntityContainer, &mut EntityContainer)>
+    where
+        K1: Into<EntityKeyRef<'r>>,
+        K2: Into<EntityKeyRef<'r>>,
+    {
+        let ei1 = self.entity_index(key1)?;
+        let ei2 = self.entity_index(key2)?;
 
-        fn inner<'this, S>(
-            this: &'this mut EntityStorage<S>,
-            key: EntityKeyRef<'_>,
-        ) -> Option<&'this mut EntityContainer>
-        where
-            S: BuildHasher + Default,
-        {
-            let ei = this.entity_index(key)?;
-            // Safety: Infallible.
-            let cont = unsafe { this.map.get_group_mut(ei).unwrap_unchecked().0 };
-            Some(cont)
+        // Safety: `groups` is of [Option<T>] type. We must do not change Option's state. That is
+        // guaranteed because we're returning T instead of Option<T>.
+        let groups = unsafe { self.map.as_mut_groups() };
+
+        // Safety: Infallible.
+        unsafe {
+            let (slot1, slot2) = util::get_two_mut(groups, ei1, ei2).unwrap_unchecked();
+            let cont1 = slot1.as_mut().unwrap_unchecked();
+            let cont2 = slot2.as_mut().unwrap_unchecked();
+            Some((cont1, cont2))
         }
+    }
+
+    // TODO: Implement
+    #[allow(unused)]
+    pub(crate) fn get_two_enitty_containers_mut<'r, K1, K2>(
+        &mut self,
+        key1: K1,
+        key2: K2,
+    ) -> Option<(&mut EntityContainer, &mut EntityContainer)>
+    where
+        K1: Into<EntityKeyRef<'r>>,
+        K2: Into<EntityKeyRef<'r>>,
+    {
+        let ei1 = self.entity_index(key1)?;
+        let ei2 = self.entity_index(key2)?;
+
+        todo!()
     }
 
     pub(crate) fn iter_entity_container(
@@ -209,10 +219,9 @@ where
         })
     }
 
-    /// Registers new entity and its components information and returns entity
-    /// container index. If you want to change entity information, you must
-    /// remove if first. See [`Self::unregister_entity`]. Also, this method
-    /// doesn't overwrite component information.
+    /// Registers new entity and its components information and returns entity container index. If
+    /// you want to change entity information, you must remove if first. See
+    /// [`Self::unregister_entity`]. Also, this method doesn't overwrite component information.
     pub(crate) fn register(&mut self, mut desc: EntityReg) -> Result<EntityIndex, EcsError> {
         if desc.is_empty() {
             let reason = debug_format!(
@@ -251,19 +260,19 @@ where
                 Ok(ei)
             }
             Err(desc) => {
-                let (_cont, _) = self.map.get_group2(&desc.group_key).unwrap();
+                let cont = self.map.get_group2(&desc.group_key).unwrap();
                 let reason = debug_format!(
                     "failed to register an entity: two entities `{:?}` and `{:?}` are the same",
                     ename,
-                    _cont.get_tag().get_name()
+                    cont.get_tag().get_name()
                 );
                 Err(EcsError::InvalidEntity(reason, ()))
             }
         }
     }
 
-    /// Unregister entity and tries to unregister corresponding components as well.
-    /// But components that are linked to another entity won't be unregistered.
+    /// Unregister entity and tries to unregister corresponding components as well. But components
+    /// that are linked to another entity won't be unregistered.
     pub(crate) fn unregister<'r, K>(
         &mut self,
         key: K,
@@ -332,8 +341,8 @@ where
     pub(crate) unsafe fn get_ptr(&self, ei: &EntityIndex) -> Option<NonNull<dyn ContainEntity>> {
         let ekey = EntityKeyRef::from(ei);
         let cont = self.get_entity_container(ekey)?;
-        let ptr = unsafe { cont.cont_ptr.get_unchecked() };
-        Some(*ptr)
+        let ptr = *cont.cont_ptr.borrow().unwrap();
+        Some(ptr)
     }
 
     fn is_valid_index(&self, ei: &EntityIndex) -> bool {
@@ -346,7 +355,7 @@ where
     S: Default,
 {
     fn default() -> Self {
-        Self::new()
+        Self::with_hasher(|| S::default())
     }
 }
 
@@ -465,8 +474,8 @@ impl DescribeGroup<Arc<[ComponentKey]>, EntityContainer, ComponentKey, TypeInfo>
 
 /// A wrapper of an entity container.
 ///
-/// The entity container is held as a trait object, and this wrapper provides
-/// access to the entity container with some information such as entity name.
+/// The entity container is held as a trait object, and this wrapper provides access to the entity
+/// container with some information such as entity name.
 pub(crate) struct EntityContainer {
     tag: Arc<EntityTag>,
 
@@ -563,8 +572,8 @@ impl<'buf, T> EntityContainerRef<'buf, T> {
         self.len() == 0
     }
 
-    /// Returns capacity if the entity container supports gauging capacity.
-    /// Otherwise, returns number of items, which is equal to
+    /// Returns capacity if the entity container supports gauging capacity. Otherwise, returns
+    /// number of items, which is equal to
     /// [`EntityContainerRef::len`].
     pub fn capacity(&self) -> usize {
         self.cont.capacity()
@@ -593,8 +602,8 @@ impl<'buf, T> EntityContainerRef<'buf, T> {
         })
     }
 
-    /// Reserves extra `additional` capacity if the entity container supports to
-    /// do so. Otherwise, nothing takes place.
+    /// Reserves extra `additional` capacity if the entity container supports to do so. Otherwise,
+    /// nothing takes place.
     pub fn reserve(&mut self, additional: usize) {
         self.cont.reserve(additional);
     }
@@ -605,8 +614,8 @@ impl<'buf, T> EntityContainerRef<'buf, T> {
 
     /// Retrieves borrowed getter for a certain component column.
     ///
-    /// If the component type doesn't belong to the entity or the column was
-    /// borrowed mutably in the past and not returned yet, returns None.
+    /// If the component type doesn't belong to the entity or the column was borrowed mutably in the
+    /// past and not returned yet, returns None.
     pub fn get_column_of<C: Component>(&self) -> Option<Borrowed<Getter<'_, C>>> {
         let ci = self.cont.get_column_index(&TypeId::of::<C>())?;
         self.cont.borrow_column(ci).ok().map(|col| {
@@ -617,8 +626,8 @@ impl<'buf, T> EntityContainerRef<'buf, T> {
 
     /// Retrieves borrowed mutable getter for a certain component column.
     ///
-    /// If the component type doesn't belong to the entity or the column was
-    /// borrowed in the past and not returned yet, returns None.
+    /// If the component type doesn't belong to the entity or the column was borrowed in the past
+    /// and not returned yet, returns None.
     pub fn get_column_mut_of<C: Component>(&mut self) -> Option<Borrowed<GetterMut<'_, C>>> {
         let ci = self.cont.get_column_index(&TypeId::of::<C>())?;
         self.cont.borrow_column_mut(ci).ok().map(|col| {
@@ -650,12 +659,11 @@ impl<T> EntityContainerRef<'_, T>
 where
     T: Entity,
 {
-    /// Returns a struct holding shared references to components that belong
-    /// to an entity for the given entity id.
+    /// Returns a struct holding shared references to components that belong to an entity for the
+    /// given entity id.
     ///
-    /// If it failed to find an entity using the given entity id, returns
-    /// `None`. See [`EntityContainerRef::get_by_value_index`] for more
-    /// details.
+    /// If it failed to find an entity using the given entity id, returns `None`. See
+    /// [`EntityContainerRef::get_by_value_index`] for more details.
     ///
     /// # Examples
     ///
@@ -684,12 +692,11 @@ where
         }
     }
 
-    /// Returns a struct holding mutable references to components that belong
-    /// to an entity for the given entity id.
+    /// Returns a struct holding mutable references to components that belong to an entity for the
+    /// given entity id.
     ///
-    /// If it failed to find an entity using the given entity id, returns
-    /// `None`. See [`EntityContainerRef::get_mut_by_value_index`] for more
-    /// details.
+    /// If it failed to find an entity using the given entity id, returns `None`. See
+    /// [`EntityContainerRef::get_mut_by_value_index`] for more details.
     ///
     /// # Examples
     ///
@@ -720,13 +727,12 @@ where
         }
     }
 
-    /// Returns a struct holding shared references to components that belong
-    /// to an entity for the given value index.
+    /// Returns a struct holding shared references to components that belong to an entity for the
+    /// given value index.
     ///
-    /// Note, however, that entity is not stored as it is. It is split up into
-    /// its components then stored in each component container. That means
-    /// collecting those references like this function is inefficient because it
-    /// requires random access to memory.
+    /// Note, however, that entity is not stored as it is. It is split up into its components then
+    /// stored in each component container. That means collecting those references like this
+    /// function is inefficient because it requires random access to memory.
     ///
     /// # Panics
     ///
@@ -756,13 +762,12 @@ where
         T::get_ref_from(self.cont, vi)
     }
 
-    /// Returns a struct holding mutable references to components that belong
-    /// to an entity for the given value index.
+    /// Returns a struct holding mutable references to components that belong to an entity for the
+    /// given value index.
     ///
-    /// Note, however, that entity is not stored as it is. It is split up into
-    /// its components then stored in each component container. That means
-    /// collecting those references like this function is inefficient because it
-    /// requires random access to memory.
+    /// Note, however, that entity is not stored as it is. It is split up into its components then
+    /// stored in each component container. That means collecting those references like this
+    /// function is inefficient because it requires random access to memory.
     ///
     /// # Panics
     ///
@@ -794,21 +799,18 @@ where
         T::get_mut_from(self.cont, vi)
     }
 
-    /// Inserts an entity to the entity container then returns entity id of the
-    /// inserted entity.
+    /// Inserts an entity to the entity container then returns entity id of the inserted entity.
     ///
-    /// It's encouraged to use combination of [`EntityContainerRef::resize`]
-    /// and [`EntityContainerRef::get_column_mut_of`] when you need to add
-    /// lots of entities at once. It's more cache-friendly so it would be faster
-    /// than calling to this method many times.
+    /// It's encouraged to use combination of [`EntityContainerRef::resize`] and
+    /// [`EntityContainerRef::get_column_mut_of`] when you need to add lots of entities at once.
+    /// It's more cache-friendly so it would be faster than calling to this method many times.
     pub fn add(&mut self, value: T) -> EntityId {
         let ei = self.get_entity_tag().index();
         let ri = value.move_to(self.cont);
         EntityId::new(ei, ri)
     }
 
-    /// Removes an entity for the given entity id from the entity container
-    /// then returns the entity.
+    /// Removes an entity for the given entity id from the entity container then returns the entity.
     pub fn take(&mut self, eid: &EntityId) -> Option<T> {
         if eid.container_index() == self.get_entity_tag().index() {
             let vi = self.cont.to_value_index(eid.row_index())?;
@@ -818,8 +820,8 @@ where
         }
     }
 
-    /// Removes an entity for the given value index from the entity container
-    /// then returns the entity.
+    /// Removes an entity for the given value index from the entity container then returns the
+    /// entity.
     ///
     /// # Panics
     ///
@@ -828,8 +830,7 @@ where
         T::take_from(self.cont, vi)
     }
 
-    /// Resizes the entity container to the new length by cloning the given
-    /// value.
+    /// Resizes the entity container to the new length by cloning the given value.
     ///
     /// Resizing occurs column by column.
     ///

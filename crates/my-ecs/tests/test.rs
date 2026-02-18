@@ -1,15 +1,13 @@
 use my_ecs::prelude::*;
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Duration;
 
 #[test]
 #[rustfmt::skip]
 fn test_validate_request() {
-    // Selectors and filters must be disjoint to each other in a request.
-    // Such that invalid requests must be denied.
-    // Disjoint conditions are as follows.
+    // Selectors and filters must be disjoint to each other in a request. Such that invalid requests
+    // must be denied. Disjoint conditions are as follows.
     // 1. X's Target is different from Y's Target.
     // 2. X's All intersects Y's None or vice versa.
     // 3. X's Any is a subset of Y's None or vice versa.
@@ -23,7 +21,7 @@ fn test_validate_request() {
     #[derive(Component)] struct Cx;
     #[derive(Component)] struct Cy;
 
-    let mut ecs = Ecs::default(WorkerPool::with_len(1), [1]);
+    let mut ecs = Ecs::create(WorkerPool::with_len(1), [1]);
 
     // 1. X's Target is different from Y's Target.
     filter!(A0, Target = Cx, All = (Ca, Cb), None = (Cc, Cd), Any = (Ce, Cf));
@@ -63,12 +61,12 @@ fn test_validate_request() {
     // Read is Ok.
     ecs.add_system(SystemDesc::new().with_once(|_: Read<(D0, D1)>| {})).unwrap();
     // Error in a single Write.
-    let res = ecs.add_system(SystemDesc::new().with_once(|_: Write<(D0, D1)>| {})).take();
+    let res = ecs.add_system(SystemDesc::new().with_once(|_: Write<(D0, D1)>| {})).into_result();
     assert!(matches!(res, Err(EcsError::InvalidRequest(..))));
     // Error in Read, EntWrite or Write, EntWrite.
-    let res = ecs.add_system(SystemDesc::new().with_once(|_: Read<D0>, _: EntWrite<D2>| {})).take();
+    let res = ecs.add_system(SystemDesc::new().with_once(|_: Read<D0>, _: EntWrite<D2>| {})).into_result();
     assert!(matches!(res, Err(EcsError::InvalidRequest(..))));
-    let res = ecs.add_system(SystemDesc::new().with_once(|_: Write<D0>, _: EntWrite<D2>| {})).take();
+    let res = ecs.add_system(SystemDesc::new().with_once(|_: Write<D0>, _: EntWrite<D2>| {})).into_result();
     assert!(matches!(res, Err(EcsError::InvalidRequest(..))));
 
     // Wrong 2. X's All doesn't intersect Y's None or vice versa.
@@ -78,12 +76,12 @@ fn test_validate_request() {
     // Read is Ok.
     ecs.add_system(SystemDesc::new().with_once(|_: Read<(E0, E1)>| {})).unwrap();
     // Error in a single Write.
-    let res = ecs.add_system(SystemDesc::new().with_once(|_: Write<(E0, E1)>| {})).take();
+    let res = ecs.add_system(SystemDesc::new().with_once(|_: Write<(E0, E1)>| {})).into_result();
     assert!(matches!(res, Err(EcsError::InvalidRequest(..))));
     // Error in Read, EntWrite or Write, EntWrite.
-    let res = ecs.add_system(SystemDesc::new().with_once(|_: Read<E0>, _: EntWrite<E2>| {})).take();
+    let res = ecs.add_system(SystemDesc::new().with_once(|_: Read<E0>, _: EntWrite<E2>| {})).into_result();
     assert!(matches!(res, Err(EcsError::InvalidRequest(..))));
-    let res = ecs.add_system(SystemDesc::new().with_once(|_: Write<E0>, _: EntWrite<E2>| {})).take();
+    let res = ecs.add_system(SystemDesc::new().with_once(|_: Write<E0>, _: EntWrite<E2>| {})).into_result();
     assert!(matches!(res, Err(EcsError::InvalidRequest(..))));
 
     // Wrong 3. X's Any is not a subset of Y's None or vice versa.
@@ -93,12 +91,12 @@ fn test_validate_request() {
     // Read is Ok.
     ecs.add_system(SystemDesc::new().with_once(|_: Read<(F0, F1)>| {})).unwrap();
     // Error in a single Write.
-    let res = ecs.add_system(SystemDesc::new().with_once(|_: Write<(F0, F1)>| {})).take();
+    let res = ecs.add_system(SystemDesc::new().with_once(|_: Write<(F0, F1)>| {})).into_result();
     assert!(matches!(res, Err(EcsError::InvalidRequest(..))));
     // Error in Read, EntWrite or Write, EntWrite.
-    let res = ecs.add_system(SystemDesc::new().with_once(|_: Read<F0>, _: EntWrite<F2>| {})).take();
+    let res = ecs.add_system(SystemDesc::new().with_once(|_: Read<F0>, _: EntWrite<F2>| {})).into_result();
     assert!(matches!(res, Err(EcsError::InvalidRequest(..))));
-    let res = ecs.add_system(SystemDesc::new().with_once(|_: Write<F0>, _: EntWrite<F2>| {})).take();
+    let res = ecs.add_system(SystemDesc::new().with_once(|_: Write<F0>, _: EntWrite<F2>| {})).into_result();
     assert!(matches!(res, Err(EcsError::InvalidRequest(..))));
 }
 
@@ -191,18 +189,18 @@ fn test_mixed_reg_unreg_entity_resource() {
     // - r_sys(Sa), w_sys(Sb), ew_sys(Eac, Fbd): Success
     // - rr_sys(Ra), rw_sys(Rb): Fail because of not registered resources.
 
-    let mut ecs = Ecs::default(WorkerPool::with_len(1), [1]);
+    let mut ecs = Ecs::create(WorkerPool::with_len(1), [1]);
 
     ecs.add_system(SystemDesc::new().with_system(r_sys)).unwrap();
     ecs.add_system(SystemDesc::new().with_system(w_sys)).unwrap();
     ecs.add_system(SystemDesc::new().with_system(ew_sys)).unwrap();
 
-    let rr_sys = match ecs.add_system(SystemDesc::new().with_system(rr_sys)).take()
+    let rr_sys = match ecs.add_system(SystemDesc::new().with_system(rr_sys)).into_result()
     {
         Err(EcsError::UnknownResource(_, data)) => data.take_system(),
         _ => panic!()
     };
-    let rw_sys = match ecs.add_system(SystemDesc::new().with_system(rw_sys)).take()
+    let rw_sys = match ecs.add_system(SystemDesc::new().with_system(rw_sys)).into_result()
     {
         Err(EcsError::UnknownResource(_, data)) => data.take_system(),
         _ => panic!()
@@ -322,12 +320,14 @@ fn test_mixed_reg_unreg_entity_resource() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn test_async_wait() {
+    use my_utils::test_utils::TimerFuture;
+
     // Without sub workers.
-    let ecs = Ecs::default(WorkerPool::new(), []);
+    let ecs = Ecs::create(WorkerPool::new(), []);
     inner(ecs);
 
     // With sub workers.
-    let ecs = Ecs::default(WorkerPool::with_len(3), [3]);
+    let ecs = Ecs::create(WorkerPool::with_len(3), [3]);
     inner(ecs);
 
     // === Internal helper functions ===
@@ -341,7 +341,7 @@ fn test_async_wait() {
                 // state 1: A bit of awaiting.
                 *c_state.lock().unwrap() = 1;
                 for millis in 1..10 {
-                    async_io::Timer::after(Duration::from_millis(millis)).await;
+                    TimerFuture::after(std::time::Duration::from_millis(millis)).await;
                 }
 
                 // state 2: All awaiting has done.
@@ -370,10 +370,10 @@ fn test_async_wait() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn repeat_test_async_wait() {
-    use my_ecs::{prelude::type_name, util::call_timeout};
+    use my_ecs::{prelude::type_name, utils::call_timeout};
     use std::env;
 
-    if let Ok(_) = env::var("REPEAT") {
+    if env::var("REPEAT").is_ok() {
         let f = || test_async_wait();
         let name = type_name!(repeat_test_async_wait);
         let repeat = 50;
@@ -385,12 +385,14 @@ fn repeat_test_async_wait() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn test_async_abort() {
+    use my_utils::test_utils::TimerFuture;
+
     // Without sub workers.
-    let ecs = Ecs::default(WorkerPool::new(), []);
+    let ecs = Ecs::create(WorkerPool::new(), []);
     inner(ecs);
 
     // With sub workers.
-    let ecs = Ecs::default(WorkerPool::with_len(3), [3]);
+    let ecs = Ecs::create(WorkerPool::with_len(3), [3]);
     inner(ecs);
 
     // === Internal helper functions ===
@@ -404,7 +406,7 @@ fn test_async_abort() {
                 // state 1: reachable.
                 *c_state.lock().unwrap() = 1;
                 for millis in 1..10_000 {
-                    async_io::Timer::after(Duration::from_millis(millis)).await;
+                    TimerFuture::after(Duration::from_millis(millis)).await;
                 }
 
                 // state 2: unreachable due to aborting.
@@ -427,10 +429,10 @@ fn test_async_abort() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn repeat_test_async_abort() {
-    use my_ecs::{prelude::type_name, util::call_timeout};
+    use my_ecs::{prelude::type_name, utils::call_timeout};
     use std::env;
 
-    if let Ok(_) = env::var("REPEAT") {
+    if env::var("REPEAT").is_ok() {
         let f = || test_async_abort();
         let name = type_name!(repeat_test_async_abort);
         let repeat = 1000;

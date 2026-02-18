@@ -1,5 +1,4 @@
 use crate::ecs::{
-    DynResult,
     cmd::{Command, EntityMoveCommandBuilder},
     ent::{
         component::{Component, ComponentKey},
@@ -11,24 +10,26 @@ use crate::ecs::{
     resource::Resource,
     sched::{
         comm::{CommandSender, ParkingSender},
-        ctrl::{MainWaker, SUB_CONTEXT, SubContext, UnsafeWaker},
+        ctrl::{MainWaker, SubContext, UnsafeWaker, SUB_CONTEXT},
         task::{AsyncTask, Task},
     },
     sys::request::Request,
     worker::Message,
+    DynResult,
 };
-use my_ecs_util::{
+use my_utils::{
     debug_format,
     ds::{AnyVec, UnsafeFuture},
 };
 use std::{
+    cell::Cell,
     cmp,
-    collections::{HashMap, hash_map::Entry},
+    collections::{hash_map::Entry, HashMap},
     future::Future,
     ptr::NonNull,
     sync::{
-        Arc, Mutex, MutexGuard,
         atomic::{AtomicU32, Ordering},
+        Arc, Mutex, MutexGuard,
     },
 };
 
@@ -38,14 +39,13 @@ pub mod prelude {
 
 /// A [`Resource`] to send command or future.
 ///
-/// This resource provides clients funtionalities to send commands or futures
-/// in their systems. This resource also provides interior mutability, so that
-/// clients can request the resource with [`ResRead`](crate::prelude::ResRead).
+/// This resource provides clients funtionalities to send commands or futures in their systems. This
+/// resource also provides interior mutability, so that clients can request the resource with
+/// [`ResRead`](crate::prelude::ResRead).
 //
-// By registering this resource in each ECS instance, it is possible to have
-// multiple ECS instances in one worker. Global function & static variable
-// approach, on the other hand, is not good option for that because it cannot
-// determine which ECS instance is the destination of sending easily.
+// By registering this resource in each ECS instance, it is possible to have multiple ECS instances
+// in one worker. Global function & static variable approach, on the other hand, is not good option
+// for that because it cannot determine which ECS instance is the destination of sending easily.
 pub struct Post {
     tx_cmd: CommandSender,
     tx_msg: ParkingSender<Message>,
@@ -72,9 +72,9 @@ impl Post {
 
     /// Sends the given command to ECS scheduler.
     ///
-    /// Commands are executed on the main worker, but the command is not
-    /// executed at the time of sending. ECS scheduler runs all buffered
-    /// commands at the end of current cycle and before the next cycle.
+    /// Commands are executed on the main worker, but the command is not executed at the time of
+    /// sending. ECS scheduler runs all buffered commands at the end of current cycle and before the
+    /// next cycle.
     ///
     /// # Examples
     ///
@@ -106,12 +106,11 @@ impl Post {
     ///     });
     /// };
     ///
-    /// Ecs::default(WorkerPool::with_len(2), [2])
+    /// Ecs::create(WorkerPool::with_len(2), [2])
     ///     .add_systems((sys_a, sys_b))
     ///     .step();
     ///
-    /// // No data dependency between `sys_a` and `sys_b`, so they can be run
-    /// // simultaneously.
+    /// // No data dependency between `sys_a` and `sys_b`, so they can be run simultaneously.
     /// assert!(matches!(rx.try_recv(), Ok("sys_a") | Ok("sys_b")));
     /// assert!(matches!(rx.try_recv(), Ok("sys_a") | Ok("sys_b")));
     /// assert!(matches!(rx.try_recv(), Ok("cmd_a") | Ok("cmd_b")));
@@ -128,13 +127,13 @@ impl Post {
 
     /// Sends the given future to ECS scheduler.
     ///
-    /// The future is guaranteed to be polled more than or just once in the
-    /// current cycle.
+    /// The future is guaranteed to be polled more than or just once in the current cycle.
     ///
     /// # Examples
     ///
     /// ```
     /// use my_ecs::prelude::*;
+    /// use my_ecs::utils::test_utils::TimerFuture;
     /// use std::{time::Duration, sync::{Arc, Mutex}};
     ///
     /// let state = Arc::new(Mutex::new(0));
@@ -142,11 +141,11 @@ impl Post {
     /// let c_state = Arc::clone(&state);
     /// let foo = async move {
     ///     *c_state.lock().unwrap() = 1;
-    ///     async_io::Timer::after(Duration::from_millis(10)).await;
+    ///     TimerFuture::after(Duration::from_millis(10)).await;
     ///     *c_state.lock().unwrap() = 2;
     /// };
     ///
-    /// Ecs::default(WorkerPool::new(), [])
+    /// Ecs::create(WorkerPool::new(), [])
     ///     .add_once_system(move |rr: ResRead<Post>| {
     ///         rr.send_future(foo);
     ///     })
@@ -159,7 +158,7 @@ impl Post {
         F: Future<Output = R> + Send + 'static,
         R: Command,
     {
-        let ptr = SUB_CONTEXT.get();
+        let ptr = SUB_CONTEXT.with(Cell::get);
 
         if ptr.is_dangling() {
             on_main(self, future);
@@ -200,12 +199,11 @@ impl Post {
             let comm = unsafe { cx.as_ref().get_comm() };
             comm.push_future_task(handle);
 
-            // Increases future count.
-            // Main worker will check this whenever it needs.
+            // Increases future count. Main worker will check this whenever it needs.
             comm.signal().add_future_count(1);
 
-            // If current worker's local queue is not empty, current worker cannot
-            // do the future task promptly, so wakes another worker to steal it.
+            // If current worker's local queue is not empty, current worker cannot do the future
+            // task promptly, so wakes another worker to steal it.
             if !comm.is_local_empty() {
                 comm.signal().sub().notify_one();
             }
@@ -252,8 +250,8 @@ pub(crate) fn consume_ready_future<T: Command>(mut res: T, ecs: Ecs<'_>) -> DynR
     res.command(ecs)
 }
 
-/// A temporary storage containing entity move commands caused by attaching or
-/// detaching components to currently existing entities.
+/// A temporary storage containing entity move commands caused by attaching or detaching components
+/// to currently existing entities.
 #[derive(Debug)]
 pub(crate) struct EntMoveStorage {
     /// Operations on entities whether to add or remove components.
@@ -261,9 +259,8 @@ pub(crate) struct EntMoveStorage {
 
     /// Lengths of commands.
     ///
-    /// A command is composed of a set of operations. Length of it is number
-    /// of operations of the set.
-    /// In other words, `lens.iter().sum() == ops.len()`.
+    /// A command is composed of a set of operations. Length of it is number of operations of the
+    /// set. In other words, `lens.iter().sum() == ops.len()`.
     lens: Vec<usize>,
 
     /// Component values to be added.
@@ -337,24 +334,26 @@ impl EntMoveStorage {
         // Gets src entity container.
         let ei = src_eid.container_index();
         let src_ekey = EntityKeyRef::Index(&ei);
-        let Some(mut src_cont) = ecs.entity_container_ptr(src_ekey) else {
+        let Some(ptr_src_cont) = ecs.get_ptr_entity_container(src_ekey) else {
             return;
         };
-        // Safety: We got the pointer from Ecs right before.
-        let src_cont_mut = unsafe { src_cont.as_mut() };
+        let src_cont = unsafe { ptr_src_cont.as_ref() };
+        let src_vi = src_cont.to_value_index(src_eid.row_index()).unwrap();
 
         // Gets dst entity container.
-        self.set_dst_ckeys(len, src_cont_mut);
-        let mut dst_cont = self.find_dst_cont(src_cont_mut, ecs);
-        debug_assert_ne!(src_cont, dst_cont);
-
-        // Safety: We got the pointer from Ecs right before.
-        let dst_cont_mut = unsafe { dst_cont.as_mut() };
+        self.set_dst_ckeys(len, src_cont);
+        let dst_ckeys = &self.ckey_buf;
+        let dst_ekey = EntityKeyRef::Ckeys(dst_ckeys);
+        if ecs.get_ptr_entity_container(dst_ekey).is_none() {
+            self.create_dst_container(src_cont, ecs);
+        }
 
         // Moves an entity from src to dst.
-        if let Some(src_vi) = src_cont_mut.to_value_index(src_eid.row_index()) {
-            self.move_entity(src_vi, src_cont_mut, dst_cont_mut);
-        }
+        let (src_cont, dst_cont) = unsafe {
+            ecs.get_two_entity_container_mut(src_ekey, dst_ekey)
+                .unwrap_unchecked()
+        };
+        self.move_entity(src_vi, src_cont, dst_cont);
 
         self.ops.truncate(self.ops.len() - len);
     }
@@ -362,10 +361,10 @@ impl EntMoveStorage {
     /// # Panics
     ///
     /// Panics if
-    /// - Inserted operations try to add components that already belong to
-    ///   the source entity container.
-    /// - Inserted operations try to remove components that doesn't belong
-    ///   to the source entity container.
+    /// - Inserted operations try to add components that already belong to the source entity
+    ///   container.
+    /// - Inserted operations try to remove components that doesn't belong to the source entity
+    ///   container.
     fn set_dst_ckeys(&mut self, len: usize, src_cont: &EntityContainer) {
         let contains_src =
             |ckey: &ComponentKey| src_cont.get_tag().get_component_keys().contains(ckey);
@@ -416,41 +415,41 @@ impl EntMoveStorage {
         self.ckey_buf.sort_unstable();
     }
 
-    fn find_dst_cont(
+    fn create_dst_container(
         &self,
-        src_cont: &EntityContainer,
+        src_cont: *const EntityContainer,
         ecs: &mut Ecs<'_>,
     ) -> NonNull<EntityContainer> {
         let dst_ckeys = &self.ckey_buf;
 
-        let dst_ekey = EntityKeyRef::Ckeys(dst_ckeys);
-        if let Some(dst_cont) = ecs.entity_container_ptr(dst_ekey) {
-            dst_cont
-        } else {
-            let mut desc = EntityReg::new(None, src_cont.create_twin());
+        // This shared reference is only valid until `ecs.register_entity` is called.
+        let src_cont = unsafe { &*src_cont };
 
-            for dst_ckey in dst_ckeys.iter() {
-                if src_cont.contains_column(dst_ckey) {
-                    // Safety: Infallible.
-                    let tinfo = unsafe {
-                        let ci = src_cont.get_column_index(dst_ckey).unwrap_unchecked();
-                        *src_cont.get_column_info(ci).unwrap_unchecked()
-                    };
-                    desc.add_component(tinfo);
-                } else {
-                    // Safety: Infallible.
-                    debug_assert!(self.adds.contains_key(dst_ckey));
-                    let v = unsafe { self.adds.get(dst_ckey).unwrap_unchecked() };
-                    desc.add_component(*v.type_info())
-                }
+        let mut desc = EntityReg::new(None, src_cont.create_twin());
+
+        for dst_ckey in dst_ckeys.iter() {
+            if src_cont.contains_column(dst_ckey) {
+                // Safety: Infallible.
+                let tinfo = unsafe {
+                    let ci = src_cont.get_column_index(dst_ckey).unwrap_unchecked();
+                    *src_cont.get_column_info(ci).unwrap_unchecked()
+                };
+                desc.add_component(tinfo);
+            } else {
+                // Safety: Infallible.
+                debug_assert!(self.adds.contains_key(dst_ckey));
+                let v = unsafe { self.adds.get(dst_ckey).unwrap_unchecked() };
+                desc.add_component(*v.type_info())
             }
-
-            let res = ecs.register_entity(desc);
-            debug_assert!(res.is_ok());
-
-            let dst_ekey = EntityKeyRef::Ckeys(dst_ckeys);
-            ecs.entity_container_ptr(dst_ekey).unwrap()
         }
+
+        // Creating a new entity container requires mutable access to ecs. It could invalidate
+        // the pointer `src_cont`.
+        let res = ecs.register_entity(desc);
+        debug_assert!(res.is_ok());
+
+        let dst_ekey = EntityKeyRef::Ckeys(dst_ckeys);
+        ecs.get_ptr_entity_container(dst_ekey).unwrap()
     }
 
     #[rustfmt::skip]
@@ -463,10 +462,10 @@ impl EntMoveStorage {
         // TODO: Test required.
         //
         // Safety
-        // 1. We call begin_xxx -> add/remove_xxx -> end_xxx to add/remove
-        //    entity to/from an entity container.
-        // 2. We get component key from entity container. Therefore
-        //    unwrapping column index gotten using the key is safe.
+        // 1. We call begin_xxx -> add/remove_xxx -> end_xxx to add/remove entity to/from an entity
+        //    container.
+        // 2. We get component key from entity container. Therefore unwrapping column index gotten
+        //    using the key is safe.
 
         unsafe {
             let src_ckeys = Arc::clone(src_cont.get_tag().get_component_keys());
@@ -585,7 +584,7 @@ mod tests {
         struct Ea { ca: Ca }
         #[derive(Component)] struct Ca;
 
-        Ecs::default(WorkerPool::with_len(1), [1])
+        Ecs::create(WorkerPool::with_len(1), [1])
             .register_entity_of::<Ea>()
             .add_system(SystemDesc::new().with_once(|rr: ResRead<Post>, ew: EntWrite<Ea>| {
                 let eid = ew.take_recur().add(Ea { ca: Ca });
@@ -607,7 +606,7 @@ mod tests {
         #[derive(Component)] struct Ca;
         #[derive(Component)] struct Cb;
 
-        Ecs::default(WorkerPool::with_len(1), [1])
+        Ecs::create(WorkerPool::with_len(1), [1])
             .register_entity_of::<Ea>()
             .add_system(SystemDesc::new().with_once(|rr: ResRead<Post>, ew: EntWrite<Ea>| {
                 let eid = ew.take_recur().add(Ea { ca: Ca });
@@ -629,7 +628,7 @@ mod tests {
         #[derive(Component)] struct Ca;
         #[derive(Component)] struct Cb;
 
-        Ecs::default(WorkerPool::with_len(1), [1])
+        Ecs::create(WorkerPool::with_len(1), [1])
             .register_entity_of::<Ea>()
             .add_system(SystemDesc::new().with_once(|rr: ResRead<Post>, ew: EntWrite<Ea>| {
                 let eid = ew.take_recur().add(Ea { ca: Ca });
@@ -651,7 +650,7 @@ mod tests {
         #[derive(Component)] struct Ca;
         #[derive(Component)] struct Cb;
 
-        Ecs::default(WorkerPool::with_len(1), [1])
+        Ecs::create(WorkerPool::with_len(1), [1])
             .register_entity_of::<Ea>()
             .add_system(SystemDesc::new().with_once(|rr: ResRead<Post>, ew: EntWrite<Ea>| {
                 let eid = ew.take_recur().add(Ea { ca: Ca, cb: Cb });

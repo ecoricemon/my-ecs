@@ -1,32 +1,33 @@
 [package]
 name = "my-ecs"
 version = "0.1.1"
-edition = "2024"
-rust-version = "1.85"
+edition = "2021"
+rust-version = "1.65"
 description = "An Entity Component System (ECS) library"
 documentation = "https://docs.rs/my-ecs"
-readme = "README.md" 
+readme = "README.md"
 repository = "https://github.com/ecoricemon/my-ecs"
 license = "Apache-2.0 OR MIT"
 keywords = ["ecs", "parallel", "wasm"]
 
-[lib]
-crate-type = ["rlib", "cdylib"]
-
 [features]
-check = ["my-ecs-util/check"]
+check = ["my-utils/check"]
 stat = []
 
 [dependencies]
-my-ecs-util = { workspace = true }
+my-utils = { workspace = true }
 my-ecs-macros = { workspace = true }
 paste = { workspace = true }
 thiserror = { workspace = true }
 crossbeam-deque = { workspace = true }
+crossbeam-channel = { workspace = true }
 rayon = { workspace = true }
 bitflags = { workspace = true }
 dashmap = { workspace = true }
 libc = { workspace = true }
+once_cell = { workspace = true }
+fxhash = { workspace = true }
+memoffset = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = { workspace = true }
@@ -36,6 +37,7 @@ web-sys = { workspace = true, features = [
   "Blob",
   "BlobPropertyBag",
   "console",
+  "CustomEvent",
   "DedicatedWorkerGlobalScope",
   "DomException",
   "MessageEvent",
@@ -53,25 +55,17 @@ web-sys = { workspace = true, features = [
 parking_lot_core = { workspace = true, features = ["nightly"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-async-io = { workspace = true }
-tide = { workspace = true }
-surf = { workspace = true }
-futures = { workspace = true }
+tide = "0.16.0"
+surf = "2.3.2"
+futures = "0.3.31"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
-wasm-bindgen-test = { workspace = true }
-console_error_panic_hook = { workspace = true }
+wasm-bindgen-test = "0.3.56"
+console_error_panic_hook = "0.1.7"
 
 [[test]]
 name = "tests-other-web"
 path = "tests-other/web/src/lib.rs"
-
-# Test with sanitizer
-# On linux, there may be false-positive warning in rust test harness.
-[[example]]
-name = "tsan"
-path = "tests-other/san/thread.rs"
-crate-type = ["bin"]
 
 [[example]]
 name = "async"

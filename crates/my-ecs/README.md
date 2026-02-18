@@ -1,5 +1,16 @@
 # my-ecs
 
+[![Crates.io][crates-badge]][crates-url]
+[![CI Status][ci-badge]][ci-url]
+[![Codecov][codecov-badge]][codecov-url]
+
+[crates-badge]: https://img.shields.io/crates/v/my-ecs.svg
+[crates-url]: https://crates.io/crates/my-ecs
+[ci-badge]: https://github.com/ecoricemon/my-ecs/actions/workflows/test.yml/badge.svg
+[ci-url]: https://github.com/ecoricemon/my-ecs/actions/workflows/test.yml
+[codecov-badge]: https://codecov.io/gh/ecoricemon/my-ecs/graph/badge.svg?flag=my-ecs
+[codecov-url]: https://app.codecov.io/gh/ecoricemon/my-ecs?flags%5B0%5D=my-ecs
+
 my-ecs is a library that implements ECS pattern.
 
 ## ECS
@@ -104,7 +115,7 @@ use my_ecs::prelude::*;
 #[derive(Resource)]
 struct Count(u32);
 
-Ecs::default(WorkerPool::new(), [])
+Ecs::create(WorkerPool::new(), [])
    .add_resource(Count(0))
    .add_once_systems((
        |rw: ResWrite<Count>| rw.take().0 += 1,
@@ -150,7 +161,7 @@ filter!(Fpos, Target = Position);
 filter!(Fmovpos, Target = Position, All = Movable);
 
 fn main() {
-    Ecs::default(WorkerPool::with_len(2), [2])
+    Ecs::create(WorkerPool::with_len(2), [2])
         .register_entity_of::<Object>()
         .register_entity_of::<MovableObject>()
         .add_once_systems((create, print, moves, print))

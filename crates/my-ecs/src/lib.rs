@@ -1,11 +1,11 @@
 #![doc = include_str!("../README.md")]
 
-// Clients may use `ds` module directly. It's optional.
 pub(crate) mod default;
 pub(crate) mod ecs;
-pub mod util;
+pub(crate) mod mock;
+pub(crate) mod util;
 
-pub(crate) type DefaultRandomState = std::hash::RandomState;
+pub type FxBuildHasher = fxhash::FxBuildHasher;
 pub(crate) const MAX_GROUP: usize = 4;
 
 /// Imports all you need at once.
@@ -13,21 +13,23 @@ pub mod prelude {
     pub use super::global;
     pub use super::log;
     pub use super::{default::prelude::*, ecs::prelude::*};
-    pub use my_ecs_macros::{Component, Entity, Resource, filter, request};
-    pub use my_ecs_util::{
-        TakeRecur,
+    pub use my_ecs_macros::{filter, request, Component, Entity, Resource};
+    pub use my_utils::{
         ds::{
             ATypeId, DebugHelper, NotClone, NotDebug, NotDefault, NotEqualType, NotSend, NotSync,
             NotUnwindSafe, TypeHelper, TypeIdExt, TypeInfo,
         },
-        tinfo, type_name,
+        tinfo, type_name, TakeRecur,
     };
     #[doc(no_inline)]
     pub use rayon::prelude::*;
 }
 
-/// Clients might need this.
-pub use my_ecs_util::ds;
+pub mod utils {
+    #[allow(unused_imports)]
+    pub use super::util::*;
+    pub use my_utils::*;
+}
 
 /// Global functions.
 pub mod global {
@@ -36,13 +38,27 @@ pub mod global {
     pub use super::ecs::web::{set_panic_hook_once, web_panic_hook};
 }
 
-// Reason why we didn't put the doc on re-exports is rust-analyzer doesn't show
-// us the comment in IDEs. rust-analyzer ignores comments on re-exports then
-// only displays comments on source definitions.
+// Re-exports for use in macros
+#[doc(hidden)]
+pub use memoffset;
+#[doc(hidden)]
+pub use once_cell;
+
+pub(crate) mod cb_deque {
+    #[cfg(not(miri))]
+    pub(crate) use crossbeam_deque::*;
+
+    #[cfg(miri)]
+    pub(crate) use super::mock::cb_deque::*;
+}
+
+// Reason why we didn't put the doc on re-exports is rust-analyzer doesn't show us the comment in
+// IDEs. rust-analyzer ignores comments on re-exports then only displays comments on source
+// definitions.
 //
-// But the other problem occurs by putting doc comments in the proc macro. The
-// proc macro doesn't know types or traits defined in this outer crate. So
-// corresponding doc tests are here and dealt with as unit tests.
+// But the other problem occurs by putting doc comments in the proc macro. The proc macro doesn't
+// know types or traits defined in this outer crate. So corresponding doc tests are here and dealt
+// with as unit tests.
 //
 // This will be removed once rust-analyzer solves the problem above.
 #[cfg(test)]
@@ -85,7 +101,7 @@ mod my_ecs_macros_doc_tests {
         // Or, you can customize entity container.
         #[derive(Entity)]
         #[container(ChunkSparseSet)]
-        #[random_state(std::hash::RandomState)]
+        #[default_hasher(std::collections::hash_map::RandomState)]
         struct Eb {
             a: Ca,
         }
@@ -128,13 +144,12 @@ mod my_ecs_macros_doc_tests {
         // Declares `Fd` with an implementation of `Filter` and `Select`.
         filter!(Fd, Target = Ca, All = Cb, Any = Cc, None = (Cd, Ce));
 
-        // All types implement `Filter` which means they can be used in
-        // `EntWrite`.
+        // All types implement `Filter` which means they can be used in `EntWrite`.
         fn system_a(ew: EntWrite<(Fa, Fb, Fc, Fd)>) { /* ... */
         }
 
-        // On the other hand, `Fc` and `Fd` can be used in `Read` and `Write`
-        // because they implement `Select` too.
+        // On the other hand, `Fc` and `Fd` can be used in `Read` and `Write` because they implement
+        // `Select` too.
         fn system_b(r: Read<Fc>, w: Write<Fd>) { /* ... */
         }
     }
@@ -157,8 +172,8 @@ mod my_ecs_macros_doc_tests {
         filter!(Fb, Target = Cb);
         filter!(Fc, All = (Ca, Cb));
 
-        // Declares `Req` with an implementation of `Request`.
-        // You can omit Read, Write, ResRead, ResWrite, or EntWrite.
+        // Declares `Req` with an implementation of `Request`. You can omit Read, Write, ResRead,
+        // ResWrite, or EntWrite.
         request!(
             Req,
             Read = Fa,

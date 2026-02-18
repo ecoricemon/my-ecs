@@ -1,12 +1,16 @@
 use super::{
-    DynResult,
     ent::{component::Component, entity::EntityId},
     entry::Ecs,
     post::EntMoveStorage,
     sched::comm::CommandSender,
+    DynResult,
 };
-use my_ecs_util::ds::ReadyFuture;
-use std::{fmt, ptr::NonNull, sync::MutexGuard};
+use my_utils::ds::ReadyFuture;
+use std::{
+    fmt::{self, Debug},
+    ptr::NonNull,
+    sync::MutexGuard,
+};
 
 pub mod prelude {
     pub use super::Command;
@@ -14,9 +18,9 @@ pub mod prelude {
 
 /// Command to an ECS instance.
 ///
-/// Command is one way to modify ECS instance directly such as adding or
-/// removing systems. In the command method, an ECS handle is given and you can
-/// make change to the ECS insance using the handle.
+/// Command is one way to modify ECS instance directly such as adding or removing systems. In the
+/// command method, an ECS handle is given and you can make change to the ECS insance using the
+/// handle.
 ///
 /// # Example
 ///
@@ -27,7 +31,7 @@ pub mod prelude {
 ///
 /// impl Command for MyCommand {
 ///     fn command(&mut self, mut ecs: Ecs) -> DynResult<()> {
-///         ecs.add_system(|| { /* ... */}).take()?;
+///         ecs.add_system(|| { /* ... */}).into_result()?;
 ///         Ok(())
 ///     }
 /// }
@@ -39,8 +43,7 @@ pub trait Command: Send + 'static {
     #[allow(unused_variables)]
     fn command(&mut self, ecs: Ecs<'_>) -> DynResult<()>;
 
-    /// Cancellation method which is called when the command cannot be
-    /// executed for some reason.
+    /// Cancellation method which is called when the command cannot be executed for some reason.
     ///
     /// After calling this method, the command will be dropped.
     fn cancel(&mut self) {}
@@ -91,8 +94,7 @@ where
 
 /// Empty command.
 ///
-/// This implementation helps clients to use '?' operator in their command
-/// functions.
+/// This implementation helps clients to use '?' operator in their command functions.
 impl Command for DynResult<()> {
     fn command(&mut self, _ecs: Ecs<'_>) -> DynResult<()> {
         let empty = Err("command has been taken".into());
@@ -102,8 +104,7 @@ impl Command for DynResult<()> {
 
 /// Empty command.
 ///
-/// This implementation allows clients make commands returning just `()`, called
-/// unit.
+/// This implementation allows clients make commands returning just `()`, called unit.
 impl Command for () {
     fn command(&mut self, _ecs: Ecs<'_>) -> DynResult<()> {
         Ok(())
@@ -121,9 +122,9 @@ pub(crate) enum CommandObject {
     Raw(RawCommand),
 }
 
-my_ecs_util::impl_from_for_enum!("outer" = CommandObject; "var" = Boxed; "inner" = Box<dyn Command>);
-my_ecs_util::impl_from_for_enum!("outer" = CommandObject; "var" = Future; "inner" = ReadyFuture);
-my_ecs_util::impl_from_for_enum!("outer" = CommandObject; "var" = Raw; "inner" = RawCommand);
+my_utils::impl_from_for_enum!("outer" = CommandObject; "var" = Boxed; "inner" = Box<dyn Command>);
+my_utils::impl_from_for_enum!("outer" = CommandObject; "var" = Future; "inner" = ReadyFuture);
+my_utils::impl_from_for_enum!("outer" = CommandObject; "var" = Raw; "inner" = RawCommand);
 
 impl CommandObject {
     pub(crate) fn command(self, ecs: Ecs<'_>) -> DynResult<()> {
@@ -150,7 +151,6 @@ impl CommandObject {
 }
 
 /// Like other commands, RawCommand is also executed only once.
-#[derive(Debug)]
 pub(crate) struct RawCommand {
     data: NonNull<u8>,
     command: unsafe fn(NonNull<u8>, Ecs<'_>) -> DynResult<()>,
@@ -160,9 +160,7 @@ pub(crate) struct RawCommand {
 unsafe impl Send for RawCommand {}
 
 impl RawCommand {
-    pub(crate) unsafe fn new<C: Command>(cmd: &C) -> Self {
-        let data = unsafe { NonNull::new_unchecked((cmd as *const _ as *const u8).cast_mut()) };
-
+    pub(crate) unsafe fn new<C: Command>(data: NonNull<C>) -> Self {
         unsafe fn command<C: Command>(data: NonNull<u8>, ecs: Ecs<'_>) -> DynResult<()> {
             let data = unsafe { data.cast::<C>().as_mut() };
             data.command(ecs)
@@ -174,38 +172,43 @@ impl RawCommand {
         }
 
         Self {
-            data,
+            data: data.cast(),
             command: command::<C>,
             cancel: cancel::<C>,
         }
     }
 
     fn command(self, ecs: Ecs<'_>) -> DynResult<()> {
-        // Safety: Calling `self.command` is safe because it's guaranteed
-        // by owner called new().
+        // Safety: Calling `self.command` is safe because it's guaranteed by owner called new().
         unsafe { (self.command)(self.data, ecs) }
     }
 
     fn cancel(self) {
-        // Safety: Calling `self.cancel` is safe because it's guaranteed by
-        // owner called new().
+        // Safety: Calling `self.cancel` is safe because it's guaranteed by owner called new().
         unsafe { (self.cancel)(self.data) };
+    }
+}
+
+impl Debug for RawCommand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RawCommand")
+            .field("data", &self.data)
+            .finish_non_exhaustive()
     }
 }
 
 /// A command builder to attach or detach some components to or from an entity.
 ///
-/// By attaching or detathcing components, entity move from one entity container
-/// to another arises because the entity doesn't belong to the previous entity
-/// container. If destination entity container doesn't exist at the time, new
-/// entity container is generated first then the entity moves into it.
+/// By attaching or detathcing components, entity move from one entity container to another arises
+/// because the entity doesn't belong to the previous entity container. If destination entity
+/// container doesn't exist at the time, new entity container is generated first then the entity
+/// moves into it.
 ///
 /// There are two options about how to handle built command.
 /// * Call [`EntityMoveCommandBuilder::finish`]
 ///   - Just build a command then give it to the caller.
 /// * Drop the builder without calling the `finish` method.
-///   - If something has changed, build a command then send it to main worker in
-///     order to handle it.
+///   - If something has changed, build a command then send it to main worker in order to handle it.
 pub struct EntityMoveCommandBuilder<'a> {
     tx_cmd: &'a CommandSender,
     guard: MutexGuard<'a, EntMoveStorage>,
@@ -228,7 +231,7 @@ impl<'a> EntityMoveCommandBuilder<'a> {
     }
 
     /// Finishes to build an entity move command.
-    pub fn finish(mut self) -> impl Command + use<> {
+    pub fn finish(mut self) -> impl Command {
         assert!(self.len > 0);
 
         let cmd = self._finish();
