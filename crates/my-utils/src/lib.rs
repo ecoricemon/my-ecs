@@ -7,7 +7,6 @@ pub type FxBuildHasher = fxhash::FxBuildHasher;
 
 // === impl ===
 
-use my_ecs_macros::repeat_macro;
 use std::{
     borrow::{Borrow, BorrowMut},
     cmp,
@@ -82,7 +81,13 @@ macro_rules! impl_take_recur_for_tuple {
         }
     };};
 }
-repeat_macro!(impl_take_recur_for_tuple, 2..=8);
+impl_take_recur_for_tuple!(2, 0, 1);
+impl_take_recur_for_tuple!(3, 0, 1, 2);
+impl_take_recur_for_tuple!(4, 0, 1, 2, 3);
+impl_take_recur_for_tuple!(5, 0, 1, 2, 3, 4);
+impl_take_recur_for_tuple!(6, 0, 1, 2, 3, 4, 5);
+impl_take_recur_for_tuple!(7, 0, 1, 2, 3, 4, 5, 6);
+impl_take_recur_for_tuple!(8, 0, 1, 2, 3, 4, 5, 6, 7);
 
 /// A type representing 2^k `usize`.
 ///

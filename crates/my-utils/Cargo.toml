@@ -13,7 +13,6 @@ keywords = ["utilities"]
 check = []
 
 [dependencies]
-my-ecs-macros = { workspace = true }
 rayon = { workspace = true }
 paste = { workspace = true }
 libc = { workspace = true }
