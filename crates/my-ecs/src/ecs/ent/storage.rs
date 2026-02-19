@@ -260,11 +260,11 @@ where
                 Ok(ei)
             }
             Err(desc) => {
-                let cont = self.map.get_group2(&desc.group_key).unwrap();
+                let _cont = self.map.get_group2(&desc.group_key).unwrap();
                 let reason = debug_format!(
                     "failed to register an entity: two entities `{:?}` and `{:?}` are the same",
                     ename,
-                    cont.get_tag().get_name()
+                    _cont.get_tag().get_name()
                 );
                 Err(EcsError::InvalidEntity(reason, ()))
             }

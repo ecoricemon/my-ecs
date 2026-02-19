@@ -527,12 +527,21 @@ impl<W: Work + 'static> Scheduler<W> {
             if self.dedicated_future_count() == 0 {
                 break;
             }
-            thread::park_timeout(Duration::from_millis(WAIT_MILLIS));
-        }
 
-        // Discards remaining tasks.
-        while let Ok(task) = self.dedi_rx.try_recv() {
-            task.discard();
+            // Discards remaining tasks.
+            while let Ok(task) = self.dedi_rx.try_recv() {
+                match task {
+                    Task::System(_task) => { /* Do we need to do something here? */ }
+                    Task::Parallel(_task) => { /* Do we need to do something here? */ }
+                    Task::Async(task) => {
+                        // Safety: Uncompleted future task is aborted and deallocated in here only.
+                        unsafe { task.destroy() };
+                        self.dedi_fut_cnt.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+            }
+
+            thread::park_timeout(Duration::from_millis(WAIT_MILLIS));
         }
 
         let remain = self.dedicated_future_count();

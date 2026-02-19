@@ -12,7 +12,7 @@ use std::{
 };
 
 // === Defines number of workers ===
-const NUM_WORKERS: usize = 6;
+const NUM_WORKERS: usize = 3;
 
 // === Defines `Component` ===
 #[derive(Component, Clone, Copy)]

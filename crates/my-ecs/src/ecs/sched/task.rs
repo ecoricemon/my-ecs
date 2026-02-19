@@ -39,17 +39,6 @@ impl Task {
             Self::Async(task) => TaskId::Async(**task),
         }
     }
-
-    pub(super) fn discard(self) {
-        match self {
-            Task::System(_task) => { /* Do we need to do something here? */ }
-            Task::Parallel(_task) => { /* Do we need to do something here? */ }
-            Task::Async(task) => {
-                // Safety: Uncompleted future task is aborted and deallocated in here only.
-                unsafe { task.destroy() };
-            }
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
