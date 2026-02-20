@@ -40,7 +40,7 @@ pub struct Signal {
 }
 
 impl Signal {
-    const RNG_SEED: NonZeroU32 = const { unsafe { NonZeroU32::new_unchecked(0x7A7A_A7A7) } };
+    const RNG_SEED: NonZeroU32 = unsafe { NonZeroU32::new_unchecked(0x7A7A_A7A7) };
 
     pub const fn new(slots: Vec<SignalSlot>) -> Self {
         Self {

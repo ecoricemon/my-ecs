@@ -31,6 +31,8 @@ concurrency:
 
 env:
   rust_nightly: nightly-2026-01-30
+  rust_clippy: '1.93'
+  rust_min: '1.65'
 
 jobs:
   fmt:
@@ -61,13 +63,36 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # branch=master
         with:
-          toolchain: stable
+          toolchain: ${{ env.rust_clippy }}
           components: clippy
           targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
       - name: cargo clippy
         run: |
           cargo clippy --all-targets --all-features -- -D warnings
           cargo clippy --all-targets --all-features --target wasm32-unknown-unknown -- -D warnings
+
+  msrv:
+    name: msrv
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6.0.1
+        with:
+          submodules: true
+      - name: Install Rust ${{ env.rust_nightly }}
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # branch=master
+        with:
+          toolchain: ${{ env.rust_nightly }}
+      - name: Install Rust ${{ env.rust_min }}
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # branch=master
+        with:
+          toolchain: ${{ env.rust_min }}
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check
+        run: |
+          # Generate lock file with mimimal versions and check the MSRV
+          cargo +nightly update -Z minimal-versions
+          cargo +${{ env.rust_min }} check --locked --workspace
 
   minimal-versions:
     name: minimal-versions
@@ -84,7 +109,8 @@ jobs:
         uses: taiki-e/install-action@v2.67.17
         with:
           tool: cargo-hack
-      - name: "check -Z minimal-versions"
+      - uses: Swatinem/rust-cache@v2
+      - name: check -Z minimal-versions
         run: |
           # Remove dev-dependencies from Cargo.toml to prevent the next `cargo update` from
           # determining minimal versions based on dev-dependencies.
