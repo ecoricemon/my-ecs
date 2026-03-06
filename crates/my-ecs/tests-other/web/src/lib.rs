@@ -338,8 +338,6 @@ fn try_schedule(pool: WorkerPool) -> WorkerPool {
 }
 
 fn try_command(pool: WorkerPool) -> WorkerPool {
-    use std::sync::{Arc, Mutex};
-
     // Without sub workers
     inner(WorkerPool::new());
 

@@ -39,6 +39,7 @@ jobs:
         # enable this ci template to run regardless of whether the lockfile is checked in or not
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+      - uses: Swatinem/rust-cache@v2
       - name: cargo test --locked
         run: cargo test --workspace --locked --all-features --all-targets
       - name: cargo test --doc
@@ -85,6 +86,7 @@ jobs:
       - name: cargo generate-lockfile
         if: hashFiles('Cargo.lock') == ''
         run: cargo generate-lockfile
+      - uses: Swatinem/rust-cache@v2
       - name: cargo llvm-cov in ${{ matrix.crate }}
         run: cargo llvm-cov --locked --all-features --lcov --output-path lcov.info
         working-directory: crates/${{ matrix.crate }}

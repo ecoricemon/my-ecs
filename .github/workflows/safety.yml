@@ -108,6 +108,7 @@ jobs:
           # now set opt-level to 1
           sed -i '/^\s*\[profile.dev\]/a opt-level = 1' Cargo.toml
           cat Cargo.toml
+      - uses: Swatinem/rust-cache@v2
       - name: cargo test -Zsanitizer=address in ${{ matrix.crate }}
         # only --lib --tests b/c of https://github.com/rust-lang/rust/issues/53945
         run: cargo test --lib --tests --all-features --target x86_64-unknown-linux-gnu
@@ -139,6 +140,7 @@ jobs:
         with:
           toolchain: ${{ env.rust_nightly }}
           components: miri
+      - uses: Swatinem/rust-cache@v2
       - name: cargo miri test
         run: cargo miri test
         env:
