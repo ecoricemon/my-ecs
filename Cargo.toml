@@ -3,9 +3,9 @@ resolver = "2"
 members = ["crates/*", "crates/my-ecs/tests-other/web"]
 
 [workspace.dependencies]
-my-ecs = { version = "0.1.1", path = "crates/my-ecs" }
+my-ecs = { version = "0.1.2", path = "crates/my-ecs" }
 my-ecs-macros = { version = "0.1.1", path = "crates/my-ecs-macros" }
-my-utils = { version = "0.1.0", path = "crates/my-utils" }
+my-utils = { version = "0.1.1", path = "crates/my-utils" }
 syn = "2.0.106"
 proc-macro2 = "1.0.91"
 quote = "1.0.35"
