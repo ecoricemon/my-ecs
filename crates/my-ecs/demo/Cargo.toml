@@ -1,0 +1,16 @@
+[package]
+name = "my-ecs-demo"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+my-ecs = "0.1.2"
+wasm-bindgen = "0.2.97"
+wasm-bindgen-futures = "0.4.49"
+js-sys = "0.3.74"
+console_error_panic_hook = "0.1.7"
+getrandom = { version = "0.2", features = [ "js" ] }

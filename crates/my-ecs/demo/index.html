@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>my-ecs example</title>
+    <script src="index.js" type="module"></script>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body
+    class="flex flex-col h-dvh bg-stone-100 dark:bg-stone-900 text-stone-900 dark:text-stone-100"
+  >
+    <h1 class="mt-4 ml-4 text-5xl font-medium">my-ecs demo</h1>
+
+    <p class="mt-4 ml-4 mb-4 font-light leading-relaxed">
+      This demo shows drawing
+      <a href="https://en.wikipedia.org/wiki/Mandelbrot_set"
+        >Mandelbrot fractal</a
+      >
+      structure using the rust crate <a href="https://crates.io/crates/my-ecs">my-ecs</a>.
+    </p>
+
+    <button
+      type="button"
+      id="btnSingleWorker"
+      class="bg-indigo-500 disabled:bg-gray-700 text-white font-bold text-xs py-2"
+    >
+      Draw on one worker
+    </button>
+    <button
+      type="button"
+      id="btnCpu"
+      class="bg-indigo-500 disabled:bg-gray-700 text-white font-bold text-xs py-2"
+    >
+      Draw on N workers
+    </button>
+    <button
+      type="button"
+      id="btnStop"
+      class="bg-indigo-500 disabled:bg-gray-700 text-white font-bold text-xs py-2"
+    >
+      Stop
+    </button>
+
+    <div
+      class="flex justify-center relative mt-4 h-full max-h-[70dvh] bg-gradient-to-t from-gray-950 via-gray-900 to-gray-950"
+    >
+      <text id="fps" class="absolute text-xl text-white font-medium">fps</text>
+      <canvas id="canvas" class="aspect-square h-full"></canvas>
+    </div>
+  </body>
+</html>
