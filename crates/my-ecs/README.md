@@ -21,6 +21,20 @@ architecture up into data and functions. `Component` is data of a type and
 function. Plus, the crate contains another concept, `Resource`, which is a
 unique data.
 
+## Demo
+<table align="center">
+  <tr>
+    <td>
+      <video src="https://github.com/user-attachments/assets/c0e3ded3-5685-4d3b-b012-14192512e7a0" width="400" autoplay muted loop></video>
+    </td>
+    <td valign="top">
+      <h3>my-ecs demo video</h3>
+      <p>Rendering the Mandelbrot set with multiple threads using my-ecs</p>
+      <p>Try the demo <a href="https://ecoricemon.duckdns.org">here</a></p>
+    </td>
+  </tr>
+</table>
+
 ## Features
 
 The crate provides features below.
