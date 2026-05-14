@@ -110,6 +110,7 @@ use SystemState::*;
 // Clients can define their systems with some data. And we're going to send those systems to other
 // workers, so it's good to add `Send` bound to the trait for safety.
 pub trait System: Send + 'static {
+    /// Data request used when this system runs.
     type Request: Request;
 
     /// Runs the system with the response corresponding to its request.
@@ -551,9 +552,13 @@ impl SystemGroup {
 /// | [`Poisoned`] |              | A system is removed by client         |
 #[derive(Debug)]
 pub enum SystemState {
+    /// The system is scheduled to run.
     Active,
+    /// The system is registered but not scheduled.
     Inactive,
+    /// The system has been removed or expired.
     Dead,
+    /// The system panicked.
     Poisoned,
 }
 
@@ -685,8 +690,11 @@ impl RawSystemCycleIter {
 ///   will be run after the designated system.
 #[derive(Debug, Clone, Copy)]
 pub enum InsertPos {
+    /// Inserts at the end of the active system list.
     Back,
+    /// Inserts at the beginning of the active system list.
     Front,
+    /// Inserts after the given system.
     After(SystemId),
 }
 
@@ -1182,6 +1190,7 @@ impl<Sys> SystemDesc<Sys>
 where
     Sys: System,
 {
+    /// Sets the system value on this descriptor.
     pub fn with_system<T, OutSys>(self, sys: T) -> SystemDesc<OutSys>
     where
         T: Into<SystemBond<OutSys>>,
@@ -1198,6 +1207,7 @@ where
         }
     }
 
+    /// Sets a one-shot system on this descriptor.
     pub fn with_once<T, Req, F>(self, sys: T) -> SystemDesc<FnOnceSystem<Req, F>>
     where
         T: Into<FnOnceSystem<Req, F>>,
@@ -1218,6 +1228,7 @@ where
         }
     }
 
+    /// Sets the worker group index.
     pub fn with_group_index(self, index: u16) -> Self {
         Self {
             group_index: index,
@@ -1225,10 +1236,12 @@ where
         }
     }
 
+    /// Sets whether the system is volatile.
     pub fn with_volatile(self, volatile: bool) -> Self {
         Self { volatile, ..self }
     }
 
+    /// Sets the activation lifetime and insertion position.
     pub fn with_activation(self, live: Tick, insert_at: InsertPos) -> Self {
         Self {
             activation: (live, insert_at),
@@ -1237,6 +1250,7 @@ where
     }
 
     // Clients are only able to put in systems, not system data.
+    /// Consumes the descriptor and returns its system.
     pub fn take_system(self) -> Sys {
         match self.sys {
             Or::A(sys) => sys,
@@ -1260,6 +1274,7 @@ where
 }
 
 impl SystemDesc<()> {
+    /// Creates an empty system descriptor.
     pub const fn new() -> Self {
         Self {
             sys: Or::A(()),

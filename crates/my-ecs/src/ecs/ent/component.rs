@@ -3,19 +3,27 @@ use my_utils::ds::{unimpl_clone, unimpl_default, ATypeId, FnCloneRaw, FnDefaultR
 
 /// Ordinary rust types.
 pub trait Component: Send + Sync + Sized + 'static {
+    /// Whether this component is sendable. Always true by trait bound.
     const IS_SEND: bool = true; // by bound
+    /// Whether this component is shareable. Always true by trait bound.
     const IS_SYNC: bool = true; // by bound
 
     // === Must be overwritten by something like [`my_ecs_macros::Component`] ===
+    /// Whether this component implements [`Default`].
     const IS_DEFAULT: bool = false; // depends on impl
+    /// Raw default-construction function for this component.
     const FN_DEFAULT: FnDefaultRaw = unimpl_default; // depends on impl
+    /// Whether this component implements [`Clone`].
     const IS_CLONE: bool = false; // depends on impl
+    /// Raw clone function for this component.
     const FN_CLONE: FnCloneRaw = unimpl_clone; // depends on impl
 
+    /// Returns this component's key.
     fn key() -> ComponentKey {
         ComponentKey::of::<Self>()
     }
 
+    /// Returns type information for this component.
     fn type_info() -> TypeInfo {
         TypeInfo::new::<Self>(
             Self::IS_SEND,
@@ -28,9 +36,12 @@ pub trait Component: Send + Sync + Sized + 'static {
 
 /// A set of [`Component`]s.
 pub trait Components: 'static {
+    /// Component keys container.
     type Keys: AsRef<[ComponentKey]>;
+    /// Component type information container.
     type Infos: AsRef<[TypeInfo]>;
 
+    /// Number of components.
     const LEN: usize;
 
     /// Returns [`ComponentKey`]s in declared field order.

@@ -48,7 +48,7 @@ impl<T, const N: usize> Array<T, N> {
         N
     }
 
-    /// Returns number of items.
+    /// Returns the number of items.
     ///
     /// # Examples
     ///
@@ -407,7 +407,7 @@ impl<T, const N: usize> ArrayDeque<T, N> {
         N
     }
 
-    /// Returns number of items.
+    /// Returns the number of items.
     ///
     /// # Examples
     ///

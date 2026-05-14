@@ -218,7 +218,7 @@ impl AnyVec {
         self.tinfo.ty == TypeId::of::<T>()
     }
 
-    /// Returns number of item.
+    /// Returns the number of items.
     ///
     /// # Examples
     ///
@@ -714,8 +714,8 @@ impl AnyVec {
     /// Removes the last item from the vector and writes it to the given buffer, then returns
     /// `Some`.
     ///
-    /// If removing is successful, caller becomes to own the item in the buffer, so that caller must
-    /// call `drop()` on it correctly. Otherwise, returns `None` without change to the buffer.
+    /// If removal succeeds, the caller owns the item in the buffer and must call `drop()` on it
+    /// correctly. Otherwise, this returns `None` without changing the buffer.
     ///
     /// # Safety
     ///
@@ -1502,6 +1502,7 @@ impl AnyVec {
         }
     }
 
+    /// Returns a type-erased flat iterator over the vector.
     pub fn flat_raw_iter(&self) -> FlatRawIter {
         unsafe fn fn_iter(this: NonNull<u8>, chunk_idx: usize) -> RawIter {
             if chunk_idx == 0 {

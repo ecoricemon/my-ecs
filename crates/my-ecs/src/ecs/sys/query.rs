@@ -197,6 +197,7 @@ pub trait EntQueryMut: 'static {
 pub struct Read<'buf, R: Query>(pub(crate) R::Output<'buf>);
 
 impl<'buf, R: Query> Read<'buf, R> {
+    /// Consumes the wrapper and returns the query output.
     pub fn take(self) -> R::Output<'buf> {
         self.0
     }
@@ -229,6 +230,7 @@ where
 pub struct Write<'buf, W: QueryMut>(pub(crate) W::Output<'buf>);
 
 impl<'buf, W: QueryMut> Write<'buf, W> {
+    /// Consumes the wrapper and returns the query output.
     pub fn take(self) -> W::Output<'buf> {
         self.0
     }
@@ -267,6 +269,7 @@ where
 pub struct ResRead<'buf, RR: ResQuery>(pub(crate) RR::Output<'buf>);
 
 impl<'buf, RR: ResQuery> ResRead<'buf, RR> {
+    /// Consumes the wrapper and returns the query output.
     pub fn take(self) -> RR::Output<'buf> {
         self.0
     }
@@ -299,6 +302,7 @@ where
 pub struct ResWrite<'buf, RW: ResQueryMut>(pub(crate) RW::Output<'buf>);
 
 impl<'buf, RW: ResQueryMut> ResWrite<'buf, RW> {
+    /// Consumes the wrapper and returns the query output.
     pub fn take(self) -> RW::Output<'buf> {
         self.0
     }
@@ -337,6 +341,7 @@ where
 pub struct EntWrite<'buf, EW: EntQueryMut>(pub(crate) EW::Output<'buf>);
 
 impl<'buf, EW: EntQueryMut> EntWrite<'buf, EW> {
+    /// Consumes the wrapper and returns the query output.
     pub fn take(self) -> EW::Output<'buf> {
         self.0
     }

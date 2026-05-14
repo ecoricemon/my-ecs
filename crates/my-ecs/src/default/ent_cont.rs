@@ -700,7 +700,7 @@ where
 ///
 /// # Safety
 ///
-/// See safety section in [Column].
+/// See the safety section in `Column`.
 #[derive(Debug)]
 pub struct ChunkColumn {
     holder: Holder<ChunkAnyVec, RawGetter, RawGetter>,

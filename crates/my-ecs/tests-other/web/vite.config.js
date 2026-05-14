@@ -5,33 +5,33 @@ import topLevelAwait from "vite-plugin-top-level-await";
 export default defineConfig({
   build: {
     rollupOptions: {
-      // We need to split wasm glue module into a sperate chunk
-      // 1. Not to include window context data.
+      // We need to split the wasm glue module into a separate chunk:
+      // 1. Avoid including window context data.
       //    * wasm glue module will be imported in worker context.
-      //    * In worker context, we can't access such as document.
+      //    * In worker context, we can't access objects such as document.
       // 2. To preserve indirectly used exports.
       //    * Rollup doesn't know that we're going to access some exported
       //      objects in wasm code.
       //    * So we need to make Rollup not to drop those objects.
-      // 
+      //
       // First of all, we need to make a new entry point for wasm.
       input: {
         app: 'index.html',
         wasm: 'pkg/wasm-index.js',
       },
 
-      // Without this, Rollup still will discard indirectly used exports.
+      // Without this, Rollup still discards indirectly used exports.
       // * https://rollupjs.org/configuration-options/#preserveentrysignatures
-      //   Although Rollup says default is already 'exports-only', 
-      //   but I guess Vite 5.4.2 changes it to `false`.
+      //   Although Rollup says the default is already 'exports-only', Vite 5.4.2 appears to
+      //   change it to `false`.
       preserveEntrySignatures: 'exports-only',
     },
     // Path is relative to 'root'.
     outDir: 'dist',
   },
   plugins: [
-    // Makes us be able to use top level await for wasm. Otherwise, we can
-    // restrict build.target to 'es2022', which allows top level await.
+    // Allows top-level await for wasm. Otherwise, we can set build.target to 'es2022', which also
+    // allows top-level await.
     wasm(),
     topLevelAwait(),
   ],

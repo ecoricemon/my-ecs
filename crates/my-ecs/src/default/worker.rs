@@ -387,8 +387,8 @@ mod web {
     ///
     /// # Why we need main worker
     ///
-    /// Ecs instance blocks sometimes to wait for messages from sub workers. But browsers doesn't
-    /// allow us to block on window context. So we need an extra web worker.
+    /// An ECS instance sometimes blocks while waiting for messages from sub workers. Browsers don't
+    /// allow blocking in the window context, so we need an extra web worker.
     #[derive(Debug)]
     #[repr(transparent)]
     pub struct MainWorker {
@@ -1027,8 +1027,8 @@ mod web {
     //
     // build: {
     //   rollupOptions: {
-    //       // We need to split wasm glue module into a separate chunk
-    //       // 1. Not to include window context data.
+    //       // We need to split the wasm glue module into a separate chunk:
+    //       // 1. Avoid including window context data.
     //       //    * wasm glue module will be imported in worker context.
     //       //    * In worker context, we can't access something like document.
     //       // 2. To preserve indirectly used exports.
@@ -1045,8 +1045,8 @@ mod web {
     //
     //       // Then, put the following.
     //       // * https://rollupjs.org/configuration-options/#preserveentrysignatures
-    //       //   Although Rollup says default is already 'exports-only',
-    //       //   but I guess Vite 5.4.2 changes it to `false`.
+    //       //   Although Rollup says the default is already 'exports-only', Vite 5.4.2 appears to
+    //       //   change it to `false`.
     //       preserveEntrySignatures: 'exports-only',
     //     },
     //   ...

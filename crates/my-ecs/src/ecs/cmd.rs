@@ -18,9 +18,8 @@ pub mod prelude {
 
 /// Command to an ECS instance.
 ///
-/// Command is one way to modify ECS instance directly such as adding or removing systems. In the
-/// command method, an ECS handle is given and you can make change to the ECS insance using the
-/// handle.
+/// A command is one way to modify an ECS instance directly, such as adding or removing systems. In
+/// the command method, an ECS handle is provided, and you can use it to change the ECS instance.
 ///
 /// # Example
 ///
@@ -94,7 +93,7 @@ where
 
 /// Empty command.
 ///
-/// This implementation helps clients to use '?' operator in their command functions.
+/// This implementation lets clients use the `?` operator in their command functions.
 impl Command for DynResult<()> {
     fn command(&mut self, _ecs: Ecs<'_>) -> DynResult<()> {
         let empty = Err("command has been taken".into());
@@ -104,7 +103,7 @@ impl Command for DynResult<()> {
 
 /// Empty command.
 ///
-/// This implementation allows clients make commands returning just `()`, called unit.
+/// This implementation lets clients make commands that return just `()`, called unit.
 impl Command for () {
     fn command(&mut self, _ecs: Ecs<'_>) -> DynResult<()> {
         Ok(())
@@ -199,10 +198,9 @@ impl Debug for RawCommand {
 
 /// A command builder to attach or detach some components to or from an entity.
 ///
-/// By attaching or detathcing components, entity move from one entity container to another arises
-/// because the entity doesn't belong to the previous entity container. If destination entity
-/// container doesn't exist at the time, new entity container is generated first then the entity
-/// moves into it.
+/// Attaching or detaching components can move an entity from one entity container to another
+/// because the entity no longer belongs to the previous entity container. If the destination entity
+/// container doesn't exist yet, a new entity container is generated before the entity moves into it.
 ///
 /// There are two options about how to handle built command.
 /// * Call [`EntityMoveCommandBuilder::finish`]

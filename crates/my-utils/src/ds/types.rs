@@ -167,37 +167,37 @@ impl Eq for TypeInfo {}
 pub type FnDropRaw = unsafe fn(*mut u8);
 
 /// A helper struct used to determine whether a type implements traits like [`Send`], [`Sync`], and
-/// [`Clone`] by cooperating with helper traits like [`NotSend`] , [`NotSync`], and [`NotClone`].
+/// [`Clone`] by cooperating with helper traits like [`NotSend`], [`NotSync`], and [`NotClone`].
 ///
-/// Helper traits basically have associated constants meaning whether a type imeplements a trait
-/// such as `Send`. They are set to `false` by default, and all types implement the helper types by
-/// blanket implementation. In other words, all types are not `Send`, `Sync` by the helper traits,
-/// etc. But [`TypeHelper`] can overwrite it for types that actually implement those traits thanks
-/// to its trait bound. As a result, clients can be aware of whether a type impelments a certain
-/// trait through `TypeHelper`. This is especially useful when you make a library that receives
-/// anonymous type and you need such type information.
+/// Helper traits have associated constants that indicate whether a type implements a trait such as
+/// `Send`. They are set to `false` by default, and all types implement the helper traits through a
+/// blanket implementation. In other words, all types are treated as not `Send`, not `Sync`, and so
+/// on by the helper traits. But [`TypeHelper`] can override those values for types that actually
+/// implement those traits thanks to its trait bounds. As a result, clients can check whether a type
+/// implements a certain trait through `TypeHelper`. This is especially useful when you make a
+/// library that receives an anonymous type and needs that type information.
 ///
 /// # How it works
 ///
-/// If a struct has function `foo<T: Send>` and it also implement `Foo` which has the same signature
-/// function `foo<T>`, then rust will look for callable function in the order below.
+/// If a struct has a function `foo<T: Send>` and also implements `Foo`, which has the same function
+/// signature `foo<T>`, then Rust will look for a callable function in the order below.
 /// - Inherent function
 /// - Trait function
 ///
-/// So if the type is `Send`, then rust chooses inherent function due to the search order.  But rust
-/// will choose trait function if the type is not `Send` due to the `T: Send` bound.
+/// So if the type is `Send`, Rust chooses the inherent function due to the search order. But Rust
+/// will choose the trait function if the type is not `Send` due to the `T: Send` bound.
 ///
 /// See [method-call-expr](https://doc.rust-lang.org/reference/expressions/method-call-expr.html).
-/// The document describes about methods, but I believe the same rule is applied to associated
-/// functions as well.
+/// The document describes methods, but I believe the same rule applies to associated functions as
+/// well.
 ///
-/// Here, more specific rules are written.
+/// More specific rules are written here.
 /// [1](https://rust-lang.github.io/rfcs/0195-associated-items.html#via-an-id_segment-prefix)
 /// [2](https://rust-lang.github.io/rfcs/0195-associated-items.html#via-a-type_segment-prefix)
 ///
-/// - `1` tells starting with ID_SEGMENT is equivalent to starting with TYPE_SEGMENT. 'A::b' is
+/// - `1` says starting with ID_SEGMENT is equivalent to starting with TYPE_SEGMENT. 'A::b' is
 ///   equivalent to '\<A\>::b'
-/// - `2` tells inherent members are prioritized over in-scope traits.
+/// - `2` says inherent members are prioritized over in-scope traits.
 pub struct TypeHelper<T: ?Sized>(PhantomData<T>);
 
 // === TypeHelper for `Send` ===
@@ -206,12 +206,14 @@ pub struct TypeHelper<T: ?Sized>(PhantomData<T>);
 ///
 /// See [`TypeHelper`] documentation for more details.
 pub trait NotSend {
+    /// Whether the checked type implements [`Send`].
     const IS_SEND: bool = false;
 }
 
 impl<T: ?Sized> NotSend for TypeHelper<T> {}
 
 impl<T: ?Sized + Send> TypeHelper<T> {
+    /// Whether `T` implements [`Send`].
     pub const IS_SEND: bool = true;
 }
 
@@ -221,12 +223,14 @@ impl<T: ?Sized + Send> TypeHelper<T> {
 ///
 /// See [`TypeHelper`] documentation for more details.
 pub trait NotSync {
+    /// Whether the checked type implements [`Sync`].
     const IS_SYNC: bool = false;
 }
 
 impl<T: ?Sized> NotSync for TypeHelper<T> {}
 
 impl<T: ?Sized + Sync> TypeHelper<T> {
+    /// Whether `T` implements [`Sync`].
     pub const IS_SYNC: bool = true;
 }
 
@@ -236,12 +240,14 @@ impl<T: ?Sized + Sync> TypeHelper<T> {
 ///
 /// See [`TypeHelper`] documentation for more details.
 pub trait NotUnwindSafe {
+    /// Whether the checked type implements [`UnwindSafe`].
     const IS_UNWIND_SAFE: bool = false;
 }
 
 impl<T: ?Sized> NotUnwindSafe for TypeHelper<T> {}
 
 impl<T: ?Sized + UnwindSafe> TypeHelper<T> {
+    /// Whether `T` implements [`UnwindSafe`].
     pub const IS_UNWIND_SAFE: bool = true;
 }
 
@@ -251,19 +257,23 @@ impl<T: ?Sized + UnwindSafe> TypeHelper<T> {
 ///
 /// See [`TypeHelper`] documentation for more details.
 pub trait NotDebug {
+    /// Whether the checked type implements [`Debug`](fmt::Debug).
     const IS_DEBUG: bool = false;
+    /// Raw debug formatting function for the checked type.
     const FN_FMT: FnFmtRaw = unimpl_fmt;
 }
 
 impl<T: ?Sized> NotDebug for TypeHelper<T> {}
 
 impl<T: fmt::Debug> TypeHelper<T> {
+    /// Whether `T` implements [`Debug`](fmt::Debug).
     pub const IS_DEBUG: bool = true;
+    /// Raw debug formatting function for `T`.
     pub const FN_FMT: FnFmtRaw = Self::fn_fmt();
 
     /// Returns a raw function pointer of [`Debug::fmt`](fmt::Debug::fmt) for the given type.
     ///
-    /// But the given type is not [`Debug`](fmt::Debug), then calling the returned function will
+    /// If the given type is not [`Debug`](fmt::Debug), then calling the returned function will
     /// cause panic.
     pub const fn fn_fmt() -> FnFmtRaw {
         unsafe fn fmt<T: fmt::Debug>(
@@ -307,7 +317,7 @@ pub unsafe fn unimpl_fmt(_: *const u8, _: *mut fmt::Formatter<'_>) -> Result<(),
 
 /// A helper type for the [`FnFmtRaw`].
 ///
-/// This type implements [`Deubg`](fmt::Debug), therefore it's useful when you want to print
+/// This type implements [`Debug`](fmt::Debug), so it is useful when you want to print
 /// something out using the `FnFmtRaw`.
 ///
 /// # Examples
@@ -324,7 +334,9 @@ pub unsafe fn unimpl_fmt(_: *const u8, _: *mut fmt::Formatter<'_>) -> Result<(),
 /// println!("{helper:?}");
 /// ```
 pub struct DebugHelper {
+    /// Raw debug formatting function.
     pub f: FnFmtRaw,
+    /// Pointer to the value to format.
     pub ptr: *const u8,
 }
 
@@ -340,14 +352,18 @@ impl fmt::Debug for DebugHelper {
 ///
 /// See [`TypeHelper`] documentation for more details.
 pub trait NotDefault {
+    /// Whether the checked type implements [`Default`].
     const IS_DEFAULT: bool = false;
+    /// Raw default-construction function for the checked type.
     const FN_DEFAULT: FnDefaultRaw = unimpl_default;
 }
 
 impl<T: ?Sized> NotDefault for TypeHelper<T> {}
 
 impl<T: Default> TypeHelper<T> {
+    /// Whether `T` implements [`Default`].
     pub const IS_DEFAULT: bool = true;
+    /// Raw default-construction function for `T`.
     pub const FN_DEFAULT: FnDefaultRaw = Self::fn_default();
 
     /// Returns raw function pointer of [`Default::default`] for the given type.
@@ -397,14 +413,18 @@ pub unsafe fn unimpl_default(_: *mut u8) {
 ///
 /// See [`TypeHelper`] documentation for more details.
 pub trait NotClone {
+    /// Whether the checked type implements [`Clone`].
     const IS_CLONE: bool = false;
+    /// Raw clone function for the checked type.
     const FN_CLONE: FnCloneRaw = unimpl_clone;
 }
 
 impl<T: ?Sized> NotClone for TypeHelper<T> {}
 
 impl<T: Clone> TypeHelper<T> {
+    /// Whether `T` implements [`Clone`].
     pub const IS_CLONE: bool = true;
+    /// Raw clone function for `T`.
     pub const FN_CLONE: FnCloneRaw = Self::fn_clone();
 
     /// Returns raw function pointer of [`Clone::clone`] for the given type.
@@ -462,12 +482,14 @@ pub unsafe fn unimpl_clone(_: *const u8, _: *mut u8) {
 ///
 /// See [`TypeHelper`] documentation for more details.
 pub trait NotEqualType {
+    /// Whether the checked pair contains equal types.
     const IS_EQUAL_TYPE: bool = false;
 }
 
 impl<T> NotEqualType for TypeHelper<T> {}
 
 impl<T> TypeHelper<(T, T)> {
+    /// Whether the checked pair contains equal types.
     pub const IS_EQUAL_TYPE: bool = true;
 }
 

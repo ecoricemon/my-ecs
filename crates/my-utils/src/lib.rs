@@ -1,8 +1,17 @@
+//! General utilities shared by the workspace.
+//!
+//! This crate provides small data structures, type-erased containers, pointer helpers, string
+//! helpers, test utilities, and macros used by the ECS crates.
+
+/// General data structures.
 pub mod ds;
 pub(crate) mod macros;
+/// String utilities.
 pub mod str;
+/// Utilities intended for tests and examples.
 pub mod test_utils;
 
+/// Fast hash builder used by default in utility containers.
 pub type FxBuildHasher = fxhash::FxBuildHasher;
 
 // === impl ===
@@ -17,11 +26,11 @@ use std::{
     thread,
 };
 
-/// A trait for taking inner value out.
+/// A trait for taking an inner value out.
 ///
 /// Various types have methods like `take()` to take something out by consuming the type itself. If
-/// the taken value also can be unwrapped, then clients need to write code like `take().take()`.
-/// This trait helps to avoid something like that and replace it with just one call.
+/// the taken value can also be unwrapped, clients need to write code like `take().take()`. This
+/// trait helps replace that pattern with one call.
 ///
 /// # Examples
 ///
@@ -57,9 +66,10 @@ use std::{
 /// assert_eq!(value.take_recur(), 42);
 /// ```
 pub trait TakeRecur {
+    /// The final inner value produced by [`take_recur`](Self::take_recur).
     type Inner;
 
-    /// Takes out inner value recursively then returns it.
+    /// Recursively takes out and returns the inner value.
     ///
     /// # Examples
     ///
@@ -91,8 +101,8 @@ impl_take_recur_for_tuple!(8, 0, 1, 2, 3, 4, 5, 6, 7);
 
 /// A type representing 2^k `usize`.
 ///
-/// Zero is not 2^k though you can create [`PowerOfTwo`] by zero. In that case, zero is considered
-/// as `usize::MAX + 1` which is another 2^k.
+/// Zero is not 2^k, though you can create [`PowerOfTwo`] from zero. In that case, zero is treated
+/// as `usize::MAX + 1`, which is another 2^k.
 #[derive(Debug, Clone, Copy)]
 pub struct PowerOfTwo {
     value: usize,
@@ -120,7 +130,7 @@ impl PowerOfTwo {
         }
     }
 
-    /// Returns inner value.
+    /// Returns the inner value.
     pub const fn get(&self) -> usize {
         self.value
     }
@@ -160,7 +170,7 @@ impl PowerOfTwo {
 
 impl PartialEq for PowerOfTwo {
     fn eq(&self, other: &Self) -> bool {
-        // It's sufficient to compare `value` only because others are determined by the value.
+        // It is sufficient to compare only `value` because the other fields are determined by it.
         self.value == other.value
     }
 }
@@ -175,27 +185,29 @@ impl PartialOrd for PowerOfTwo {
 
 impl Ord for PowerOfTwo {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // It's sufficient to compare `value` only because others are determined by the value.
+        // It is sufficient to compare only `value` because the other fields are determined by it.
         self.value.cmp(&other.value)
     }
 }
 
 impl hash::Hash for PowerOfTwo {
     fn hash<H: hash::Hasher>(&self, state: &mut H) {
-        // It's sufficient to hash `value` only because others are determined by the value.
+        // It is sufficient to hash only `value` because the other fields are determined by it.
         self.value.hash(state);
     }
 }
 
-/// A type that either `A` or `B`.
+/// A type that holds either `A` or `B`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Or<A, B> {
+    /// Holds an `A` value.
     A(A),
+    /// Holds a `B` value.
     B(B),
 }
 
 impl<A, B> Or<A, B> {
-    /// Applies the given function to the value `A` then returns the result.
+    /// Applies the given function to the `A` value, then returns the result.
     pub fn map_a<F, X>(self, op: F) -> Or<X, B>
     where
         F: FnOnce(A) -> X,
@@ -206,7 +218,7 @@ impl<A, B> Or<A, B> {
         }
     }
 
-    /// Applies the given function to the value `B` then returns the result.
+    /// Applies the given function to the `B` value, then returns the result.
     pub fn map_b<G, Y>(self, op: G) -> Or<A, Y>
     where
         G: FnOnce(B) -> Y,
@@ -217,7 +229,7 @@ impl<A, B> Or<A, B> {
         }
     }
 
-    /// Applies the given functions to the value `A` and `B` respectively then returns the result.
+    /// Applies the given functions to the `A` and `B` values respectively, then returns the result.
     pub fn map_ab<F, G, X, Y>(self, op_a: F, op_b: G) -> Or<X, Y>
     where
         F: FnOnce(A) -> X,
@@ -242,7 +254,7 @@ impl<A: Debug, B: Debug> Debug for Or<A, B> {
 /// A value with another value.
 ///
 /// This type is almost the same as tuple `(T, U)` except how the type is displayed by
-/// [`Display`]. This type only prints first value only.
+/// [`Display`]. This type only prints the first value.
 #[derive(Default, Clone, Copy)]
 #[repr(C)]
 pub struct With<F, B> {
@@ -253,22 +265,27 @@ pub struct With<F, B> {
 }
 
 impl<F, B> With<F, B> {
+    /// Creates a new value paired with backing data.
     pub const fn new(front: F, back: B) -> Self {
         Self { front, back }
     }
 
+    /// Consumes `self` and returns both values.
     pub fn into_inner(self) -> (F, B) {
         (self.front, self.back)
     }
 
+    /// Consumes `self` and returns the exposed value.
     pub fn into_front(self) -> F {
         self.front
     }
 
+    /// Consumes `self` and returns the backing value.
     pub fn into_back(self) -> B {
         self.back
     }
 
+    /// Borrows both values.
     pub fn as_refs(&self) -> With<&F, &B> {
         With {
             front: &self.front,
@@ -276,6 +293,7 @@ impl<F, B> With<F, B> {
         }
     }
 
+    /// Mutably borrows both values.
     pub fn as_muts(&mut self) -> With<&mut F, &mut B> {
         With {
             front: &mut self.front,
@@ -283,14 +301,17 @@ impl<F, B> With<F, B> {
         }
     }
 
+    /// Returns a shared reference to the backing value.
     pub const fn get_back(&self) -> &B {
         &self.back
     }
 
+    /// Returns a mutable reference to the backing value.
     pub fn get_back_mut(&mut self) -> &mut B {
         &mut self.back
     }
 
+    /// Applies a function to the exposed value.
     pub fn map_front<Op: FnOnce(F) -> G, G>(self, op: Op) -> With<G, B> {
         With {
             front: op(self.front),
@@ -298,6 +319,7 @@ impl<F, B> With<F, B> {
         }
     }
 
+    /// Applies a function to the backing value.
     pub fn map_back<Op: FnOnce(B) -> C, C>(self, op: Op) -> With<F, C> {
         With {
             front: self.front,
@@ -402,22 +424,25 @@ impl<F: Debug, B> Debug for With<F, B> {
 
 /// A value with [`Result`].
 ///
-/// This type implements [`Deref`] and [`DerefMut`] for the value, therefore it looks like value.
-/// But the type provides some `Result` methods as well.
+/// This type implements [`Deref`] and [`DerefMut`] for the value, so it behaves like the value.
+/// It also provides some `Result` methods.
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub struct WithResult<F, O, E>(With<F, Result<O, E>>);
 
 impl<F, O, E> WithResult<F, O, E> {
+    /// Creates a new value paired with a result.
     pub const fn new(front: F, result: Result<O, E>) -> Self {
         Self(With::new(front, result))
     }
 
+    /// Consumes `self` and returns the paired value.
     pub fn into_front(self) -> F {
         let (front, _result) = self.0.into_inner();
         front
     }
 
+    /// Consumes `self` and returns the result.
     pub fn into_result(self) -> Result<O, E> {
         let (_front, result) = self.0.into_inner();
         result
@@ -453,6 +478,7 @@ impl<F, O, E> WithResult<F, O, E> {
         self.0.back.as_mut()
     }
 
+    /// Applies the given function to the paired value.
     pub fn map<Op: FnOnce(F) -> G, G>(self, op: Op) -> WithResult<G, O, E> {
         let with = self.0.map_front(op);
         WithResult(with)
@@ -549,6 +575,7 @@ impl<F: Debug, O, E> Debug for WithResult<F, O, E> {
     }
 }
 
+/// Calls `f` repeatedly and exits the process if it does not finish before `timeout`.
 pub fn call_timeout<F>(mut f: F, name: &str, repeat: usize, mut timeout: std::time::Duration)
 where
     F: FnMut() + Send + 'static,

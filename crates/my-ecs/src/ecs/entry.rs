@@ -43,10 +43,10 @@ pub mod prelude {
     pub use super::{Ecs, EcsApp, EcsEntry, EcsExt, HelpExecuteManyCommands, LeakedEcsApp};
 }
 
-/// Common interafaces that ECS instance should provide to clients.
+/// Common interfaces that an ECS instance should provide to clients.
 ///
-/// ECS instance should provide some methods for adding/removing entities, resources, and systems.
-/// Of cource compoenets are included in entities. Moreover, ECS insance is required to be able to
+/// An ECS instance should provide methods for adding and removing entities, resources, and systems.
+/// Of course, components are included in entities. Moreover, an ECS instance must be able to
 /// execute commands without wrapping them in systems.
 pub trait EcsEntry {
     // === System methods ===
@@ -660,6 +660,7 @@ repeat_macro!(impl_help_add_many_resources, 1..=8);
 ///
 /// This helper trait is implemented for tuple of anonymous commands.
 pub trait HelpExecuteManyCommands {
+    /// Executes the commands against `ecs`.
     fn command(&mut self, ecs: Ecs<'_>) -> DynResult<()>;
 }
 
@@ -1409,6 +1410,7 @@ where
     W: Work + 'static,
     S: BuildHasher + Default + 'static,
 {
+    /// Creates a new ECS app with a custom hash builder factory.
     pub fn with_hasher<F: FnMut() -> S>(workers: Vec<W>, groups: &[usize], mut hasher: F) -> Self {
         // We need a group even if it's empty for now.
         let groups = if groups.is_empty() { &[0][..] } else { groups };

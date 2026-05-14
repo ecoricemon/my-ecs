@@ -1528,7 +1528,7 @@ mod tests {
         validate_buffer_addresses(&item.buf, &sys_idxs, ent_stor, res_stor);
     }
 
-    /// Checks whether wait indices are the same as indices gotten from storages.
+    /// Checks whether wait indices match the indices from storages.
     fn validate_wait_indices(waits: &WaitIndices, sys_idxs: &SystemIndices) {
         let WaitIndices {
             read: wait_read,

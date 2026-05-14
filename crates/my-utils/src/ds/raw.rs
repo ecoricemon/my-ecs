@@ -339,12 +339,12 @@ pub trait AsFlatRawIter {
 
 /// A type-erased iterator of a slice.
 ///
-/// This iterator yields type-erased raw pointer instead of concrete type. If you can, wrap this
-/// iterator in [`Iter`] which bounds concrete type and lifetime.
+/// This iterator yields a type-erased raw pointer instead of a concrete type. If you can, wrap this
+/// iterator in [`Iter`], which binds the concrete type and lifetime.
 ///
 /// # Safety
 ///
-/// The iterator includes raw pointers, but it implements [`Send`] ans [`Sync`]. You must carefully
+/// The iterator includes raw pointers, but it implements [`Send`] and [`Sync`]. You must carefully
 /// send this iterator to another worker.
 #[derive(Debug, Clone, Copy)]
 pub struct RawIter {
@@ -388,7 +388,7 @@ impl RawIter {
     ///
     /// - `start` address must be less than or equal to `end` address.
     /// - `end` address must not exceed [`isize::MAX`].
-    /// - `end` address must be able to devided by `stride`.
+    /// - `end - start` must be divisible by `stride`.
     ///
     /// # Examples
     ///
@@ -677,7 +677,7 @@ impl<'cont, T> Iter<'cont, T> {
     /// # Safety
     ///
     /// - The `RawIter` must yield pointers to type `T`.
-    /// - Lifetime defined by caller must be sufficient to the `RawIter`.
+    /// - The lifetime defined by the caller must be sufficient for the `RawIter`.
     ///
     /// # Examples
     ///
@@ -809,7 +809,7 @@ impl<'cont, T> IterMut<'cont, T> {
     /// - The `RawIter` must yield pointers to type `T`.
     /// - The `RawIter` must not be used elsewhere at the same time because created iterator must be
     ///   exclusive.
-    /// - Lifetime defined by caller must be sufficient to the `RawIter`.
+    /// - The lifetime defined by the caller must be sufficient for the `RawIter`.
     ///
     /// # Examples
     ///
@@ -939,7 +939,7 @@ impl<'cont, T> ParIter<'cont, T> {
     /// # Safety
     ///
     /// - The `ParRawIter` must yield pointers to type `T`.
-    /// - Lifetime defined by caller must be sufficient to the `ParRawIter`.
+    /// - The lifetime defined by the caller must be sufficient for the `ParRawIter`.
     ///
     /// # Examples
     ///
@@ -1085,7 +1085,7 @@ impl<'cont, T> ParIterMut<'cont, T> {
     /// - The `ParRawIter` must yield pointers to type `T`.
     /// - The `ParRawIter` must not be used elsewhere at the same time because created iterator must
     ///   be exclusive.
-    /// - Lifetime defined by caller must be sufficient to the `ParRawIter`.
+    /// - The lifetime defined by the caller must be sufficient for the `ParRawIter`.
     ///
     /// # Examples
     ///
@@ -1200,17 +1200,17 @@ crate::impl_unindexed_producer!(
 
 /// A type-erased nested iterator.
 ///
-/// This iterator is intended to be used by containers that has nested structure like `Vec<Vec<T>>`.
-/// [`ChunkAnyVec`](crate::ds::ChunkAnyVec) is one of containers that support this iterator. Plus,
-/// the iterator is using some terminologies such as 'chunk' used in `ChunkAnyVec`, but you can
-/// think of it as inner vector in `Vec<Vec<T>>`.
+/// This iterator is intended for containers that have a nested structure like `Vec<Vec<T>>`.
+/// [`ChunkAnyVec`](crate::ds::ChunkAnyVec) is one of the containers that supports this iterator.
+/// The iterator uses terminology such as 'chunk' from `ChunkAnyVec`, but you can think of a chunk
+/// as an inner vector in `Vec<Vec<T>>`.
 ///
 /// For better compiler optimization, the iterator is manually flattened, so it is quite big in
 /// terms of size, but we can expect high iteration performance.
 ///
 /// # Safety
 ///
-/// The iterator includes raw pointers, but it implements [`Send`] ans [`Sync`]. You must carefully
+/// The iterator includes raw pointers, but it implements [`Send`] and [`Sync`]. You must carefully
 /// send this iterator to another worker.
 //
 // To implement rayon's ParallelIterator, we have to implement `ExactSizeIterator` and
@@ -1352,7 +1352,7 @@ impl FlatRawIter {
     /// # Safety
     ///
     /// - Caller must provide correct type `T` for the iterator.
-    /// - Lifetime define by caller must be sufficient to the iterator.
+    /// - The lifetime defined by the caller must be sufficient for the iterator.
     pub unsafe fn as_slice<'o, T>(&self, chunk_idx: usize) -> &'o [T] {
         // `fn_iter` gives us empty iterator if `chunk` is out of bounds.
         unsafe {
@@ -1375,7 +1375,7 @@ impl FlatRawIter {
         }
     }
 
-    /// Returns number of chunks if you've not been called
+    /// Returns the number of chunks if you have not called
     /// [`next_back`](Self::next_back) on this iterator.
     pub(crate) fn num_chunks(&self) -> usize {
         self.ri
@@ -1664,7 +1664,7 @@ impl<'cont, T> FlatIter<'cont, T> {
     /// # Safety
     ///
     /// - The `FlatRawIter` must yield pointers to type `T`.
-    /// - Lifetime defined by caller must be sufficient to the `FlatRawIter`.
+    /// - The lifetime defined by the caller must be sufficient for the `FlatRawIter`.
     ///
     /// # Examples
     ///
@@ -1804,7 +1804,7 @@ impl<'cont, T> FlatIterMut<'cont, T> {
     /// - The `FlatRawIter` must yield pointers to type `T`.
     /// - The `FlatRawIter` must not be used elsewhere at the same time because created iterator
     ///   must be exclusive.
-    /// - Lifetime defined by caller must be sufficient to the `FlatRawIter`.
+    /// - The lifetime defined by the caller must be sufficient for the `FlatRawIter`.
     ///
     /// # Examples
     ///
@@ -2086,7 +2086,7 @@ impl RawGetter {
         self
     }
 
-    /// Returns number of items in the associated container.
+    /// Returns the number of items in the associated container.
     pub const fn len(&self) -> usize {
         self.len
     }
@@ -2122,7 +2122,7 @@ impl RawGetter {
     ///
     /// # Panics
     ///
-    /// Panics if iterator geneartion function have not registered yet.
+    /// Panics if the iterator generation function has not been registered yet.
     pub fn iter(&self) -> FlatRawIter {
         // Safety: Owners guarantee validity.
         unsafe { (self.fn_iter)(self.this.as_nonnull()) }
@@ -2152,7 +2152,7 @@ impl<'cont, T> Getter<'cont, T> {
     /// # Safety
     ///
     /// - The `RawGetter` must return pointers to type `T`.
-    /// - Lifetime defined by caller must be sufficient to the `RawGetter`.
+    /// - The lifetime defined by the caller must be sufficient for the `RawGetter`.
     pub unsafe fn from_raw(raw: RawGetter) -> Self {
         Self {
             raw,
@@ -2160,17 +2160,17 @@ impl<'cont, T> Getter<'cont, T> {
         }
     }
 
-    /// Converts the getter into [`RawGetter`] by unwrpping self.
+    /// Converts the getter into [`RawGetter`] by unwrapping self.
     pub fn into_raw(self) -> RawGetter {
         self.raw
     }
 
-    /// Returns number of items in the associated container.
+    /// Returns the number of items in the associated container.
     pub fn len(&self) -> usize {
         self.raw.len()
     }
 
-    /// Returns true is the associated container is empty.
+    /// Returns true if the associated container is empty.
     pub fn is_empty(&self) -> bool {
         self.raw.is_empty()
     }
@@ -2204,7 +2204,7 @@ impl<'cont, T> Getter<'cont, T> {
     ///
     /// # Panics
     ///
-    /// Panics if iterator geneartion function have not registered yet.
+    /// Panics if the iterator generation function has not been registered yet.
     pub fn iter(&self) -> FlatIter<'cont, T> {
         // Safety: Correct type and lifetime are given.
         unsafe { FlatIter::from_raw(self.raw.iter()) }
@@ -2217,7 +2217,7 @@ impl<'cont, T> Getter<'cont, T> {
     ///
     /// # Panics
     ///
-    /// Panics if iterator geneartion function have not registered yet.
+    /// Panics if the iterator generation function has not been registered yet.
     #[inline]
     pub fn par_iter(&self) -> ParFlatIter<'cont, T> {
         ParFlatIter(self.iter())
@@ -2276,7 +2276,7 @@ impl<'cont, T> GetterMut<'cont, T> {
     /// - The `RawGetter` must return pointers to type `T`.
     /// - The `RawGetter` must not be used elsewhere at the same time because created getter must be
     ///   exclusive.
-    /// - Lifetime defined by caller must be sufficient to the `RawGetter`.
+    /// - The lifetime defined by the caller must be sufficient for the `RawGetter`.
     pub unsafe fn from_raw(raw: RawGetter) -> Self {
         Self {
             raw,
@@ -2284,17 +2284,17 @@ impl<'cont, T> GetterMut<'cont, T> {
         }
     }
 
-    /// Converts the getter into [`RawGetter`] by unwrpping self.
+    /// Converts the getter into [`RawGetter`] by unwrapping self.
     pub fn into_raw(self) -> RawGetter {
         self.raw
     }
 
-    /// Returns number of items in the associated container.
+    /// Returns the number of items in the associated container.
     pub fn len(&self) -> usize {
         self.raw.len()
     }
 
-    /// Returns true is the associated container is empty.
+    /// Returns true if the associated container is empty.
     pub fn is_empty(&self) -> bool {
         self.raw.is_empty()
     }
@@ -2350,7 +2350,7 @@ impl<'cont, T> GetterMut<'cont, T> {
     ///
     /// # Panics
     ///
-    /// Panics if iterator geneartion function have not registered yet.
+    /// Panics if the iterator generation function has not been registered yet.
     pub fn iter(&self) -> FlatIter<'cont, T> {
         // Safety: Correct type and lifetime are given.
         unsafe { FlatIter::from_raw(self.raw.iter()) }
@@ -2363,7 +2363,7 @@ impl<'cont, T> GetterMut<'cont, T> {
     ///
     /// # Panics
     ///
-    /// Panics if iterator geneartion function have not registered yet.
+    /// Panics if the iterator generation function has not been registered yet.
     pub fn iter_mut(&mut self) -> FlatIterMut<'cont, T> {
         // Safety: Correct type and lifetime are given.
         unsafe { FlatIterMut::from_raw(self.raw.iter()) }
@@ -2376,7 +2376,7 @@ impl<'cont, T> GetterMut<'cont, T> {
     ///
     /// # Panics
     ///
-    /// Panics if iterator geneartion function have not registered yet.
+    /// Panics if the iterator generation function has not been registered yet.
     #[inline]
     pub fn par_iter(&self) -> ParFlatIter<'cont, T> {
         ParFlatIter(self.iter())
@@ -2389,7 +2389,7 @@ impl<'cont, T> GetterMut<'cont, T> {
     ///
     /// # Panics
     ///
-    /// Panics if iterator geneartion function have not registered yet.
+    /// Panics if the iterator generation function has not been registered yet.
     #[inline]
     pub fn par_iter_mut(&mut self) -> ParFlatIterMut<'cont, T> {
         ParFlatIterMut(self.iter_mut())

@@ -51,7 +51,7 @@ impl<T, S> OptVec<T, S> {
         }
     }
 
-    /// Returns number of items, which is occupied slots in other words.
+    /// Returns the number of occupied slots.
     ///
     /// Returned value is equal to `self.num_slots() - self.num_vacancies()`.
     ///
@@ -68,9 +68,9 @@ impl<T, S> OptVec<T, S> {
         self.num_slots() - self.num_vacancies()
     }
 
-    /// Returns true is the vector is empty.
+    /// Returns true if the vector is empty.
     ///
-    /// Note that vector may have slots in it even if it's empty.
+    /// Note that the vector may have slots even if it's empty.
     ///
     /// # Examples
     ///
@@ -84,7 +84,7 @@ impl<T, S> OptVec<T, S> {
         self.len() == 0
     }
 
-    /// Returns number of all slots including occupied and vacant slots.
+    /// Returns the total number of occupied and vacant slots.
     ///
     /// Returned value is equal to `self.len() + self.num_vacancies()`.
     ///
@@ -101,7 +101,7 @@ impl<T, S> OptVec<T, S> {
         self.values.len()
     }
 
-    /// Returns number of vacant slots.
+    /// Returns the number of vacant slots.
     ///
     /// Returned value is equal to `self.num_slots() - self.len()`.
     ///
@@ -176,13 +176,13 @@ impl<T, S> OptVec<T, S> {
 
     /// Creates a mutable slice from the vector.
     ///
-    /// Caller must not modify occupied/vacant status in the returned slice because the vector is
+    /// The caller must not modify occupied/vacant status in the returned slice because the vector is
     /// tracking the status.
     ///
     /// # Safety
     ///
-    /// Undefined behavior if caller take out a value from an occupied slot, or insert a value into
-    /// a vacant slot.
+    /// Undefined behavior if the caller takes a value out of an occupied slot, or inserts a value
+    /// into a vacant slot.
     ///
     /// # Examples
     ///

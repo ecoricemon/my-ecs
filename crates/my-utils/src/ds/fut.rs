@@ -959,7 +959,7 @@ mod tests {
     ///            |         | fut.poll()
     /// ```
     ///
-    /// `beholder` must be able to see what `main` have done to the `fut`. This test will fail if
+    /// `beholder` must be able to see what `main` has done to the `fut`. This test will fail if a
     /// data race occurs.
     #[test]
     fn test_unsafe_future() {
@@ -989,8 +989,8 @@ mod tests {
 
         let c_state = Arc::clone(&state);
         let future = async move {
-            // If `beholder` cannot see future's change `main` thread made, it will see something
-            // that has not changed. Which means that it executes future from the beginning.
+            // If `beholder` cannot see the future change made by the `main` thread, it will see
+            // unchanged state. That means it executes the future from the beginning.
             {
                 // state: 0 -> 1 on the `main` thread.
                 let mut state = c_state.lock().unwrap();

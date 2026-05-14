@@ -37,22 +37,29 @@ pub type DynResult<T> = Result<T, Box<dyn Error + Send + Sync + 'static>>;
 #[derive(Error)]
 #[repr(C)]
 pub enum EcsError<Data = ()> {
+    /// A requested system does not exist.
     #[error("unknown system `{0}`")]
     UnknownSystem(String, Data),
 
+    /// A requested entity does not exist.
     #[error("unknown entity `{0}`")]
     UnknownEntity(String, Data),
+    /// An entity request is invalid.
     #[error("invalid entity `{0}`")]
     InvalidEntity(String, Data),
 
+    /// A requested resource does not exist.
     #[error("unknown resource `{0}`")]
     UnknownResource(String, Data),
+    /// A resource is already registered.
     #[error("duplicated resource `{0}`")]
     DupResource(String, Data),
 
+    /// A system request is invalid.
     #[error("invalid request `{0}`")]
     InvalidRequest(String, Data),
 
+    /// An uncategorized ECS error.
     #[error("unknown error `{0}`")]
     Unknown(String, Data),
 }
@@ -86,6 +93,7 @@ impl<Data> fmt::Debug for EcsError<Data> {
 }
 
 impl<Data> EcsError<Data> {
+    /// Returns the human-readable reason string.
     pub fn reason(&self) -> &str {
         match self {
             Self::UnknownSystem(reason, ..) => reason,
@@ -98,6 +106,7 @@ impl<Data> EcsError<Data> {
         }
     }
 
+    /// Consumes the error and returns its attached data.
     pub fn take_data(self) -> Data {
         match self {
             Self::UnknownSystem(_, data) => data,
@@ -110,14 +119,17 @@ impl<Data> EcsError<Data> {
         }
     }
 
+    /// Removes the attached data from the error.
     pub fn without_data(self) -> EcsError<()> {
         self.with_data(())
     }
 
+    /// Replaces the attached data with `data`.
     pub fn with_data<OutData>(self, data: OutData) -> EcsError<OutData> {
         self.map_data(|_| data)
     }
 
+    /// Maps the attached data while preserving the error kind and reason.
     pub fn map_data<F, OutData>(self, f: F) -> EcsError<OutData>
     where
         F: FnOnce(Data) -> OutData,
@@ -134,6 +146,7 @@ impl<Data> EcsError<Data> {
     }
 }
 
+/// Runtime counters used when the `stat` feature is enabled.
 pub mod stat {
     macro_rules! decl_counter {
         ($name:ident, $id:ident) => {
@@ -141,6 +154,7 @@ pub mod stat {
                 #[cfg(feature = "stat")]
                 static $id: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
+                /// Loads the current counter value, or `-1` when `stat` is disabled.
                 pub fn [<load _$name>]() -> isize {
                     #[cfg(feature = "stat")]
                     { $id.load(std::sync::atomic::Ordering::Relaxed) }
@@ -149,21 +163,25 @@ pub mod stat {
                     { -1 }
                 }
 
+                /// Stores the counter value when `stat` is enabled.
                 pub fn [<store _$name>](_value: isize) {
                     #[cfg(feature = "stat")]
                     $id.store(_value, std::sync::atomic::Ordering::Relaxed);
                 }
 
+                /// Increments the counter when `stat` is enabled.
                 pub fn [<increase _$name>]() {
                     #[cfg(feature = "stat")]
                     $id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
 
+                /// Asserts that the counter equals `_right` when `stat` is enabled.
                 pub fn [<assert_eq _$name>](_right: isize) {
                     #[cfg(feature = "stat")]
                     { assert_eq!([<load _$name>](), _right); }
                 }
 
+                /// Asserts that the counter does not equal `_right` when `stat` is enabled.
                 pub fn [<assert_ne _$name>](_right: isize) {
                     #[cfg(feature = "stat")]
                     { assert_ne!([<load _$name>](), _right); }

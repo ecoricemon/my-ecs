@@ -27,21 +27,22 @@ use std::{
 
 /// A trait for generating [`EntityReg`].
 pub trait AsEntityReg {
+    /// Builds the entity registration descriptor.
     fn entity_descriptor() -> EntityReg;
 }
 
 /// A storage where you can find both entity and component data and static information about them
 /// such as names, types, and their relationships.
 ///
-/// Each container is basically identified by its component keys. In other words, unique combination
-/// of components is the key of an entity container. So you cannot register two entities that has
-/// the same components. Entity containers are also identified by their indices they get when they
-/// are registered to this storage. It's recommended accessing using entity index instead of
-/// component keys if possible because it would be faster.
+/// Each container is basically identified by its component keys. In other words, a unique
+/// combination of components is the key of an entity container. So you cannot register two entities
+/// that have the same components. Entity containers are also identified by the indices assigned
+/// when they are registered to this storage. Prefer access by entity index instead of component keys
+/// when possible because it is faster.
 ///
-/// Optionally, entity name or type may be able to be used as an identification, but it's not
-/// guaranteed because it must be provided by clients. If not so, searching an entity container via
-/// entity name or type fails. See [`EntityKeyRef`].
+/// Optionally, an entity name or type may be used as an identifier, but this is not guaranteed
+/// because clients must provide it. If they do not, searching for an entity container by entity name
+/// or type fails. See [`EntityKeyRef`].
 //
 // TODO: Write this on ent module doc as well.
 // Why entities of the same component combination are not allowed?
@@ -378,6 +379,7 @@ impl fmt::Debug for EntityReg {
 }
 
 impl EntityReg {
+    /// Creates a new entity registration descriptor.
     pub fn new(name: Option<EntityName>, mut cont: Box<dyn ContainEntity>) -> Self {
         // Removes remaining columns.
         for ci in (0..cont.num_columns()).rev() {
@@ -404,10 +406,12 @@ impl EntityReg {
         &self.key_info_pairs
     }
 
+    /// Adds a component type to this descriptor.
     pub fn add_component_of<C: Component>(&mut self) {
         self.add_component(C::type_info());
     }
 
+    /// Adds component type information to this descriptor.
     pub fn add_component(&mut self, tinfo: TypeInfo) {
         let pair = (ComponentKey::from(&tinfo), tinfo);
         self.key_info_pairs.push(pair);

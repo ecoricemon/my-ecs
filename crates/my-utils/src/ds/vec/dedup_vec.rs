@@ -18,7 +18,7 @@ pub trait AsDedupVec {
     /// Creates a new empty vector.
     fn new() -> Self;
 
-    /// Returns number of items.
+    /// Returns the number of items.
     fn len(&self) -> usize;
 
     /// Returns true if the vector is empty.
@@ -58,7 +58,7 @@ where
 
     /// Creates a new empty vector.
     ///
-    /// The vector will automatically sort and deduplicate items for you due to `ON = true`.
+    /// The vector automatically sorts and deduplicates items because `ON = true`.
     ///
     /// # Examples
     ///
@@ -71,7 +71,7 @@ where
         DedupVec { inner: Vec::new() }
     }
 
-    /// Returns number of items.
+    /// Returns the number of items.
     ///
     /// # Examples
     ///
@@ -103,7 +103,7 @@ where
 
     /// Appends the given value to the end of the vector.
     ///
-    /// The vector will automatically sort and deduplicate items for you due to `ON = true`.
+    /// The vector automatically sorts and deduplicates items because `ON = true`.
     ///
     /// # Examples
     ///
@@ -126,7 +126,7 @@ where
 
     /// Removes an item that is equal to the given value from the vector.
     ///
-    /// The vector will automatically sort and deduplicate items for you due to `ON = true`.
+    /// The vector automatically sorts and deduplicates items because `ON = true`.
     ///
     /// # Examples
     ///
@@ -151,7 +151,7 @@ where
 
     /// Extends the vector with the given iterator.
     ///
-    /// The vector will automatically sort and deduplicate items for you due to `ON = true`.
+    /// The vector automatically sorts and deduplicates items because `ON = true`.
     ///
     /// # Examples
     ///
@@ -190,7 +190,7 @@ where
 
 // ON = false means deduplication is not activated.
 //
-// In release mode, we don't check duplication at all. Clients have responsibility for keeping
+// In release mode, we don't check for duplicates at all. Clients are responsible for keeping the
 // deduplicated state.
 #[cfg(not(debug_assertions))]
 impl<T> AsDedupVec for DedupVec<T, false>
@@ -239,7 +239,7 @@ where
 
 // ON = false means deduplication is not activated.
 //
-// However, in debug mode, panics if the container gets duplicate items in it.
+// However, in debug mode, this panics if the container gets duplicate items.
 #[cfg(debug_assertions)]
 impl<T> AsDedupVec for DedupVec<T, false>
 where
@@ -254,8 +254,8 @@ where
 
     /// Creates a new empty vector.
     ///
-    /// The vector won't do anything to keep the deduplicated status, but it panics when you insert
-    /// duplicate item into the vector in debug mode due to `ON = false`.
+    /// The vector doesn't preserve deduplicated status, but it panics when you insert a duplicate
+    /// item in debug mode because `ON = false`.
     ///
     /// # Examples
     ///
@@ -270,7 +270,7 @@ where
         }
     }
 
-    /// Returns number of items.
+    /// Returns the number of items.
     ///
     /// # Examples
     ///
@@ -302,8 +302,8 @@ where
 
     /// Appends the given value to the end of the vector.
     ///
-    /// The vector won't do anything to keep the deduplicated status, but it panics when you insert
-    /// duplicate item into the vector in debug mode due to `ON = false`.
+    /// The vector doesn't preserve deduplicated status, but it panics when you insert a duplicate
+    /// item in debug mode because `ON = false`.
     ///
     /// # Examples
     ///
@@ -325,8 +325,8 @@ where
 
     /// Removes an item that is equal to the given value from the vector.
     ///
-    /// The vector won't do anything to keep the deduplicated status, but it panics when you insert
-    /// duplicate item into the vector in debug mode due to `ON = false`.
+    /// The vector doesn't preserve deduplicated status, but it panics when you insert a duplicate
+    /// item in debug mode because `ON = false`.
     ///
     /// # Examples
     ///
@@ -347,8 +347,8 @@ where
 
     /// Extends the vector with the given iterator.
     ///
-    /// The vector won't do anything to keep the deduplicated status, but it panics when you insert
-    /// duplicate item into the vector in debug mode due to `ON = false`.
+    /// The vector doesn't preserve deduplicated status, but it panics when you insert a duplicate
+    /// item in debug mode because `ON = false`.
     ///
     /// # Examples
     ///
@@ -387,25 +387,25 @@ where
 
 /// Deduplicated vector.
 ///
-/// - If ON is true, then the vector keeps *sorted* and *deduplicated* status. It means the vector
-///   will conduct sorting and binary search whenever you insert or remove items into or from the
-///   vector. In this case, [`Vec`] is used as data container.
+/// - If ON is true, the vector keeps a *sorted* and *deduplicated* status. It sorts and performs
+///   binary searches whenever you insert or remove items. In this case, [`Vec`] is used as the data
+///   container.
 ///
 /// - If ON is false, on the other hand, the vector acts differently according to build mode.
-///   * *debug mode* : Vector will panic when duplication detected.
-///     [`SetValueList`](crate::ds::SetValueList) is used as data container in this case. The
+///   * *debug mode* : The vector panics when duplication is detected.
+///     [`SetValueList`](crate::ds::SetValueList) is used as the data container in this case. The
 ///     container keeps insertion order.
-///   * *release mode* : Vector does nothing to keep the deduplicated status. Clients must keep the
-///     status on their code. In this case, [`Vec`] is used as data container.
+///   * *release mode* : The vector does nothing to keep deduplicated status. Clients must maintain
+///     the status in their code. In this case, [`Vec`] is used as the data container.
 ///
 /// # How to determine `ON`
 ///
-/// If sorting is not a burden to you, and you're going to insert/remove items in any orders, then
-/// set ON to `true`. The vector will keep the deduplicated status always.
+/// If sorting is not a burden and you are going to insert or remove items in any order, set ON to
+/// `true`. The vector will always keep deduplicated status.
 ///
-/// If you can guarantee the deduplicated status on your own, then set ON to `false`. The vector
-/// will warn you if the guarantee has been broken in debug mode. In release mode, there won't be
-/// any additional operations to avoid performance penalty.
+/// If you can guarantee deduplicated status yourself, set ON to `false`. The vector will warn you
+/// if the guarantee is broken in debug mode. In release mode, there are no additional operations,
+/// avoiding a performance penalty.
 #[repr(transparent)]
 pub struct DedupVec<T, const ON: bool = true>
 where

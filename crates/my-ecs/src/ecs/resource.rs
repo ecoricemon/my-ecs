@@ -291,8 +291,10 @@ impl<S: Default> Default for ResourceStorage<S> {
 /// [`ResourceDesc::with_owned`] and [`ResourceDesc::with_ptr`] are methods about the ownership.
 #[derive(Debug)]
 pub struct ResourceDesc {
+    /// Whether the resource must be accessed by a dedicated system.
     pub dedicated: bool,
     pub(crate) key: ResourceKey,
+    /// Owned resource data or a caller-provided raw pointer.
     pub data: Or<Box<dyn Any>, NonNull<u8>>,
 }
 

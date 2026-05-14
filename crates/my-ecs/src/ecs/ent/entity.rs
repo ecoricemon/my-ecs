@@ -12,7 +12,9 @@ use std::{any::TypeId, fmt, mem, mem::MaybeUninit, ops::Deref, ptr::NonNull, syn
 /// this trait. As a consequence, it's encouraged to implement this trait by the derive macro about
 /// entity types that you know.
 pub trait Entity: Components + Send + 'static {
+    /// Shared reference view generated for this entity.
     type Ref<'cont>;
+    /// Mutable reference view generated for this entity.
     type Mut<'cont>;
 
     /// Offsets in bytes of each field.
@@ -241,7 +243,7 @@ pub trait Entity: Components + Send + 'static {
         for fi in 0..Self::num_components() {
             let ci = Self::field_to_column_index(fi);
             // Safety:
-            // - Column index and value pointer are gotten client impl.
+            // - The client implementation provides the column index and value pointer.
             // - We're going to forget `self`.
             unsafe { cont.add_value(ci, self.component_ptr(fi)) };
         }
@@ -525,7 +527,7 @@ pub trait RegisterComponent {
     /// Adds a component column to the entity container then returns column index.
     ///
     /// But the entity container failed to add new entity for some reason, returns `None`. You can
-    /// get [`TypeInfo`] from any static types using [`tinfo`](crate::tinfo) macro.
+    /// get [`TypeInfo`] from any static types using [`tinfo`](crate::prelude::tinfo) macro.
     ///
     /// Column index is guaranteed to be increased one by one from zero whenever you call this
     /// method, which means you can get column index from order you added components.
@@ -672,7 +674,7 @@ pub trait BorrowComponent {
     /// Borrows component column for the given column index.
     ///
     /// If borrow is successful, returns [`RawGetter`] of the component column. Otherwise, returns
-    /// [`BorrowError`](crate::ds::BorrowError).
+    /// [`BorrowError`](my_utils::ds::BorrowError).
     ///
     /// # Examples
     ///
@@ -694,7 +696,7 @@ pub trait BorrowComponent {
     /// Borrows component column mutably for the given column index.
     ///
     /// If borrow is successful, returns [`RawGetter`] of the component column. Otherwise, returns
-    /// [`BorrowError`](crate::ds::BorrowError).
+    /// [`BorrowError`](my_utils::ds::BorrowError).
     ///
     /// # Examples
     ///
@@ -935,14 +937,17 @@ pub struct EntityId {
 }
 
 impl EntityId {
+    /// Creates an entity id from an entity container index and row index.
     pub const fn new(ei: EntityIndex, ri: usize) -> Self {
         Self { ei, ri }
     }
 
+    /// Returns the entity container index.
     pub const fn container_index(&self) -> EntityIndex {
         self.ei
     }
 
+    /// Returns the row index in the entity container.
     pub const fn row_index(&self) -> usize {
         self.ri
     }
@@ -1049,10 +1054,12 @@ impl EntityIndex {
         Self::DUMMY
     }
 
+    /// Returns the raw container index.
     pub fn index(&self) -> usize {
         *self.0
     }
 
+    /// Returns the container generation.
     pub fn generation(&self) -> u64 {
         *self.0.get_back()
     }
@@ -1078,6 +1085,7 @@ impl fmt::Display for EntityIndex {
 pub struct EntityName(Arc<str>);
 
 impl EntityName {
+    /// Creates a new entity name.
     pub const fn new(name: Arc<str>) -> Self {
         Self(name)
     }

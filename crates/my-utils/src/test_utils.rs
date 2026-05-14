@@ -14,6 +14,7 @@ pub struct TimerFuture {
 }
 
 impl TimerFuture {
+    /// Creates a timer future that completes after `dur`.
     pub fn after(dur: Duration) -> Self {
         Self {
             dur,

@@ -331,10 +331,15 @@ where
 /// * ResWrite - Write request for a set of resources.
 /// * EntWrite - Write request for a set of entity containers.
 pub trait Request: 'static {
+    /// Component read request.
     type Read: Query;
+    /// Component write request.
     type Write: QueryMut;
+    /// Resource read request.
     type ResRead: ResQuery;
+    /// Resource write request.
     type ResWrite: ResQueryMut;
+    /// Entity container write request.
     type EntWrite: EntQueryMut;
 
     #[doc(hidden)]
@@ -648,6 +653,7 @@ impl<'buf, Req: Request> Response<'buf, Req> {
         }
     }
 
+    /// Borrows all response parts at once.
     pub fn all(&mut self) -> ResponseAll<'_, Req> {
         ResponseAll {
             read: <Req::Read as Query>::convert(&mut self.buf.read),
@@ -658,22 +664,27 @@ impl<'buf, Req: Request> Response<'buf, Req> {
         }
     }
 
+    /// Borrows the component read response.
     pub fn read(&mut self) -> <Req::Read as Query>::Output<'_> {
         <Req::Read as Query>::convert(&mut self.buf.read)
     }
 
+    /// Borrows the component write response.
     pub fn write(&mut self) -> <Req::Write as QueryMut>::Output<'_> {
         <Req::Write as QueryMut>::convert(&mut self.buf.write)
     }
 
+    /// Borrows the resource read response.
     pub fn res_read(&mut self) -> <Req::ResRead as ResQuery>::Output<'_> {
         <Req::ResRead as ResQuery>::convert(&mut self.buf.res_read)
     }
 
+    /// Borrows the resource write response.
     pub fn res_write(&mut self) -> <Req::ResWrite as ResQueryMut>::Output<'_> {
         <Req::ResWrite as ResQueryMut>::convert(&mut self.buf.res_write)
     }
 
+    /// Borrows the entity container write response.
     pub fn ent_write(&mut self) -> <Req::EntWrite as EntQueryMut>::Output<'_> {
         <Req::EntWrite as EntQueryMut>::convert(&mut self.buf.ent_write)
     }

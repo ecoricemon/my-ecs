@@ -58,8 +58,8 @@ impl<'buf, Req: Request> Future for RequestLockFuture<'buf, Req> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // Safety:
         // - `self` is not moved.
-        // - Future outlives command, so referencing to command is safe.
-        // - Future outlives system, so referencing to system data is safe.
+        // - The future outlives the command, so referencing the command is safe.
+        // - The future outlives the system, so referencing the system data is safe.
         unsafe {
             let this = self.get_unchecked_mut();
             let mut lock = this.lock.lock().unwrap();
@@ -105,7 +105,7 @@ impl<'buf, Req: Request> Future for RequestLockFuture<'buf, Req> {
                 let tx_msg = this.tx_msg.clone();
                 let sid = lock.take_system_id().unwrap();
                 let buf = lock.take_system_buffer().unwrap();
-                // Safety: Scheduler guarantees that we're the only one who references to the memory
+                // Safety: The scheduler guarantees that we're the only one who references the memory
                 // at `buf`.
                 let resp = Response::new(&mut *buf.as_ptr());
 
@@ -125,8 +125,8 @@ impl<Req> Drop for RequestLockFuture<'_, Req> {
     }
 }
 
-// Because we passed pointer through `RawCommand`, command or system could access pointers inside
-// the future. So we need to wait for them to be called then cancelled.
+// Because we passed a pointer through `RawCommand`, the command or system could access pointers
+// inside the future. So we need to wait for them to be called, then cancelled.
 fn cancel_future_or_abort(lock: &Mutex<RequestLock>) {
     const DELAY_MS: u64 = 10;
     const LIMIT_MS: u64 = 10_000;
@@ -183,8 +183,8 @@ impl Command for RequestLockCommand {
         lock.set_state_bits(RequestLockState::SCHED_SYS);
         drop(lock);
 
-        // Dummy group index! Then just put the system in the first group. When will the group index
-        // be dummy? - Locked by a dedicated system.
+        // If the group index is a dummy value, put the system in the first group. The group index
+        // is dummy when locked by a dedicated system.
         let gi = if self.group_index != WorkerId::dummy().group_index() {
             self.group_index
         } else {
@@ -221,8 +221,8 @@ struct RequestLockSystem<Req> {
     _marker: PhantomData<Req>,
 }
 
-// Safety: `ptr_lock` references to `RequestLockFuture::lock`, and the `RequestLockFuture::lock`
-// outlives `RequestLockSystem`. So it's safe.
+// Safety: `ptr_lock` references `RequestLockFuture::lock`, and `RequestLockFuture::lock` outlives
+// `RequestLockSystem`.
 unsafe impl<Req> Send for RequestLockSystem<Req> {}
 
 impl<Req: Request> RequestLockSystem<Req> {
@@ -253,12 +253,12 @@ impl<Req: Request> System for RequestLockSystem<Req> {
         // Safety: `RequestLockFuture::lock` outlives `RequestLockSystem`.
         let lock = unsafe { ptr_lock.as_ref() };
 
-        // If cancelled, we need to release system buffer.
+        // If cancelled, we need to release the system buffer.
         let mut lock = lock.lock().unwrap();
         if lock.state().intersects(RequestLockState::CANCEL) {
             lock.set_state_bits(RequestLockState::CANCELLED);
 
-            // Safety: Scheduler guarantees that we're the only one who references to the `buf`
+            // Safety: The scheduler guarantees that we're the only one who references the `buf`
             // memory.
             let resp = unsafe { Response::<Req>::new(&mut *buf.as_ptr()) };
             let tx_msg = self.tx_msg.take().unwrap();

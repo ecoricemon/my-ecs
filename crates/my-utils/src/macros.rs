@@ -1,5 +1,6 @@
 //! Utility macros.
 
+/// Formats a string in debug builds and returns an empty string in release builds.
 #[macro_export]
 macro_rules! debug_format {
     ($($t:tt)*) => {{
@@ -311,7 +312,7 @@ macro_rules! impl_from_for_enum {
     };
 }
 
-/// A macro used inside [`impl_into_iterator_for_parallel`].
+/// A macro used inside `impl_into_iterator_for_parallel`.
 #[macro_export]
 macro_rules! impl_into_iterator_body_for_parallel {
     ($item:ty, $to:ty) => {
@@ -325,6 +326,7 @@ macro_rules! impl_into_iterator_body_for_parallel {
     };
 }
 
+/// Implements `IntoIterator` for a parallel iterator wrapper.
 #[macro_export]
 macro_rules! impl_into_iterator_for_parallel {
     // ()
@@ -397,7 +399,7 @@ macro_rules! impl_into_iterator_for_parallel {
     };
 }
 
-/// A macro used inside [`impl_parallel_iterator`].
+/// A macro used inside `impl_parallel_iterator`.
 #[macro_export]
 macro_rules! impl_parallel_iterator_body {
     ($item:ty) => {
@@ -413,7 +415,7 @@ macro_rules! impl_parallel_iterator_body {
     };
 }
 
-/// A macro used inside [`impl_parallel_iterator`].
+/// A macro used inside `impl_parallel_iterator`.
 #[macro_export]
 macro_rules! impl_indexed_parallel_iterator_body {
     () => {
@@ -437,6 +439,7 @@ macro_rules! impl_indexed_parallel_iterator_body {
     };
 }
 
+/// Implements Rayon parallel iterator traits for a wrapper type.
 #[macro_export]
 macro_rules! impl_parallel_iterator {
     // ()
@@ -539,7 +542,7 @@ macro_rules! impl_parallel_iterator {
     };
 }
 
-/// A macro used inside [`impl_unindexed_producer`].
+/// A macro used inside `impl_unindexed_producer`.
 #[macro_export]
 macro_rules! impl_unindexed_producer_body {
     ($item:ty) => {
@@ -562,6 +565,7 @@ macro_rules! impl_unindexed_producer_body {
     };
 }
 
+/// Implements Rayon unindexed producer plumbing for a producer type.
 #[macro_export]
 macro_rules! impl_unindexed_producer {
     // ()

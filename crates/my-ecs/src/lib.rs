@@ -5,10 +5,11 @@ pub(crate) mod ecs;
 pub(crate) mod mock;
 pub(crate) mod util;
 
+/// Fast hash builder used by default in ECS containers.
 pub type FxBuildHasher = fxhash::FxBuildHasher;
 pub(crate) const MAX_GROUP: usize = 4;
 
-/// Imports all you need at once.
+/// Imports the commonly used types, traits, and macros.
 pub mod prelude {
     pub use super::global;
     pub use super::log;
@@ -25,6 +26,7 @@ pub mod prelude {
     pub use rayon::prelude::*;
 }
 
+/// Utility re-exports from `my-utils` and crate-local test helpers.
 pub mod utils {
     #[allow(unused_imports)]
     pub use super::util::*;
@@ -52,13 +54,12 @@ pub(crate) mod cb_deque {
     pub(crate) use super::mock::cb_deque::*;
 }
 
-// Reason why we didn't put the doc on re-exports is rust-analyzer doesn't show us the comment in
-// IDEs. rust-analyzer ignores comments on re-exports then only displays comments on source
-// definitions.
+// We don't put these docs on re-exports because rust-analyzer doesn't show those comments in IDEs.
+// It ignores comments on re-exports and only displays comments from source definitions.
 //
-// But the other problem occurs by putting doc comments in the proc macro. The proc macro doesn't
-// know types or traits defined in this outer crate. So corresponding doc tests are here and dealt
-// with as unit tests.
+// Putting the doc comments in the proc macro creates another problem: the proc macro doesn't know
+// about types or traits defined in this outer crate. So the corresponding doc tests live here and
+// are handled as unit tests.
 //
 // This will be removed once rust-analyzer solves the problem above.
 #[cfg(test)]
@@ -98,7 +99,7 @@ mod my_ecs_macros_doc_tests {
             a: Ca,
         }
 
-        // Or, you can customize entity container.
+        // Or, customize the entity container.
         #[derive(Entity)]
         #[container(ChunkSparseSet)]
         #[default_hasher(std::collections::hash_map::RandomState)]
@@ -132,10 +133,10 @@ mod my_ecs_macros_doc_tests {
         #[derive(Component)]
         struct Ce;
 
-        // Declares `Fa` with an implemenation of `Filter`.
+        // Declares `Fa` with an implementation of `Filter`.
         filter!(Fa, All = Ca);
 
-        // Declares `Fb` with an implemenation of `Filter`.
+        // Declares `Fb` with an implementation of `Filter`.
         filter!(Fb, All = Ca, Any = Cb, None = Cc);
 
         // Declares `Fc` with an implementation of `Filter` and `Select`.

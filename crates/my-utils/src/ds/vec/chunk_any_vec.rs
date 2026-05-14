@@ -54,8 +54,8 @@ pub struct ChunkAnyVec {
 impl ChunkAnyVec {
     /// Creates a new empty vector.
     ///
-    /// The vector will create and append chunks that can contain items as many as the given chunk
-    /// capacity. But the type is ZST, chunk capacity is ignored.
+    /// The vector creates and appends chunks that can contain as many items as the given chunk
+    /// capacity. If the type is ZST, the chunk capacity is ignored.
     ///
     /// # Panics
     ///
@@ -262,7 +262,7 @@ impl ChunkAnyVec {
         self.chunks[0].is_type_of::<T>()
     }
 
-    /// Returns number of item.
+    /// Returns the number of items.
     ///
     /// # Examples
     ///
@@ -729,8 +729,8 @@ impl ChunkAnyVec {
     /// Removes the last item from the vector and writes it to the given buffer, then returns
     /// `Some`.
     ///
-    /// If removing is successful, caller becomes to own the item in the buffer, so that caller must
-    /// call `drop()` on it correctly. Otherwise, returns `None` without change to the buffer.
+    /// If removal succeeds, the caller owns the item in the buffer and must call `drop()` on it
+    /// correctly. Otherwise, this returns `None` without changing the buffer.
     ///
     /// # Safety
     ///

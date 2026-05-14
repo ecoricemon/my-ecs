@@ -227,7 +227,7 @@ where
 }
 
 impl<K, V, S> SetList<K, V, S> {
-    /// Returns number of items.
+    /// Returns the number of items.
     ///
     /// # Examples
     ///

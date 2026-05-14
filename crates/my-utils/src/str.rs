@@ -1,6 +1,6 @@
 //! String utilities.
 
-/// Determines number of digits at the end of the string.
+/// Determines the number of digits at the end of the string.
 ///
 /// # Examples
 ///
@@ -15,7 +15,7 @@ pub fn rdigit_num(s: &str) -> usize {
     v.iter().rev().take_while(|c| c.is_ascii_digit()).count()
 }
 
-/// Increases ascii number at the end of the string.
+/// Increments the ASCII number at the end of the string.
 ///
 /// # Examples
 ///
@@ -41,7 +41,7 @@ pub fn increase_rnumber(s: &mut String) {
     }
 
     let mut carry = 1;
-    // Safety: In UTF-8, byte starts with 0 is same with the ascii character.
+    // Safety: In UTF-8, a byte that starts with 0 is the same as the ASCII character.
     unsafe {
         let v = s.as_bytes_mut();
         for c in v.iter_mut().rev().take(n) {

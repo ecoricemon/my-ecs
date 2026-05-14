@@ -26,9 +26,9 @@ impl<T> SimpleVecPool<T> {
 
     /// Returns an index to a vector of the pool.
     ///
-    /// The pool prefers to reuse vector, therefore caller will receive an index to a used vector if
-    /// the pool contains used vectors. In that case, the vector is completed cleared while keeping
-    /// its capacity. If the pool doesn't have any used vectors in it, a new vector is created.
+    /// The pool prefers to reuse vectors, so the caller will receive an index to a used vector if
+    /// the pool contains one. In that case, the vector is completely cleared while keeping its
+    /// capacity. If the pool doesn't have any used vectors, a new vector is created.
     ///
     /// # Examples
     ///

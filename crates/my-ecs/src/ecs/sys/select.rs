@@ -60,7 +60,9 @@ pub trait StoreFilterInfo {
 /// filter!(Sb, Target = Ca, All = Cb, Any = (Cc, Cd));
 /// ```
 pub trait Select: 'static {
+    /// Component type selected by this selector.
     type Target: Component;
+    /// Filter applied before selecting the target component.
     type Filter: Filter;
 
     #[doc(hidden)]
@@ -449,7 +451,7 @@ impl FilterInfo {
 }
 
 /// Shared references to [`Select::Target`] component arrays from multiple entities. You can get an
-/// iterator traversing over each component array via [`iter`](Self::iter). A component array
+/// iterator that traverses each component array via [`iter`](Self::iter). A component array
 /// belongs to a specific entity.
 #[derive(Debug)]
 pub struct Selected<'cont, Comp: 'cont> {
@@ -462,8 +464,8 @@ pub struct Selected<'cont, Comp: 'cont> {
 
 impl<'cont, Comp: 'cont> Selected<'cont, Comp> {
     /// Creates [`Selected`] from a mutable reference to a [`SelectedRaw`]. [`SelectedRaw`] is not a
-    /// container, but it's borrowing container's data, and holding them inside [`Borrowed`]s. So we
-    /// can think lifetime to the '&mut [`SelectedRaw`]' is as if container's.
+    /// container, but it borrows a container's data and holds it inside [`Borrowed`]s. So the
+    /// lifetime of `&mut SelectedRaw` can be treated like the container's lifetime.
     pub(crate) fn new(raw: &'cont mut SelectedRaw) -> Self {
         Self {
             raw,
@@ -485,10 +487,10 @@ impl<'cont, Comp: 'cont> Selected<'cont, Comp> {
 }
 
 /// Mutable references to [`Select::Target`] component arrays from multiple entities. You can get an
-/// iterator traversing over each component array via [`iter`](Self::iter) or
+/// iterator that traverses each component array via [`iter`](Self::iter) or
 /// [`iter_mut`](Self::iter_mut). A component array belongs to a specific entity.
 //
-// `Selected` has mutable reference to a `SelectedRaw` in it. So we can make use of it and expose
+// `Selected` has a mutable reference to a `SelectedRaw` in it. So we can make use of it and expose
 // mutable methods to clients here.
 #[derive(Debug)]
 #[repr(transparent)]

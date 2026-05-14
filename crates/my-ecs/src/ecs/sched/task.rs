@@ -118,8 +118,8 @@ impl SysTask {
             {
                 let Self { invoker, buf, .. } = self;
 
-                // We need to unwrap `ManagedMutPtr` in web and debug environmetn in order for
-                // recovery after panic. This unwrapping just disables tracking the pointer.
+                // We need to unwrap `ManagedMutPtr` in web and debug environments to recover
+                // after panic. This unwrapping only disables pointer tracking.
                 let mut invoker_ptr = invoker.as_nonnull();
                 let mut buf_ptr = buf.as_nonnull();
                 drop(invoker);
@@ -143,8 +143,8 @@ pub(crate) struct ParTask {
 
 impl PartialEq for ParTask {
     fn eq(&self, other: &Self) -> bool {
-        // Makes sure that we can compare `ParTask`. To compare `ParTask`, data pointer must be
-        // created from not a ZST, which is `ParTaskHolder`.
+        // Make sure that we can compare `ParTask`. Its data pointer must be created from a non-ZST,
+        // which is `ParTaskHolder`.
         const _: () = {
             assert!(mem::size_of::<ParTaskHolder::<fn(FnContext) -> (), ()>>() > 0);
         };

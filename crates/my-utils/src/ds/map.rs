@@ -6,9 +6,9 @@ use std::{
 
 /// A hash map containing *Group*s and *Item*s.
 ///
-/// Conceptually, group contains items in it, and item can belong to multiple groups. They cannot
-/// exist without relationship to each other. In other words, they must be linked. See a diagram
-/// below. In this map, group has an ordered links to items, while item has an unordered links to
+/// Conceptually, a group contains items, and an item can belong to multiple groups. They cannot
+/// exist without relationships to each other. In other words, they must be linked. See the diagram
+/// below. In this map, a group has ordered links to items, while an item has unordered links to
 /// groups.
 ///
 /// ```text
@@ -17,8 +17,8 @@ use std::{
 /// Items   I0  I1  I2
 /// ```
 ///
-/// The map provides you some ways to access groups and items by their keys and indices. If
-/// possible, prefer to use index to key because it can be faster.
+/// The map provides several ways to access groups and items by their keys and indices. If possible,
+/// prefer using indices over keys because it can be faster.
 #[derive(Debug, Clone)]
 pub struct GroupMap<GK, GV, IK, IV, S = FxBuildHasher> {
     /// Groups that can be accessed by either key or index.
@@ -35,6 +35,7 @@ pub struct GroupMap<GK, GV, IK, IV, S = FxBuildHasher> {
 }
 
 impl<GK, GV, IK, IV> GroupMap<GK, GV, IK, IV> {
+    /// Creates a new empty group map with [`FxBuildHasher`].
     pub fn new() -> Self {
         Self {
             groups: IndexedMap::new(),
@@ -52,26 +53,28 @@ impl<GK, GV, IK, IV, S> GroupMap<GK, GV, IK, IV, S> {
         }
     }
 
+    /// Returns the backing group storage.
     pub fn as_groups(&self) -> &[Option<With<GV, Vec<usize>>>] {
         self.groups.as_slice()
     }
 
     /// # Safety
     ///
-    /// Undefined behavior if caller take out a value from an occupied slot, or insert a value into
-    /// a vacant slot.
+    /// Undefined behavior if the caller takes a value out of an occupied slot, or inserts a value
+    /// into a vacant slot.
     pub unsafe fn as_mut_groups(&mut self) -> &mut [Option<With<GV, Vec<usize>>>] {
         self.groups.as_mut_slice()
     }
 
+    /// Returns the backing item storage.
     pub fn as_items(&self) -> &[Option<With<IV, HashSet<usize, S>>>] {
         self.items.as_slice()
     }
 
     /// # Safety
     ///
-    /// Undefined behavior if caller take out a value from an occupied slot, or insert a value into
-    /// a vacant slot.
+    /// Undefined behavior if the caller takes a value out of an occupied slot, or inserts a value
+    /// into a vacant slot.
     pub unsafe fn as_mut_items(&mut self) -> &mut [Option<With<IV, HashSet<usize, S>>>] {
         self.items.as_mut_slice()
     }
@@ -85,16 +88,14 @@ where
 {
     /// Returns true if the map contains a group at the given group index.
     ///
-    /// Consider using [`GroupMap::contains_group2`] if you need to know whether the map contains it
-    /// or not by a key.
+    /// Consider using [`GroupMap::contains_group2`] if you need to check by key.
     pub fn contains_group(&self, index: usize) -> bool {
         self.groups.contains_index(index)
     }
 
     /// Returns true if the map contains a group corresponding to the given group key.
     ///
-    /// Consider using [`GroupMap::contains_group`] if you need to know whether the map contains it
-    /// or not by an index.
+    /// Consider using [`GroupMap::contains_group`] if you need to check by index.
     pub fn contains_group2<Q>(&self, key: &Q) -> bool
     where
         GK: std::borrow::Borrow<Q>,
@@ -139,7 +140,7 @@ where
         self.groups.get_mut2(key)
     }
 
-    /// Retrieves group key corresponding to the given group index.
+    /// Retrieves the group key corresponding to the given group index.
     ///
     /// You can also get a group index from a key using
     /// [`GroupMap::get_group_index`].
@@ -170,16 +171,14 @@ where
 
     /// Returns true if the map contains an item at the given item index.
     ///
-    /// Consider using [`GroupMap::contains_item2`] if you need to know whether the map contains it
-    /// or not by a key.
+    /// Consider using [`GroupMap::contains_item2`] if you need to check by key.
     pub fn contains_item(&self, index: usize) -> bool {
         self.items.contains_index(index)
     }
 
     /// Returns true if the map contains an item corresponding to the given item key.
     ///
-    /// Consider using [`GroupMap::contains_item`] if you need to know whether the map contains it
-    /// or not by an index.
+    /// Consider using [`GroupMap::contains_item`] if you need to check by index.
     pub fn contains_item2<Q>(&self, key: &Q) -> bool
     where
         IK: std::borrow::Borrow<Q>,
@@ -385,6 +384,7 @@ where
 
 /// A trait for creating [`GroupDesc`].
 pub trait DescribeGroup<GK, GV, IK, IV> {
+    /// Converts this value into a group descriptor.
     fn into_group_and_items(self) -> GroupDesc<GK, GV, IK, IV>;
 }
 
@@ -394,8 +394,11 @@ pub trait DescribeGroup<GK, GV, IK, IV> {
 /// value, and associated items.
 #[derive(Debug)]
 pub struct GroupDesc<GK, GV, IK, IV> {
+    /// Group key.
     pub group_key: GK,
+    /// Group value.
     pub group_value: GV,
+    /// Items belonging to the group.
     pub items: Vec<(IK, IV)>,
 }
 
@@ -450,14 +453,15 @@ impl<K, V, S, const IMAP: bool> IndexedMap<K, V, S, IMAP> {
         }
     }
 
+    /// Returns the backing value storage.
     pub fn as_slice(&self) -> &[Option<V>] {
         self.values.as_slice()
     }
 
     /// # Safety
     ///
-    /// Undefined behavior if caller take out a value from an occupied slot, or insert a value into
-    /// a vacant slot.
+    /// Undefined behavior if the caller takes a value out of an occupied slot, or inserts a value
+    /// into a vacant slot.
     pub unsafe fn as_mut_slice(&mut self) -> &mut [Option<V>] {
         self.values.as_mut_slice()
     }
@@ -536,7 +540,7 @@ where
     K: Hash + Eq + Clone,
     S: BuildHasher,
 {
-    /// Returns number of items.
+    /// Returns the number of items.
     ///
     /// # Examples
     ///

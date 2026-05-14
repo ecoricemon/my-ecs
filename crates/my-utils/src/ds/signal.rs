@@ -11,6 +11,7 @@ const ASLEEP: i32 = -1;
 const AWAKE: i32 = 0;
 const ALARMED: i32 = 1;
 
+/// A registered thread and its sleep state.
 #[derive(Debug)]
 pub struct SignalSlot {
     thread: Thread,
@@ -18,6 +19,7 @@ pub struct SignalSlot {
 }
 
 impl SignalSlot {
+    /// Creates a slot whose thread starts asleep.
     pub const fn asleep_slot(thread: Thread) -> Self {
         Self {
             state: AtomicI32::new(ASLEEP),
@@ -25,6 +27,7 @@ impl SignalSlot {
         }
     }
 
+    /// Creates a slot whose thread starts awake.
     pub const fn awake_slot(thread: Thread) -> Self {
         Self {
             state: AtomicI32::new(AWAKE),
@@ -33,6 +36,7 @@ impl SignalSlot {
     }
 }
 
+/// Coordinates parking and waking registered threads.
 #[derive(Debug)]
 pub struct Signal {
     slots: Vec<SignalSlot>,
@@ -42,6 +46,7 @@ pub struct Signal {
 impl Signal {
     const RNG_SEED: NonZeroU32 = unsafe { NonZeroU32::new_unchecked(0x7A7A_A7A7) };
 
+    /// Creates a signal from registered slots.
     pub const fn new(slots: Vec<SignalSlot>) -> Self {
         Self {
             slots,
@@ -49,6 +54,7 @@ impl Signal {
         }
     }
 
+    /// Creates a signal with no slots.
     pub const fn empty() -> Self {
         Self {
             slots: Vec::new(),

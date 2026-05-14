@@ -1,3 +1,8 @@
+//! Procedural macros for the `my-ecs` crate.
+//!
+//! This crate provides derive macros for ECS components, entities, and resources, plus helper
+//! macros for filters, requests, and repeated macro expansion.
+
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use proc_macro2::TokenTree as TokenTree2;
@@ -59,16 +64,16 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
     .into()
 }
 
-/// Impelments [`Entity`] for the type.
+/// Implements [`Entity`] for the type.
 ///
-/// Actually, you don't have to define entity type explicitly, but by doing so, the crate becomes to
-/// be able to provide easy-to-use functions for you.
+/// You don't have to define an entity type explicitly, but doing so lets the crate provide
+/// easy-to-use functions for you.
 ///
-/// You can designate which container type you use as well by attributes `container` and
+/// You can also choose the container type with the `container` and
 /// `build_hasher`.
 ///
-/// `container` means which container type you use for the entity. You can use your own type or
-/// choose one of built-in types shown below.
+/// `container` specifies which container type to use for the entity. You can use your own type or
+/// choose one of the built-in types shown below.
 /// * [`SparseSet`] - Default
 /// * [`ChunkSparseSet`]
 ///
@@ -88,7 +93,7 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
 ///     a: Ca,
 /// }
 ///
-/// // Or, you can customize entity container.
+/// // Or, customize the entity container.
 /// #[derive(Entity)]
 /// #[container(ChunkSparseSet)]
 /// #[build_hasher(std::collections::hash_map::RandomState)]
@@ -403,12 +408,11 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
     })
 }
 
-/// Implements [`Filter`] for the type, and implements [`Select`] optionally if `Target` is defined.
+/// Implements [`Filter`] for the type and optionally implements [`Select`] if `Target` is defined.
 ///
-/// Types implementing `Filter` only can be used in [`EntWrite`] only. Types implementing both
-/// `Filter` and `Select`, on the other hand, also can be used in [`Read`] and [`Write`] as well.
-/// Because `Read` and `Write` mean requesting read or write access to a specific *target*
-/// component.
+/// Types implementing only `Filter` can be used in [`EntWrite`]. Types implementing both `Filter`
+/// and `Select` can also be used in [`Read`] and [`Write`], because `Read` and `Write` request read
+/// or write access to a specific *target* component.
 ///
 /// See [`Filter`] and [`Select`] for more details.
 ///
@@ -423,10 +427,10 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
 /// #[derive(Component)] struct Cd;
 /// #[derive(Component)] struct Ce;
 ///
-/// // Declares `Fa` with an implemenation of `Filter`.
+/// // Declares `Fa` with an implementation of `Filter`.
 /// filter!(Fa, All = Ca);
 ///
-/// // Declares `Fb` with an implemenation of `Filter`.
+/// // Declares `Fb` with an implementation of `Filter`.
 /// filter!(Fb, All = Ca, Any = Cb, None = Cc);
 ///
 /// // Declares `Fc` with an implementation of `Filter` and `Select`.
@@ -455,13 +459,13 @@ pub fn derive_resource(input: TokenStream) -> TokenStream {
 pub fn filter(input: TokenStream) -> TokenStream {
     let sel = parse_macro_input!(input as Select);
 
-    // Validates if the Filter types implement `Component`.
+    // Validates that the filter types implement `Component`.
     let empty = Punctuated::<TypePath, Token![,]>::new();
     let all = get_iter(&sel.filter.all, &empty);
     let any = get_iter(&sel.filter.any, &empty);
     let none = get_iter(&sel.filter.none, &empty);
 
-    // Validates that `Target`, `All` and `Any` doesn't overlap `None`.
+    // Validates that `Target`, `All`, and `Any` don't overlap `None`.
     let validate_non_overlap = if let Some(target) = &sel.target {
         let pos = iter::once(&target.ty).chain(all.clone()).chain(any.clone());
         validate_non_overlap_tokens(pos, none.clone())
@@ -470,8 +474,8 @@ pub fn filter(input: TokenStream) -> TokenStream {
         validate_non_overlap_tokens(pos, none.clone())
     };
 
-    // The same purpose of code above. This gives more specific position where the error occurs.
-    // However, this cannot detect something like as follows
+    // This has the same purpose as the code above, but gives a more specific error position.
+    // However, it cannot detect cases like this:
     // Target = Ca, None = crate::Ca
     if let Some(target) = &sel.target {
         let mut pos = iter::once(&target.ty).chain(all).chain(any);
@@ -527,9 +531,9 @@ pub fn filter(input: TokenStream) -> TokenStream {
 
 /// Implements [`Request`] for the type.
 ///
-/// Functions implement the `Request` by the crate internally, but others such as struct or enum
-/// don't. You must implement the `Request` yourself if you want it to act as a system. This macro
-/// helps you write just a little bit of code for that.
+/// The crate internally implements `Request` for functions, but not for other types such as structs
+/// or enums. You must implement `Request` yourself if you want one of those types to act as a
+/// system. This macro helps you write only the small amount of code needed for that.
 ///
 /// # Examples
 ///
@@ -944,6 +948,14 @@ impl ToTokens for Types {
     }
 }
 
+/// Expands to the nth identifier from a comma-separated identifier list.
+///
+/// # Examples
+///
+/// ```ignore
+/// # use my_ecs_macros::nth;
+/// let value = nth!(1, first, second, third);
+/// ```
 #[proc_macro]
 pub fn nth(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as Nth);
@@ -973,7 +985,7 @@ impl Parse for Nth {
     }
 }
 
-/// Repeats a certain macro.
+/// Repeats a macro.
 ///
 /// # Examples
 ///
@@ -991,7 +1003,7 @@ impl Parse for Nth {
 /// foo!(2, 0, 1);
 /// foo!(3, 0, 1, 2);
 ///
-/// // Four lines above can be replaced with this.
+/// // The four lines above can be replaced with this.
 /// repeat_macro!(foo, ..4);
 /// ```
 #[proc_macro]

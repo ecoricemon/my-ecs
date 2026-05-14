@@ -160,7 +160,7 @@ function requestCalculation() {
   age += 1;
 }
 
-// Function to draw image using data gotten from wasm with scaling.
+// Draws an image from wasm data with scaling.
 function drawImage() {
   if (app.getResult(buf) !== 'ready') {
     return;

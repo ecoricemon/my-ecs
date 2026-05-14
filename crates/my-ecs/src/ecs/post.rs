@@ -37,15 +37,15 @@ pub mod prelude {
     pub use super::{Commander, Post};
 }
 
-/// A [`Resource`] to send command or future.
+/// A [`Resource`] for sending commands or futures.
 ///
-/// This resource provides clients funtionalities to send commands or futures in their systems. This
-/// resource also provides interior mutability, so that clients can request the resource with
+/// This resource lets clients send commands or futures from their systems. It also provides
+/// interior mutability, so clients can request the resource with
 /// [`ResRead`](crate::prelude::ResRead).
 //
 // By registering this resource in each ECS instance, it is possible to have multiple ECS instances
-// in one worker. Global function & static variable approach, on the other hand, is not good option
-// for that because it cannot determine which ECS instance is the destination of sending easily.
+// in one worker. A global function and static variable approach is not a good option because it
+// cannot easily determine which ECS instance should receive the command or future.
 pub struct Post {
     tx_cmd: CommandSender,
     tx_msg: ParkingSender<Message>,
@@ -127,7 +127,7 @@ impl Post {
 
     /// Sends the given future to ECS scheduler.
     ///
-    /// The future is guaranteed to be polled more than or just once in the current cycle.
+    /// The future is guaranteed to be polled at least once in the current cycle.
     ///
     /// # Examples
     ///
@@ -177,7 +177,7 @@ impl Post {
             let waker = MainWaker::new(this.tx_dedi.clone());
             let handle = UnsafeFuture::new(future, waker, consume_ready_future::<R>);
 
-            // Increases future count.
+            // Increases the future count.
             this.fut_cnt.fetch_add(1, Ordering::Relaxed);
 
             // Pushes the future handle onto dedicated queue.
@@ -199,17 +199,18 @@ impl Post {
             let comm = unsafe { cx.as_ref().get_comm() };
             comm.push_future_task(handle);
 
-            // Increases future count. Main worker will check this whenever it needs.
+            // Increases the future count. The main worker checks this when needed.
             comm.signal().add_future_count(1);
 
-            // If current worker's local queue is not empty, current worker cannot do the future
-            // task promptly, so wakes another worker to steal it.
+            // If the current worker's local queue is not empty, it cannot handle the future task
+            // promptly, so wake another worker to steal it.
             if !comm.is_local_empty() {
                 comm.signal().sub().notify_one();
             }
         }
     }
 
+    /// Requests exclusive access to the buffers for `Req`.
     pub fn request_lock<'buf, Req>(&self) -> RequestLockFuture<'buf, Req>
     where
         Req: Request,
@@ -217,6 +218,7 @@ impl Post {
         RequestLockFuture::new(self.tx_cmd.clone(), self.tx_msg.clone())
     }
 
+    /// Starts building an entity move command for `eid`.
     pub fn change_entity(&self, eid: EntityId) -> EntityMoveCommandBuilder<'_> {
         let guard = self.lock_entity_move_storage();
         EntityMoveCommandBuilder::new(&self.tx_cmd, guard, eid)
@@ -238,9 +240,11 @@ impl Post {
 
 impl Resource for Post {}
 
+/// Helper for issuing entity change commands from systems.
 pub struct Commander<'a>(&'a Post);
 
 impl Commander<'_> {
+    /// Starts building an entity move command for `eid`.
     pub fn change_entity(&self, eid: EntityId) -> EntityMoveCommandBuilder<'_> {
         self.0.change_entity(eid)
     }
@@ -322,7 +326,7 @@ impl EntMoveStorage {
 
     /// Moves an entity from one entity container to another.
     ///
-    /// If failed to find source entity, does nothing.
+    /// Does nothing if the source entity cannot be found.
     ///
     /// # Safety
     ///
@@ -331,7 +335,7 @@ impl EntMoveStorage {
         // Safety: We got an operation, which means length must exist.
         let src_eid = unsafe { self.ops.last().unwrap_unchecked().from };
 
-        // Gets src entity container.
+        // Gets the source entity container.
         let ei = src_eid.container_index();
         let src_ekey = EntityKeyRef::Index(&ei);
         let Some(ptr_src_cont) = ecs.get_ptr_entity_container(src_ekey) else {
@@ -340,7 +344,7 @@ impl EntMoveStorage {
         let src_cont = unsafe { ptr_src_cont.as_ref() };
         let src_vi = src_cont.to_value_index(src_eid.row_index()).unwrap();
 
-        // Gets dst entity container.
+        // Gets the destination entity container.
         self.set_dst_ckeys(len, src_cont);
         let dst_ckeys = &self.ckey_buf;
         let dst_ekey = EntityKeyRef::Ckeys(dst_ckeys);
@@ -348,7 +352,7 @@ impl EntMoveStorage {
             self.create_dst_container(src_cont, ecs);
         }
 
-        // Moves an entity from src to dst.
+        // Moves an entity from source to destination.
         let (src_cont, dst_cont) = unsafe {
             ecs.get_two_entity_container_mut(src_ekey, dst_ekey)
                 .unwrap_unchecked()
@@ -363,7 +367,7 @@ impl EntMoveStorage {
     /// Panics if
     /// - Inserted operations try to add components that already belong to the source entity
     ///   container.
-    /// - Inserted operations try to remove components that doesn't belong to the source entity
+    /// - Inserted operations try to remove components that don't belong to the source entity
     ///   container.
     fn set_dst_ckeys(&mut self, len: usize, src_cont: &EntityContainer) {
         let contains_src =
@@ -464,8 +468,8 @@ impl EntMoveStorage {
         // Safety
         // 1. We call begin_xxx -> add/remove_xxx -> end_xxx to add/remove entity to/from an entity
         //    container.
-        // 2. We get component key from entity container. Therefore unwrapping column index gotten
-        //    using the key is safe.
+        // 2. We get component keys from the entity container. Therefore, unwrapping the column
+        //    indices found with those keys is safe.
 
         unsafe {
             let src_ckeys = Arc::clone(src_cont.get_tag().get_component_keys());
@@ -561,7 +565,7 @@ struct Operation {
     /// The operation's target component.
     target: ComponentKey,
 
-    /// Whether be added to the entity or removed from the entity.
+    /// Whether the component is added to or removed from the entity.
     dir: Direction,
 }
 
