@@ -346,8 +346,8 @@ impl GroupSignal {
     }
 
     pub(crate) fn sub_open_count(&self, value: u32) -> u32 {
-        /// Main thread can try to drop sub context in the middle of running this function. So we're
-        /// copying the 'main'.
+        // Main thread can drop sub context in the middle of running this function when it sees "0"
+        // open count. So we're copying the 'main' before reducing the count.
         let main = self.main.clone();
         let old = self.open_cnt.fetch_sub(value, Ordering::Release);
         main.unpark();
