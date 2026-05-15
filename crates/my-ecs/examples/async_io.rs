@@ -1,14 +1,26 @@
+//! Keep latency-sensitive async I/O separate from slow compute work.
+//!
+//! This example runs the same tiny HTTP health check twice. In `good_example`, I/O futures and
+//! blocking compute futures are posted to separate worker groups, so the health check responds
+//! quickly. In `bad_example`, all futures share one worker group, so slow compute work can delay
+//! the I/O path.
+//!
+//! Expected output shape:
+//!
+//! ```text
+//! [GOOD example] GET /health : Took ...
+//! [BAD example] GET /health : Took ...
+//! ```
+//!
+//! The exact timings depend on your machine, but the good example should be much faster.
+
 #[cfg(not(target_arch = "wasm32"))]
 fn main() {
-    non_web::good_example();
-    non_web::bad_example();
+    native::run();
 }
 
-#[cfg(target_arch = "wasm32")]
-fn main() {}
-
 #[cfg(not(target_arch = "wasm32"))]
-mod non_web {
+mod native {
     use futures::{channel::oneshot, select, FutureExt};
     use my_ecs::prelude::*;
     use std::{
@@ -16,16 +28,19 @@ mod non_web {
         time::{Duration, Instant},
     };
 
-    pub(super) fn good_example() {
-        // Creates instance with two groups.
+    pub(super) fn run() {
+        good_example();
+        bad_example();
+    }
+
+    fn good_example() {
+        // Split two worker threads into two groups so I/O and compute work do not block each other.
         let mut ecs = Ecs::create(WorkerPool::with_len(2), [1, 1]);
 
         let (exit_tx, exit_rx) = oneshot::channel();
 
-        // Runs as follows.
-        // - Async io tasks in group 0.
-        // - Compute tasks in group 1.
-
+        // Group 0 handles the server/client futures. Group 1 handles slow compute futures, so the
+        // health check can respond quickly.
         ecs.add_once_systems((
             move |rr: ResRead<Post>| rr.send_future(async_io_server(exit_rx)),
             move |rr: ResRead<Post>| rr.send_future(async_io_client(exit_tx)),
@@ -44,16 +59,15 @@ mod non_web {
         ecs.run(|_| {});
     }
 
-    pub(super) fn bad_example() {
-        // Creates instance.
+    fn bad_example() {
+        // Put both workers in one group so every posted future competes for the same execution
+        // slots.
         let mut ecs = Ecs::create(WorkerPool::with_len(2), [2]);
 
         let (exit_tx, exit_rx) = oneshot::channel();
 
-        // Runs as follows.
-        // - Async io tasks in group 0.
-        // - Compute tasks in group 0.
-
+        // The slow compute futures can delay the I/O future in this setup, which is why the
+        // measured health check is slower than in `good_example`.
         ecs.add_once_systems((
             move |rr: ResRead<Post>| rr.send_future(async_io_server(exit_rx)),
             |rr: ResRead<Post>| {
@@ -70,7 +84,7 @@ mod non_web {
         ecs.run(|_| {});
     }
 
-    // Function that needs to respond quickly.
+    // A tiny server stands in for latency-sensitive async I/O.
     async fn async_io_server(exit_rx: oneshot::Receiver<()>) -> DynResult<()> {
         let mut server = tide::new();
         server.at("/health").get(|_| async { Ok("ok") });
@@ -82,7 +96,7 @@ mod non_web {
         Ok(())
     }
 
-    // Function that hopes quick response.
+    // This measures how long the I/O path had to wait for worker time.
     async fn async_io_client(exit_tx: oneshot::Sender<()>) -> DynResult<()> {
         let start = Instant::now();
 
@@ -99,9 +113,12 @@ mod non_web {
         Ok(())
     }
 
-    // Function that takes a little bit long.
+    // Blocking compute work is intentionally slow so the scheduling difference is visible.
     async fn async_compute() -> DynResult<()> {
         thread::sleep(Duration::from_secs(1));
         Ok(())
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+fn main() {}
