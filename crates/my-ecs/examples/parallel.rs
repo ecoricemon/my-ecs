@@ -1,9 +1,15 @@
-//! This example shows how to do paralell computation in ecs.
+//! Compare parallel and sequential iteration over ECS component data.
+//!
+//! The example stores a lot of integers as `Ca` components, sums them once with ECS-aware rayon
+//! parallel iteration, then sums the same data again with a normal sequential iterator.
+//!
+//! The exact timings depend on your machine, but the output shows both the parallel and sequential
+//! durations.
 
 use my_ecs::prelude::*;
 use std::time::Instant;
 
-// Declares Entity, Component, and Filter.
+// Each entity stores one number. The filter lets systems read those numbers.
 #[derive(Entity, Clone, Copy)]
 struct Ea {
     a: Ca,
@@ -23,7 +29,7 @@ fn main() {
     let mut ecs = Ecs::create(pool, [num_workers]);
 
     ecs.register_entity_of::<Ea>()
-        // Puts in some numbers.
+        // Fill the ECS storage with a large range of numbers to make the timing visible.
         .add_once_system(|ew: EntWrite<Ea>| {
             let mut ew = ew.take_recur();
             ew.resize(NUM as usize, Ea { a: Ca(0) });
@@ -32,11 +38,11 @@ fn main() {
                 ca.0 = val;
             }
         })
-        // Computes in parallel.
+        // Sum the same ECS component data with rayon-backed parallel iteration.
         .add_once_system(move |r: Read<Fa>| {
             let start = Instant::now();
 
-            // Computes sum using rayon's parallel iterator. Visit this link to see what rayon is.
+            // `into_ecs_par()` adapts rayon's parallel iterator to the ECS worker pool.
             // https://github.com/rayon-rs/rayon
             let mut sum = 0_i64;
             for getter in r.iter() {
@@ -51,11 +57,11 @@ fn main() {
         })
         .step();
 
-    // For the sake of comparison, computes in sequential as well.
+    // Run a sequential pass afterward so the output gives an easy comparison.
     ecs.add_once_system(|r: Read<Fa>| {
         let start = Instant::now();
 
-        // Computes sum using rust sequential iterator.
+        // This reads the same ECS data, but only uses normal single-thread iteration.
         let sum: i64 = r.iter().flatten().map(|ca| ca.0).sum();
         assert_eq!(sum, SUM);
 

@@ -39,7 +39,7 @@ execution, built-in async task integration, and `wasm32` support.
 
 ## Architecture
 
-![my-ecs overview](https://raw.githubusercontent.com/ecoricemon/my-ecs/main/crates/my-ecs/docs/my-ecs-diagram.svg)
+![my-ecs overview](docs/my-ecs-diagram.svg)
 
 ## Demo
 
@@ -58,89 +58,33 @@ execution, built-in async task integration, and `wasm32` support.
 
 ## Quick Start
 
-Add the crate:
+You need Rust's `cargo` command to run these examples. If `cargo` is not available yet, install
+[Rust](https://rust-lang.org/tools/install) first.
 
-```toml
-[dependencies]
-my-ecs = "0.1"
+If you already have this repository checked out, run the smallest example first:
+
+```bash
+cargo run -p my-ecs --example hello_world
 ```
 
-Define components with ordinary Rust types:
+Expected output:
 
-```rust
-use my_ecs::prelude::*;
-
-#[derive(Component)]
-struct Position {
-    x: u32,
-    y: u32,
-}
+```text
+Object: (1, 2)
+MovableObject: (3, 4)
+Object: (1, 2)
+MovableObject: (13, 14)
 ```
 
-Define an entity as a named bundle of components:
+To try `my-ecs` in a new Rust project:
 
-```rust
-use my_ecs::prelude::*;
-
-#[derive(Component)]
-struct Position {
-    x: u32,
-    y: u32,
-}
-
-#[derive(Component)]
-struct Movable;
-
-#[derive(Entity)]
-struct MovableObject {
-    pos: Position,
-    movable: Movable,
-}
+```bash
+cargo new my-ecs-hello
+cd my-ecs-hello
+cargo add my-ecs
 ```
 
-Define a selector with `filter!`, then read or write matching components from a
-system:
-
-```rust
-use my_ecs::prelude::*;
-
-#[derive(Component)]
-struct Position {
-    x: u32,
-    y: u32,
-}
-
-filter!(Fpos, Target = Position);
-
-fn moves(mut w: Write<Fpos>) {
-    for Position { x, y } in w.iter_mut().flatten() {
-        *x += 10;
-        *y += 10;
-    }
-}
-```
-
-Resources are singletons:
-
-```rust
-use my_ecs::prelude::*;
-
-#[derive(Resource)]
-struct Count(u32);
-
-Ecs::create(WorkerPool::new(), [])
-    .add_resource(Count(0))
-    .add_once_systems((
-        |rw: ResWrite<Count>| rw.take().0 += 1,
-        |rr: ResRead<Count>| println!("{}", rr.take().0),
-    ))
-    .step();
-```
-
-## Hello World Example
-
-This example registers two entity types, creates data, mutates one subset, then
-prints the result.
+Then replace `src/main.rs` with this full program:
 
 ```rust
 use my_ecs::prelude::*;
@@ -165,44 +109,69 @@ struct MovableObject {
     _m: Movable,
 }
 
-filter!(Fpos, Target = Position);
-filter!(Fmovpos, Target = Position, All = Movable);
+filter!(AllPositions, Target = Position);
+filter!(MovablePositions, Target = Position, All = Movable);
 
 fn main() {
     Ecs::create(WorkerPool::with_len(2), [2])
         .register_entity_of::<Object>()
         .register_entity_of::<MovableObject>()
-        .add_once_systems((create, print, moves, print))
+        .add_once_systems((
+            create_objects,
+            print_positions,
+            move_objects,
+            print_positions,
+        ))
         .step();
 }
 
-fn create(ew: EntWrite<(Object, MovableObject)>) {
-    let (mut obj_container, mut mov_container) = ew.take_recur();
+fn create_objects(ew: EntWrite<(Object, MovableObject)>) {
+    let (mut objects, mut movable_objects) = ew.take_recur();
 
-    obj_container.add(Object {
+    objects.add(Object {
         pos: Position { x: 1, y: 2 },
     });
-    mov_container.add(MovableObject {
+
+    movable_objects.add(MovableObject {
         pos: Position { x: 3, y: 4 },
         _m: Movable,
     });
 }
 
-fn moves(mut w: Write<Fmovpos>) {
-    for Position { x, y } in w.iter_mut().flatten() {
+fn move_objects(mut positions: Write<MovablePositions>) {
+    for Position { x, y } in positions.iter_mut().flatten() {
         *x += 10;
         *y += 10;
     }
 }
 
-fn print(r: Read<Fpos>) {
-    for container in r.iter() {
+fn print_positions(positions: Read<AllPositions>) {
+    for container in positions.iter() {
         for Position { x, y } in container.iter() {
             println!("{}: ({x}, {y})", container.entity_name().unwrap());
         }
     }
 }
 ```
+
+Run it:
+
+```bash
+cargo run
+```
+
+What this program does:
+
+- `Position` is a component: plain data that can be attached to an entity.
+- `Object` and `MovableObject` are entity types: named bundles of components.
+- `Movable` is a marker component used to select only movable entities.
+- `filter!` creates reusable queries for systems.
+- `Read<AllPositions>` reads matching components.
+- `Write<MovablePositions>` mutates matching components.
+- `EntWrite<(Object, MovableObject)>` creates entities.
+
+For a slower walkthrough of these Rust and ECS terms, see
+[`docs/getting-started.md`](docs/getting-started.md).
 
 ## Declaring Access
 
@@ -222,6 +191,8 @@ conflicts and schedule safe execution automatically.
 
 ## Examples In This Crate
 
+- `examples/hello_world.rs`: the smallest complete program for first-time
+  users.
 - `examples/parallel.rs`: using `rayon` with ECS-aware parallel iteration.
 - `examples/async.rs`: posting futures and applying their results back into the
   ECS world.
