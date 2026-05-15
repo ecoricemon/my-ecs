@@ -39,7 +39,7 @@ execution, built-in async task integration, and `wasm32` support.
 
 ## Architecture
 
-![my-ecs overview](docs/my-ecs-diagram.svg)
+![my-ecs overview](https://raw.githubusercontent.com/ecoricemon/my-ecs/main/crates/my-ecs/docs/my-ecs-diagram.svg)
 
 ## Demo
 
@@ -171,7 +171,7 @@ What this program does:
 - `EntWrite<(Object, MovableObject)>` creates entities.
 
 For a slower walkthrough of these Rust and ECS terms, see
-[`docs/getting-started.md`](docs/getting-started.md).
+[Getting Started guide](https://github.com/ecoricemon/my-ecs/blob/main/crates/my-ecs/docs/getting-started.md).
 
 ## Declaring Access
 
