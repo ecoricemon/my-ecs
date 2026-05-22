@@ -3,11 +3,11 @@ name = "my-utils"
 version = "0.1.1"
 edition = "2021"
 rust-version = "1.65.0"
-description = "Utilities"
 readme = "README.md"
 repository = "https://github.com/ecoricemon/my-ecs"
 license = "Apache-2.0 OR MIT"
-keywords = ["utilities"]
+description = "Data structures and low-level utilities for type-erased, parallel Rust containers"
+keywords = ["data-structures", "type-erasure", "raw-pointer", "parallel", "utilities"]
 
 [features]
 check = []

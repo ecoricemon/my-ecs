@@ -3,12 +3,12 @@ name = "my-ecs"
 version = "0.1.2"
 edition = "2021"
 rust-version = "1.65.0"
-description = "An Entity Component System (ECS) library"
 documentation = "https://docs.rs/my-ecs"
 readme = "README.md"
 repository = "https://github.com/ecoricemon/my-ecs"
 license = "Apache-2.0 OR MIT"
-keywords = ["ecs", "parallel", "wasm"]
+description = "Parallel and Asynchronous ECS library with wasm worker support"
+keywords = ["ecs", "parallel", "async", "wasm"]
 
 [features]
 check = ["my-utils/check"]

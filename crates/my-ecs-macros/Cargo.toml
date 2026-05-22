@@ -3,9 +3,10 @@ name = "my-ecs-macros"
 version = "0.1.1"
 edition = "2021"
 rust-version = "1.65"
-description = "A procedural macro for my-ecs crate"
 repository = "https://github.com/ecoricemon/my-ecs"
 license = "Apache-2.0 OR MIT"
+description = "Procedural macros for my-ecs components, entities, resources, filters, and requests"
+keywords = ["ecs"]
 
 [lib]
 proc-macro = true
