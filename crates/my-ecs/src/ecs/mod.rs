@@ -148,31 +148,62 @@ impl<Data> EcsError<Data> {
 
 /// Runtime counters used when the `stat` feature is enabled.
 pub mod stat {
+    use std::{cell::RefCell, sync::Arc};
+
     macro_rules! decl_counter {
-        ($name:ident, $id:ident) => {
+        ($name:ident, $field:ident, $id:ident) => {
             paste::paste! {
                 #[cfg(feature = "stat")]
                 static $id: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
 
-                /// Loads the current counter value, or `-1` when `stat` is disabled.
+                #[cfg(feature = "stat")]
+                fn [<load_fallback_ $name>]() -> isize {
+                    $id.load(std::sync::atomic::Ordering::Relaxed)
+                }
+
+                #[cfg(feature = "stat")]
+                fn [<store_fallback_ $name>](value: isize) {
+                    $id.store(value, std::sync::atomic::Ordering::Relaxed);
+                }
+
+                #[cfg(feature = "stat")]
+                fn [<increase_fallback_ $name>]() {
+                    $id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+
+                /// Loads the current scoped counter value, or `-1` when `stat` is disabled.
                 pub fn [<load _$name>]() -> isize {
                     #[cfg(feature = "stat")]
-                    { $id.load(std::sync::atomic::Ordering::Relaxed) }
+                    {
+                        if let Some(value) = with_scoped_metrics(|metrics| metrics.[<load_ $name>]()) {
+                            value
+                        } else {
+                            [<load_fallback_ $name>]()
+                        }
+                    }
 
                     #[cfg(not(feature = "stat"))]
                     { -1 }
                 }
 
-                /// Stores the counter value when `stat` is enabled.
+                /// Stores the current scoped counter value when `stat` is enabled.
                 pub fn [<store _$name>](_value: isize) {
                     #[cfg(feature = "stat")]
-                    $id.store(_value, std::sync::atomic::Ordering::Relaxed);
+                    {
+                        if with_scoped_metrics(|metrics| metrics.[<store_ $name>](_value)).is_none() {
+                            [<store_fallback_ $name>](_value);
+                        }
+                    }
                 }
 
-                /// Increments the counter when `stat` is enabled.
+                /// Increments the current scoped counter when `stat` is enabled.
                 pub fn [<increase _$name>]() {
                     #[cfg(feature = "stat")]
-                    $id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    {
+                        if with_scoped_metrics(|metrics| metrics.[<increase_ $name>]()).is_none() {
+                            [<increase_fallback_ $name>]();
+                        }
+                    }
                 }
 
                 /// Asserts that the counter equals `_right` when `stat` is enabled.
@@ -190,7 +221,100 @@ pub mod stat {
         };
     }
 
-    decl_counter!(system_task_count, SYS_CNT);
-    decl_counter!(future_task_count, FUT_CNT);
-    decl_counter!(parallel_task_count, PAR_CNT);
+    macro_rules! decl_metric_methods {
+        ($name:ident, $field:ident) => {
+            paste::paste! {
+                /// Loads the counter value, or `-1` when `stat` is disabled.
+                pub fn [<load_ $name>](&self) -> isize {
+                    #[cfg(feature = "stat")]
+                    { self.$field.load(std::sync::atomic::Ordering::Relaxed) }
+
+                    #[cfg(not(feature = "stat"))]
+                    { -1 }
+                }
+
+                /// Stores the counter value when `stat` is enabled.
+                pub fn [<store_ $name>](&self, _value: isize) {
+                    #[cfg(feature = "stat")]
+                    self.$field.store(_value, std::sync::atomic::Ordering::Relaxed);
+                }
+
+                /// Increments the counter when `stat` is enabled.
+                pub fn [<increase_ $name>](&self) {
+                    #[cfg(feature = "stat")]
+                    self.$field.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+
+                /// Asserts that the counter equals `_right` when `stat` is enabled.
+                pub fn [<assert_eq_ $name>](&self, _right: isize) {
+                    #[cfg(feature = "stat")]
+                    { assert_eq!(self.[<load_ $name>](), _right); }
+                }
+
+                /// Asserts that the counter does not equal `_right` when `stat` is enabled.
+                pub fn [<assert_ne_ $name>](&self, _right: isize) {
+                    #[cfg(feature = "stat")]
+                    { assert_ne!(self.[<load_ $name>](), _right); }
+                }
+            }
+        };
+    }
+
+    /// Per-ECS runtime counters.
+    #[derive(Debug, Default)]
+    pub struct RuntimeMetrics {
+        #[cfg(feature = "stat")]
+        system_task_count: std::sync::atomic::AtomicIsize,
+        #[cfg(feature = "stat")]
+        future_task_count: std::sync::atomic::AtomicIsize,
+        #[cfg(feature = "stat")]
+        parallel_task_count: std::sync::atomic::AtomicIsize,
+    }
+
+    impl RuntimeMetrics {
+        decl_metric_methods!(system_task_count, system_task_count);
+        decl_metric_methods!(future_task_count, future_task_count);
+        decl_metric_methods!(parallel_task_count, parallel_task_count);
+    }
+
+    thread_local! {
+        static CURRENT_METRICS: RefCell<Option<Arc<RuntimeMetrics>>> = const {
+            RefCell::new(None)
+        };
+    }
+
+    /// Runs `f` with `metrics` registered as the current thread's metrics target.
+    pub(crate) fn with_current_metrics<R, F>(metrics: &Arc<RuntimeMetrics>, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        let old = CURRENT_METRICS.with(|current| current.replace(Some(Arc::clone(metrics))));
+        let _guard = CurrentMetricsGuard { old: Some(old) };
+        f()
+    }
+
+    #[cfg(feature = "stat")]
+    fn with_scoped_metrics<R, F>(f: F) -> Option<R>
+    where
+        F: FnOnce(&RuntimeMetrics) -> R,
+    {
+        CURRENT_METRICS.with(|current| current.borrow().as_deref().map(f))
+    }
+
+    struct CurrentMetricsGuard {
+        old: Option<Option<Arc<RuntimeMetrics>>>,
+    }
+
+    impl Drop for CurrentMetricsGuard {
+        fn drop(&mut self) {
+            let old = self.old.take().unwrap();
+            CURRENT_METRICS.with(|current| {
+                current.replace(old);
+            });
+        }
+    }
+
+    decl_counter!(system_task_count, system_task_count, SYS_CNT);
+    decl_counter!(future_task_count, future_task_count, FUT_CNT);
+    decl_counter!(parallel_task_count, parallel_task_count, PAR_CNT);
 }

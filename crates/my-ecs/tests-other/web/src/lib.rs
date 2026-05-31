@@ -474,14 +474,14 @@ fn try_parallel_task(pool: WorkerPool) -> WorkerPool {
         W: Work + 'static,
         S: BuildHasher + Default + 'static,
     {
-        global::stat::assert_eq_parallel_task_count(0);
+        ecs.metrics().assert_eq_parallel_task_count(0);
 
         // Runs.
         ecs.step();
         assert!(ecs.collect_poisoned_systems().is_empty());
 
-        global::stat::assert_ne_parallel_task_count(0);
-        global::stat::store_parallel_task_count(0);
+        ecs.metrics().assert_ne_parallel_task_count(0);
+        ecs.metrics().store_parallel_task_count(0);
     }
 }
 

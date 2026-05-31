@@ -12,6 +12,7 @@ use super::{
         comm::{command_channel, CommandReceiver, CommandSender},
         ctrl::Scheduler,
     },
+    stat::RuntimeMetrics,
     sys::{
         storage::SystemStorage,
         system::{
@@ -1479,6 +1480,11 @@ where
         // TODO: need more shrink methods.
     }
 
+    /// Returns runtime metrics for this ECS instance.
+    pub fn metrics(&self) -> &RuntimeMetrics {
+        self.sched.metrics()
+    }
+
     /// Executes active systems of all groups once.
     ///
     /// Generated commands during the execution will be completely consumed at the end of system
@@ -2448,5 +2454,45 @@ mod tests {
         b.step();
         assert_eq!(*cnt.lock().unwrap(), 11);
         drop(b);
+    }
+
+    #[cfg(feature = "stat")]
+    #[test]
+    fn test_metrics_do_not_cross_multiple_apps() {
+        let mut a = Ecs::create(WorkerPool::with_len(1), [1]);
+        let mut b = Ecs::create(WorkerPool::new(), []);
+
+        a.add_once_system(|| {}).unwrap();
+        b.add_once_system(|| {}).unwrap();
+
+        a.step();
+        a.metrics().assert_eq_system_task_count(1);
+        b.metrics().assert_eq_system_task_count(0);
+
+        b.step();
+        a.metrics().assert_eq_system_task_count(1);
+        b.metrics().assert_eq_system_task_count(1);
+    }
+
+    #[cfg(feature = "stat")]
+    #[test]
+    fn test_parallel_metrics_do_not_cross_multiple_apps() {
+        let mut a = Ecs::create(WorkerPool::with_len(2), [2]);
+        let mut b = Ecs::create(WorkerPool::with_len(1), [1]);
+
+        a.add_once_system(|| {
+            let sum = (0..1024).into_par_iter().into_ecs_par().sum::<i32>();
+            assert_eq!(sum, (0..1024).sum::<i32>());
+        })
+        .unwrap();
+        b.add_once_system(|| {}).unwrap();
+
+        a.step();
+        assert!(a.metrics().load_parallel_task_count() > 0);
+        b.metrics().assert_eq_parallel_task_count(0);
+
+        b.step();
+        assert!(a.metrics().load_parallel_task_count() > 0);
+        b.metrics().assert_eq_parallel_task_count(0);
     }
 }
