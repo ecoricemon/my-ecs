@@ -214,6 +214,7 @@ impl<W: Work + 'static> Scheduler<W> {
     fn work_for_system_task(&self, task: SysTask) {
         let sid = task.sid();
 
+        self.metrics.record_system_execution();
         let resp = match stat::with_current_metrics(&self.metrics, || task.execute(self.wid)) {
             Ok(_) => Message::Fin(self.wid, sid),
             Err(payload) => Message::Panic(PanicMessage {
@@ -229,6 +230,7 @@ impl<W: Work + 'static> Scheduler<W> {
     }
 
     fn work_for_parallel_task(&self, task: ParTask) {
+        // Parallel execution metrics are recorded in the bridge function.
         stat::with_current_metrics(&self.metrics, || {
             task.execute(self.wid, FnContext::NOT_MIGRATED);
         });
@@ -251,6 +253,7 @@ impl<W: Work + 'static> Scheduler<W> {
             let cmd = CommandObject::Future(ready);
             self.tx_cmd.send_or_cancel(cmd);
         };
+        self.metrics.record_future_poll();
         stat::with_current_metrics(&self.metrics, || task.execute(self.wid, on_ready));
     }
 
@@ -1251,6 +1254,7 @@ impl SubContext {
         let wid = self.comm.worker_id();
         let sid = task.sid();
 
+        self.comm.metrics().record_system_execution();
         let resp = match stat::with_current_metrics(self.comm.metrics(), || task.execute(wid)) {
             Ok(_) => Message::Fin(self.comm.worker_id(), sid),
             Err(payload) => Message::Panic(PanicMessage {
@@ -1291,6 +1295,7 @@ impl SubContext {
             let cmd = CommandObject::Future(ready);
             self.comm.send_command_or_cancel(cmd);
         };
+        self.comm.metrics().record_future_poll();
         stat::with_current_metrics(self.comm.metrics(), || task.execute(wid, on_ready));
     }
 
