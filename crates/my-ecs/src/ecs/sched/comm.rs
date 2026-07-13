@@ -3,6 +3,7 @@ use crate::{
     cb_deque::{Injector, Steal, Stealer, Worker},
     ecs::{
         cmd::CommandObject,
+        stat::RuntimeMetrics,
         worker::{Message, WorkerId},
     },
     utils::ds::{Signal, UnsafeFuture},
@@ -63,6 +64,8 @@ pub(crate) struct SubComm {
 
     /// Index to [`Self::siblings`], [`Self::futures`], and [`Self::signal`].
     wid: WorkerId,
+
+    metrics: Arc<RuntimeMetrics>,
 }
 
 impl SubComm {
@@ -72,6 +75,7 @@ impl SubComm {
         signal: &Arc<GroupSignal>,
         tx_msg: &ParkingSender<Message>,
         tx_cmd: &CommandSender,
+        metrics: &Arc<RuntimeMetrics>,
         len: usize,
     ) -> Vec<Self> {
         // Local queues and stealers.
@@ -102,6 +106,7 @@ impl SubComm {
                     tx_cmd: tx_cmd.clone(),
                     wid: WorkerId::new(id, group_index, worker_index as u16),
                     signal: Arc::clone(signal),
+                    metrics: Arc::clone(metrics),
                 }
             })
             .collect()
@@ -109,6 +114,10 @@ impl SubComm {
 
     pub(crate) fn signal(&self) -> &GroupSignal {
         &self.signal
+    }
+
+    pub(crate) fn metrics(&self) -> &Arc<RuntimeMetrics> {
+        &self.metrics
     }
 
     /// We can also get the worker id from [`WORKER_ID`](crate::ecs::sched::ctrl::WORKER_ID).

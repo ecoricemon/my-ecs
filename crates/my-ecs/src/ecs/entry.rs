@@ -12,6 +12,7 @@ use super::{
         comm::{command_channel, CommandReceiver, CommandSender},
         ctrl::Scheduler,
     },
+    stat::RuntimeMetrics,
     sys::{
         storage::SystemStorage,
         system::{
@@ -1479,6 +1480,11 @@ where
         // TODO: need more shrink methods.
     }
 
+    /// Returns runtime metrics for this ECS instance.
+    pub fn metrics(&self) -> &RuntimeMetrics {
+        self.sched.metrics()
+    }
+
     /// Executes active systems of all groups once.
     ///
     /// Generated commands during the execution will be completely consumed at the end of system
@@ -2330,6 +2336,14 @@ mod tests {
     use crate as my_ecs;
     use crate::prelude::*;
     use std::sync::{Arc, Mutex};
+    #[cfg(feature = "stat")]
+    use std::{
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            mpsc,
+        },
+        time::Duration,
+    };
 
     #[test]
     fn test_add_many_systems() {
@@ -2448,5 +2462,88 @@ mod tests {
         b.step();
         assert_eq!(*cnt.lock().unwrap(), 11);
         drop(b);
+    }
+
+    #[cfg(feature = "stat")]
+    #[test]
+    fn test_metrics_do_not_cross_multiple_apps() {
+        let mut a = Ecs::create(WorkerPool::with_len(1), [1]);
+        let mut b = Ecs::create(WorkerPool::new(), []);
+
+        a.add_once_system(|| {}).unwrap();
+        b.add_once_system(|| {}).unwrap();
+
+        a.step();
+        assert_eq!(a.metrics().snapshot().system_executions, 1);
+        assert_eq!(b.metrics().snapshot().system_executions, 0);
+
+        b.step();
+        assert_eq!(a.metrics().snapshot().system_executions, 1);
+        assert_eq!(b.metrics().snapshot().system_executions, 1);
+    }
+
+    #[cfg(feature = "stat")]
+    #[test]
+    fn test_metrics_do_not_cross_concurrent_apps() {
+        const STEPS: u64 = 100;
+
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let run = |ready_tx: mpsc::Sender<()>, start_rx: mpsc::Receiver<()>| {
+            std::thread::spawn(move || {
+                let mut ecs = Ecs::create(WorkerPool::with_len(1), [1]);
+                let executions = Arc::new(AtomicU64::new(0));
+                let system_executions = Arc::clone(&executions);
+                ecs.add_system(move || {
+                    system_executions.fetch_add(1, Ordering::Relaxed);
+                })
+                .unwrap();
+
+                ready_tx.send(()).unwrap();
+                drop(ready_tx);
+                start_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                for _ in 0..STEPS {
+                    ecs.step();
+                }
+
+                assert_eq!(executions.load(Ordering::Relaxed), STEPS);
+                ecs.metrics().snapshot().system_executions
+            })
+        };
+
+        let (a_start_tx, a_start_rx) = mpsc::channel();
+        let (b_start_tx, b_start_rx) = mpsc::channel();
+        let a = run(ready_tx.clone(), a_start_rx);
+        let b = run(ready_tx, b_start_rx);
+
+        for _ in 0..2 {
+            ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        a_start_tx.send(()).unwrap();
+        b_start_tx.send(()).unwrap();
+
+        assert_eq!(a.join().unwrap(), STEPS);
+        assert_eq!(b.join().unwrap(), STEPS);
+    }
+
+    #[cfg(feature = "stat")]
+    #[test]
+    fn test_parallel_metrics_do_not_cross_multiple_apps() {
+        let mut a = Ecs::create(WorkerPool::with_len(2), [2]);
+        let mut b = Ecs::create(WorkerPool::with_len(1), [1]);
+
+        a.add_once_system(|| {
+            let sum = (0..1024).into_par_iter().into_ecs_par().sum::<i32>();
+            assert_eq!(sum, (0..1024).sum::<i32>());
+        })
+        .unwrap();
+        b.add_once_system(|| {}).unwrap();
+
+        a.step();
+        assert!(a.metrics().snapshot().parallel_executions > 0);
+        assert_eq!(b.metrics().snapshot().parallel_executions, 0);
+
+        b.step();
+        assert!(a.metrics().snapshot().parallel_executions > 0);
+        assert_eq!(b.metrics().snapshot().parallel_executions, 0);
     }
 }

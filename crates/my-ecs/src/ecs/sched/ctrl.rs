@@ -10,6 +10,7 @@ use crate::{
     ecs::{
         cache::{CacheItem, RefreshCacheStorage},
         cmd::CommandObject,
+        stat::{self, RuntimeMetrics},
         sys::system::{RawSystemCycleIter, SystemData, SystemGroup, SystemId},
         wait::WaitQueues,
         worker::{Message, PanicMessage, Work, WorkerId},
@@ -74,6 +75,8 @@ pub(crate) struct Scheduler<W: Work + 'static> {
     waker: MainWaker,
 
     dedi_fut_cnt: Arc<AtomicU32>,
+
+    metrics: Arc<RuntimeMetrics>,
 }
 
 impl<W: Work + 'static> Scheduler<W> {
@@ -91,6 +94,7 @@ impl<W: Work + 'static> Scheduler<W> {
             });
 
         let (tx_msg, rx_msg) = comm::parking_channel(thread::current());
+        let metrics = Arc::new(RuntimeMetrics::default());
 
         let wgroups = (0..num_groups).fold(Array::new(), |mut wgs, i| {
             // Splits off left piece from entire worker array.
@@ -98,7 +102,7 @@ impl<W: Work + 'static> Scheduler<W> {
             mem::swap(&mut workers, &mut left); // right -> left
 
             // Creates sub context group and initializes it.
-            let mut wg = WorkGroup::new(i as u16, left, &tx_msg, &tx_cmd);
+            let mut wg = WorkGroup::new(i as u16, left, &tx_msg, &tx_cmd, &metrics);
             wg.initialize(&tx_msg, &rx_msg);
             wgs.push(wg);
 
@@ -134,6 +138,7 @@ impl<W: Work + 'static> Scheduler<W> {
             wid,
             waker,
             dedi_fut_cnt: Arc::new(AtomicU32::new(0)),
+            metrics,
         }
     }
 
@@ -190,6 +195,10 @@ impl<W: Work + 'static> Scheduler<W> {
         &self.dedi_fut_cnt
     }
 
+    pub(crate) fn metrics(&self) -> &RuntimeMetrics {
+        &self.metrics
+    }
+
     fn work_one(&mut self) {
         if let Ok(task) = self.dedi_rx.try_recv() {
             // NOTE: Panics can occur here.
@@ -205,7 +214,8 @@ impl<W: Work + 'static> Scheduler<W> {
     fn work_for_system_task(&self, task: SysTask) {
         let sid = task.sid();
 
-        let resp = match task.execute(self.wid) {
+        self.metrics.record_system_execution();
+        let resp = match stat::with_current_metrics(&self.metrics, || task.execute(self.wid)) {
             Ok(_) => Message::Fin(self.wid, sid),
             Err(payload) => Message::Panic(PanicMessage {
                 wid: self.wid,
@@ -220,7 +230,10 @@ impl<W: Work + 'static> Scheduler<W> {
     }
 
     fn work_for_parallel_task(&self, task: ParTask) {
-        task.execute(self.wid, FnContext::NOT_MIGRATED);
+        // Parallel execution metrics are recorded in the bridge function.
+        stat::with_current_metrics(&self.metrics, || {
+            task.execute(self.wid, FnContext::NOT_MIGRATED);
+        });
     }
 
     fn work_for_async_task(&self, task: AsyncTask) {
@@ -240,7 +253,8 @@ impl<W: Work + 'static> Scheduler<W> {
             let cmd = CommandObject::Future(ready);
             self.tx_cmd.send_or_cancel(cmd);
         };
-        task.execute(self.wid, on_ready);
+        self.metrics.record_future_poll();
+        stat::with_current_metrics(&self.metrics, || task.execute(self.wid, on_ready));
     }
 
     pub(crate) fn execute_all<T, S>(&mut self, sgroups: &mut T, cache: &mut RefreshCacheStorage<S>)
@@ -820,6 +834,7 @@ where
         workers: Vec<W>,
         tx_msg: &ParkingSender<Message>,
         tx_cmd: &CommandSender,
+        metrics: &Arc<RuntimeMetrics>,
     ) -> Self {
         // Creates global queue.
         let injector = Arc::new(Injector::new());
@@ -833,6 +848,7 @@ where
             &dummy_signal,
             tx_msg,
             tx_cmd,
+            metrics,
             workers.len(),
         );
 
@@ -1238,7 +1254,8 @@ impl SubContext {
         let wid = self.comm.worker_id();
         let sid = task.sid();
 
-        let resp = match task.execute(wid) {
+        self.comm.metrics().record_system_execution();
+        let resp = match stat::with_current_metrics(self.comm.metrics(), || task.execute(wid)) {
             Ok(_) => Message::Fin(self.comm.worker_id(), sid),
             Err(payload) => Message::Panic(PanicMessage {
                 wid: self.comm.worker_id(),
@@ -1254,7 +1271,9 @@ impl SubContext {
     fn work_for_parallel_task(&self, task: ParTask) {
         let wid = self.comm.worker_id();
 
-        task.execute(wid, FnContext::MIGRATED);
+        stat::with_current_metrics(self.comm.metrics(), || {
+            task.execute(wid, FnContext::MIGRATED);
+        });
     }
 
     fn work_for_async_task(&self, task: AsyncTask) {
@@ -1276,7 +1295,8 @@ impl SubContext {
             let cmd = CommandObject::Future(ready);
             self.comm.send_command_or_cancel(cmd);
         };
-        task.execute(wid, on_ready);
+        self.comm.metrics().record_future_poll();
+        stat::with_current_metrics(self.comm.metrics(), || task.execute(wid, on_ready));
     }
 
     /// Cancels out remaining tasks.

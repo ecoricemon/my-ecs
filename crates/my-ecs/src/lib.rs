@@ -35,10 +35,11 @@ pub mod utils {
 
 /// Global functions.
 pub mod global {
-    pub use super::ecs::stat;
     #[cfg(target_arch = "wasm32")]
     pub use super::ecs::web::{set_panic_hook_once, web_panic_hook};
 }
+
+pub use ecs::stat::{RuntimeMetrics, RuntimeMetricsSnapshot};
 
 // Re-exports for use in macros
 #[doc(hidden)]

@@ -1,13 +1,10 @@
 use super::par::FnContext;
-use crate::{
-    ecs::{
-        sys::{
-            request::SystemBuffer,
-            system::{Invoke, SystemId},
-        },
-        worker::WorkerId,
+use crate::ecs::{
+    sys::{
+        request::SystemBuffer,
+        system::{Invoke, SystemId},
     },
-    global,
+    worker::WorkerId,
 };
 use my_utils::ds::{ManagedMutPtr, ReadyFuture, UnsafeFuture};
 use std::{
@@ -73,8 +70,6 @@ impl SysTask {
     }
 
     pub(super) fn execute(self, _wid: WorkerId) -> Result<(), Box<dyn Any + Send>> {
-        global::stat::increase_system_task_count();
-
         // In web panic hook, we're going to use this info for recovery.
         #[cfg(target_arch = "wasm32")]
         {
@@ -175,9 +170,7 @@ impl ParTask {
     }
 
     pub(super) fn execute(self, _wid: WorkerId, f_cx: FnContext) {
-        // Statistic count is increased in bridge() to see whether ECS intercepted the call
-        // correctly.
-        // global::stat::increase_parallel_task_count();
+        // Parallel execution is recorded in bridge() to verify interception by the ECS scheduler.
 
         // In web panic hook, we're going to use this info for recovery.
         #[cfg(target_arch = "wasm32")]
@@ -296,8 +289,6 @@ impl AsyncTask {
     where
         F: FnOnce(ReadyFuture),
     {
-        global::stat::increase_future_task_count();
-
         // In web panic hook, we're going to use this info for recovery.
         #[cfg(target_arch = "wasm32")]
         {

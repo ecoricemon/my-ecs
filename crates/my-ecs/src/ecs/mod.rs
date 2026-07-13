@@ -8,6 +8,7 @@ pub(crate) mod lock;
 pub(crate) mod post;
 pub(crate) mod resource;
 pub(crate) mod sched;
+pub(crate) mod stat;
 pub(crate) mod sys;
 pub(crate) mod wait;
 pub(crate) mod web;
@@ -144,53 +145,4 @@ impl<Data> EcsError<Data> {
             Self::Unknown(reason, old) => EcsError::Unknown(reason, f(old)),
         }
     }
-}
-
-/// Runtime counters used when the `stat` feature is enabled.
-pub mod stat {
-    macro_rules! decl_counter {
-        ($name:ident, $id:ident) => {
-            paste::paste! {
-                #[cfg(feature = "stat")]
-                static $id: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
-
-                /// Loads the current counter value, or `-1` when `stat` is disabled.
-                pub fn [<load _$name>]() -> isize {
-                    #[cfg(feature = "stat")]
-                    { $id.load(std::sync::atomic::Ordering::Relaxed) }
-
-                    #[cfg(not(feature = "stat"))]
-                    { -1 }
-                }
-
-                /// Stores the counter value when `stat` is enabled.
-                pub fn [<store _$name>](_value: isize) {
-                    #[cfg(feature = "stat")]
-                    $id.store(_value, std::sync::atomic::Ordering::Relaxed);
-                }
-
-                /// Increments the counter when `stat` is enabled.
-                pub fn [<increase _$name>]() {
-                    #[cfg(feature = "stat")]
-                    $id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-
-                /// Asserts that the counter equals `_right` when `stat` is enabled.
-                pub fn [<assert_eq _$name>](_right: isize) {
-                    #[cfg(feature = "stat")]
-                    { assert_eq!([<load _$name>](), _right); }
-                }
-
-                /// Asserts that the counter does not equal `_right` when `stat` is enabled.
-                pub fn [<assert_ne _$name>](_right: isize) {
-                    #[cfg(feature = "stat")]
-                    { assert_ne!([<load _$name>](), _right); }
-                }
-            }
-        };
-    }
-
-    decl_counter!(system_task_count, SYS_CNT);
-    decl_counter!(future_task_count, FUT_CNT);
-    decl_counter!(parallel_task_count, PAR_CNT);
 }

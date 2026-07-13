@@ -2,7 +2,7 @@ use super::{
     ctrl::SUB_CONTEXT,
     task::{ParTask, ParTaskHolder, TaskId},
 };
-use crate::global;
+use crate::ecs::stat;
 use rayon::iter::{
     plumbing::{
         Consumer, Folder, Producer, ProducerCallback, Reducer, UnindexedConsumer, UnindexedProducer,
@@ -99,7 +99,7 @@ where
     I: IndexedParallelIterator,
     C: Consumer<I::Item>,
 {
-    global::stat::increase_parallel_task_count();
+    stat::record_parallel_execution();
 
     let len = par_iter.len();
     return par_iter.with_producer(Callback { len, consumer });
@@ -189,7 +189,7 @@ where
     P: UnindexedProducer,
     C: UnindexedConsumer<P::Item>,
 {
-    global::stat::increase_parallel_task_count();
+    stat::record_parallel_execution();
     let splitter = Splitter::new().unwrap();
     bridge_unindexed_producer_consumer(false, splitter, producer, consumer)
 }
