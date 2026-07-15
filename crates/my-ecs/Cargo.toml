@@ -55,7 +55,7 @@ web-sys = { workspace = true, features = [
 parking_lot_core = { workspace = true, features = ["nightly"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-criterion = { workspace = true }
+criterion = "0.4.0"
 tide = "0.16.0"
 surf = "2.3.2"
 futures = "0.3.31"
