@@ -55,6 +55,7 @@ web-sys = { workspace = true, features = [
 parking_lot_core = { workspace = true, features = ["nightly"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = { workspace = true }
 tide = "0.16.0"
 surf = "2.3.2"
 futures = "0.3.31"
@@ -66,6 +67,18 @@ console_error_panic_hook = "0.1.7"
 [[test]]
 name = "tests-other-web"
 path = "tests-other/web/src/lib.rs"
+
+[[bench]]
+name = "query"
+harness = false
+
+[[bench]]
+name = "entity"
+harness = false
+
+[[bench]]
+name = "parallel"
+harness = false
 
 [[example]]
 name = "async"
